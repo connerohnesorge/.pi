@@ -1,0 +1,54 @@
+{
+  "name": "effort",
+  "version": "0.1.0",
+  "description": "Pi extension for controlling thinking effort and GPT-5 fast mode",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "reasoning",
+    "thinking",
+    "effort",
+    "fast-mode"
+  ],
+  "author": "Conner Ohnesorge",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/connerohnesorge/.pi.git",
+    "directory": "agent/extensions/effort"
+  },
+  "homepage": "https://github.com/connerohnesorge/.pi/tree/main/agent/extensions/effort#readme",
+  "bugs": {
+    "url": "https://github.com/connerohnesorge/.pi/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "effort.ts",
+    "index.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.74.0",
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@types/node": "latest",
+    "typescript": "latest"
+  }
+}
