@@ -1,0 +1,184 @@
+# yaml-language-server: $schema=https://github.com/connerohnesorge/conclaude/releases/latest/download/conclaude-schema.json
+#
+# CNB Hooks Configuration
+# This file configures lifecycle hooks for Claude Code sessions.
+# For full documentation, see: https://software.cottinghambutler.com/pantheon/cnb
+
+# Stop hook - runs when Claude is about to stop
+stop:
+  commands:
+    - run: "cnb rocks validate --all"
+      showStdout: true
+      showStderr: true
+      showCommand: true
+      message: "Rocks validation failed"
+      timeout: 300
+  # Example:
+  # - run: "npm test"
+  #   showStdout: true
+  #   showStderr: true
+  #   showCommand: true
+  #   message: "Tests failed"
+  #   maxOutputLines: 100
+  #   timeout: 300
+
+  infinite: false
+  infiniteMessage: "continue working on the task"
+
+  # When true, stop commands also run when subagents stop (inherited via SubagentStop).
+  # inherit: false
+
+# Subagent stop hook - runs when subagents finish
+subagentStop:
+  commands: {}
+
+# Pre-tool-use hook - file protection and tool validation
+preToolUse:
+  preventRootAdditions: true
+  preventRootAdditionsMessage: null
+
+  # Protected files (glob patterns)
+  uneditableFiles:
+    - ".cnb.yml"
+    - ".cnb.yaml"
+  # Examples:
+  # - "*.lock"
+  # - pattern: ".env*"
+  #   message: "Environment files contain secrets"
+  # - pattern: "src/**/*.test.ts"
+  #   message: "Test files managed by tester agent"
+  #   agent: "coder"
+
+  preventUpdateGitIgnored: false
+
+  toolUsageValidation: []
+  # Example:
+  # - tool: "Write"
+  #   pattern: "**/*.js"
+  #   action: "allow"
+  # - tool: "Bash"
+  #   commandPattern: "git push --force*"
+  #   action: "block"
+  #   message: "Force push not allowed"
+
+  preventAdditions: []
+
+  # When true, preToolUse protections also apply to subagent tool use.
+  # inherit: false
+
+# System notifications
+# When enabled, desktop notifications fire for hook events.
+# hooks: [] means all events are eligible. To restrict, list specific events:
+#   hooks: ["Stop", "TaskCompleted", "SessionEnd"]
+# Event names are case-insensitive.
+notifications:
+  enabled: false
+  hooks: []
+  showErrors: true
+  showSuccess: true
+  showSystemEvents: true
+  # Per-event notification templates using Go text/template syntax.
+  # Available fields vary by event but always include: .ProjectName, .CWD,
+  # .HookEvent, .SessionID, .DefaultTitle, .DefaultSubtitle, .DefaultMessage.
+  # Event-specific fields:
+  #   PreToolUse/PostToolUse: .ToolName, .ToolInputSummary
+  #   Stop: .Failed, .CommandRun, .CommandOutput
+  #   SessionStart: .Source  |  SessionEnd: .Reason
+  #   SubagentStart/Stop: .AgentID, .SubagentType
+  #   WorktreeCreate: .WorktreeName  |  WorktreeRemove: .WorktreePath
+  #   TaskCompleted: .TaskID, .TaskSubject, .TaskDescription, .TeammateName
+  #   TeammateIdle: .TeammateName, .TeamName
+  #   ConfigChange: .ConfigSource  |  PreCompact: .Trigger
+  #   UserPromptSubmit: .UserPrompt  |  Notification: .NotificationMessage
+  # templates:
+  #   PostToolUse:
+  #     title: "{{.ProjectName}}"
+  #     message: "{{.ToolName}}: {{.ToolInputSummary}}"
+  #   Stop:
+  #     message: "{{if .Failed}}FAILED{{else}}Passed{{end}}: {{.DefaultMessage}}"
+  #   SessionStart:
+  #     title: "{{.ProjectName}}"
+  #     message: "Session started ({{.Source}})"
+
+# Post-tool-use hook - observational commands after successful tool execution
+# These commands run after a tool completes successfully. They are observational
+# only — they cannot block tool execution or affect the result.
+# Uncomment to enable:
+#
+# postToolUse:
+#   commands: []
+#   # Example:
+#   # - run: ".claude/scripts/log-tool-use.sh"
+#   #   showStdout: false
+#   #   showCommand: false
+#   #   timeout: 30
+#   #
+#   # When true, postToolUse commands also run for subagent tool use.
+#   # inherit: false
+#   #
+#   # Environment variables available:
+#   # - CNB_TOOL_NAME: Name of the tool that was executed
+#   # - CNB_SESSION_ID: Current session ID
+#   # - CNB_CWD: Current working directory
+#   # - CNB_HOOK_EVENT: Always "PostToolUse"
+
+# Post-tool-use failure hook - observational commands after failed tool execution
+# These commands run when a tool execution fails. Like postToolUse, they are
+# observational only and cannot affect the outcome.
+# Uncomment to enable:
+#
+# postToolUseFailure:
+#   commands: []
+#   # Example:
+#   # - run: ".claude/scripts/notify-tool-failure.sh"
+#   #   showStdout: true
+#   #   showCommand: false
+#   #   timeout: 30
+#   #
+#   # When true, postToolUseFailure commands also run for subagent failures.
+#   # inherit: false
+#   #
+#   # Environment variables available:
+#   # - CNB_TOOL_NAME: Name of the tool that failed
+#   # - CNB_SESSION_ID: Current session ID
+#   # - CNB_CWD: Current working directory
+#   # - CNB_HOOK_EVENT: Always "PostToolUseFailure"
+
+# Permission request hook - auto-approve/deny tools
+# Uncomment to enable:
+#
+# permissionRequest:
+#   default: deny
+#   allow:
+#     - "Read"
+#     - "Glob"
+#     - "Grep"
+#     - "Edit"
+#     - "Write"
+#   deny:
+#     - "BashOutput"
+#     - "KillShell"
+
+# User prompt submit hook - context injection and command execution
+# Uncomment to enable:
+#
+# userPromptSubmit:
+#   contextRules:
+#     - pattern: "auth|login|authentication"
+#       prompt: |
+#         Review the authentication patterns before proceeding.
+#       caseInsensitive: true
+#   commands: []
+#   slashCommands:
+#     commands:
+#       commit:
+#         - run: "git add -A && git commit -m \"auto-commit\""
+#           showStdout: true
+#           showStderr: true
+#       deploy:
+#         - run: "make deploy"
+#           showStdout: true
+#           message: "Deployment blocked"
+#       "*":
+#         - run: "echo \"Unknown slash command: $CNB_SLASH_COMMAND\""
+#           showStdout: true

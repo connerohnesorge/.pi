@@ -1,0 +1,52 @@
+{
+  "name": "ask_user",
+  "version": "0.11.1",
+  "description": "Interactive ask_user tool for pi-coding-agent with searchable split-pane selection UI, multi-select, and freeform input",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "ask",
+    "ask_user",
+    "interactive"
+  ],
+  "author": "Conner Ohnesorge",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/connerohnesorge/.pi.git",
+    "directory": "agent/extensions/ask-user"
+  },
+  "bugs": {
+    "url": "https://github.com/connerohnesorge/.pi/issues"
+  },
+  "homepage": "https://github.com/connerohnesorge/.pi/tree/main/agent/extensions/ask-user#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "single-select-layout.ts",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.74.0",
+    "@sinclair/typebox": "*"
+  }
+}

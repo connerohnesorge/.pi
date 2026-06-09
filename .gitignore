@@ -1,0 +1,8 @@
+.DS_Store
+.direnv
+result
+node_modules
+agent/*.json
+agent/*.jsonl
+agent/sessions/
+agent/skills/
