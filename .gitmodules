@@ -1,0 +1,3 @@
+[submodule "agent/extensions/pi-fork-yourself"]
+	path = agent/extensions/pi-fork-yourself
+	url = https://github.com/connerohnesorge/pi-fork-yourself.git
