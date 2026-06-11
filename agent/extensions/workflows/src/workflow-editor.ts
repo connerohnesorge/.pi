@@ -162,6 +162,8 @@ export class WorkflowEditor extends CustomEditor {
     return !this.disabled && hasTrigger(this.getText());
   }
 
+  // CustomEditor invokes overrides polymorphically from the TUI.
+  // fallow-ignore-next-line unused-class-member
   override handleInput(data: string): void {
     // First Backspace right after a trigger word disarms (non-destructive).
     if (isBackspace(data) && this.isActive() && this.cursorAfterTrigger()) {

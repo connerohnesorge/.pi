@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.ts";
-import { normalizeSkillInput } from "../agents/skills.ts";
+import { normalizeSkillInput } from "./skill-input.ts";
 import { normalizeSingleOutputOverride } from "../runs/shared/single-output.ts";
 import { CHAIN_RUNS_DIR, type OutputMode } from "./types.ts";
 const CHAIN_DIR_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -224,7 +224,7 @@ export function resolveStepBehavior(
 	return { output, outputMode, reads, progress, skills, model };
 }
 
-export function resolveTaskTextForFileUpdatePolicy(task: string | undefined, originalTask?: string): string | undefined {
+function resolveTaskTextForFileUpdatePolicy(task: string | undefined, originalTask?: string): string | undefined {
 	if (!task) return originalTask;
 	return originalTask ? task.replaceAll("{task}", originalTask) : task;
 }

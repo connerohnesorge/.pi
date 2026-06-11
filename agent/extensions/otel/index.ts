@@ -122,8 +122,10 @@ export default function registerOtelTelemetry(pi: ExtensionAPI): void {
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
 	let currentModel = "";
+	let currentDashboardModel = "unknown";
 	let sessionProjectName = "unknown";
 	let agentTurnCount = 0;
+	let baselinesRecorded = false;
 
 	pi.on("session_start", async (_event, ctx) => {
 		sessionStartedAt = Date.now();
@@ -132,6 +134,8 @@ export default function registerOtelTelemetry(pi: ExtensionAPI): void {
 		totalInputTokens = 0;
 		totalOutputTokens = 0;
 		currentModel = "";
+		currentDashboardModel = "unknown";
+		baselinesRecorded = false;
 		sessionProjectName = resolveProjectName(ctx.cwd);
 		toolSpans.clear();
 
@@ -157,7 +161,7 @@ export default function registerOtelTelemetry(pi: ExtensionAPI): void {
 		if (sessionStartedAt > 0) {
 			const durationSec = (endedAt - sessionStartedAt) / 1000;
 			sessionDurationHistogram.record(durationSec, commonMetricAttributes);
-			if (claudeDashboardCompat) claudeActiveTimeCounter.add(durationSec, claudeAttrs(commonMetricAttributes, sessionProjectName, currentModel));
+			if (claudeDashboardCompat) claudeActiveTimeCounter.add(durationSec, claudeAttrs(commonMetricAttributes, sessionProjectName, currentDashboardModel));
 		}
 
 		for (const [toolCallId, entry] of toolSpans) {
@@ -206,7 +210,7 @@ export default function registerOtelTelemetry(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async () => {
 		promptsCounter.add(1, commonMetricAttributes);
-		if (claudeDashboardCompat) claudeSessionCountCounter.add(1, claudeAttrs(commonMetricAttributes, sessionProjectName, currentModel));
+		if (claudeDashboardCompat) claudeSessionCountCounter.add(1, claudeAttrs(commonMetricAttributes, sessionProjectName, currentDashboardModel));
 		agentTurnCount = 0;
 		agentSpan = tracer.startSpan("agent.prompt", { attributes: { "agent.turn_count": agentTurnCount } }, sessionContext);
 		agentContext = trace.setSpan(sessionContext, agentSpan);
@@ -258,10 +262,10 @@ export default function registerOtelTelemetry(pi: ExtensionAPI): void {
 			tokensInputCounter.add(inputWithCache, commonMetricAttributes);
 			tokensOutputCounter.add(usage.output, commonMetricAttributes);
 			if (claudeDashboardCompat) {
-				recordClaudeTokenUsage(claudeTokenUsageCounter, commonMetricAttributes, sessionProjectName, currentModel, "input", usage.input);
-				recordClaudeTokenUsage(claudeTokenUsageCounter, commonMetricAttributes, sessionProjectName, currentModel, "output", usage.output);
-				recordClaudeTokenUsage(claudeTokenUsageCounter, commonMetricAttributes, sessionProjectName, currentModel, "cacheRead", usage.cacheRead);
-				recordClaudeTokenUsage(claudeTokenUsageCounter, commonMetricAttributes, sessionProjectName, currentModel, "cacheCreation", usage.cacheWrite);
+				recordClaudeTokenUsage(claudeTokenUsageCounter, commonMetricAttributes, sessionProjectName, currentDashboardModel, "input", usage.input);
+				recordClaudeTokenUsage(claudeTokenUsageCounter, commonMetricAttributes, sessionProjectName, currentDashboardModel, "output", usage.output);
+				recordClaudeTokenUsage(claudeTokenUsageCounter, commonMetricAttributes, sessionProjectName, currentDashboardModel, "cacheRead", usage.cacheRead);
+				recordClaudeTokenUsage(claudeTokenUsageCounter, commonMetricAttributes, sessionProjectName, currentDashboardModel, "cacheCreation", usage.cacheWrite);
 			}
 		}
 
@@ -312,7 +316,15 @@ export default function registerOtelTelemetry(pi: ExtensionAPI): void {
 	});
 
 	pi.on("model_select", async (event) => {
-		currentModel = `${event.model.provider}/${event.model.id}`;
+		const model = formatModel(event.model);
+		currentModel = model.full;
+		currentDashboardModel = model.dashboard;
+
+		if (claudeDashboardCompat && !baselinesRecorded && currentDashboardModel) {
+			baselinesRecorded = true;
+			recordClaudeAliasBaselines(claudeTokenUsageCounter, claudeSessionCountCounter, claudeActiveTimeCounter, commonMetricAttributes, sessionProjectName, currentDashboardModel);
+		}
+
 		if (!sessionSpan) return;
 
 		sessionSpan.setAttribute("llm.model", currentModel);
@@ -451,6 +463,15 @@ export function claudeAttrs(commonMetricAttributes: Attributes, projectName: str
 		...commonMetricAttributes,
 		project_name: projectName || "unknown",
 		model: model || "unknown",
+		query_source: "main",
+	};
+}
+
+export function formatModel(model: { provider?: string; id?: string } | undefined): { full: string; dashboard: string } {
+	if (!model?.id) return { full: "", dashboard: "" };
+	return {
+		full: model.provider ? `${model.provider}/${model.id}` : model.id,
+		dashboard: model.id,
 	};
 }
 
@@ -496,6 +517,20 @@ export function parseMetricExportInterval(value: string | undefined): number {
 	if (!value) return DEFAULT_METRIC_EXPORT_INTERVAL_MS;
 	const parsed = Number.parseInt(value, 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_METRIC_EXPORT_INTERVAL_MS;
+}
+
+function recordClaudeAliasBaselines(
+	tokenCounter: { add: (value: number, attributes?: Attributes) => void },
+	sessionCounter: { add: (value: number, attributes?: Attributes) => void },
+	activeTimeCounter: { add: (value: number, attributes?: Attributes) => void },
+	commonMetricAttributes: Attributes,
+	projectName: string,
+	model: string,
+): void {
+	const baseAttrs = claudeAttrs(commonMetricAttributes, projectName, model);
+	sessionCounter.add(0, baseAttrs);
+	activeTimeCounter.add(0, baseAttrs);
+	for (const type of ["input", "output", "cacheRead", "cacheCreation"]) tokenCounter.add(0, { ...baseAttrs, type });
 }
 
 function recordClaudeTokenUsage(counter: { add: (value: number, attributes?: Attributes) => void }, commonMetricAttributes: Attributes, projectName: string, model: string, type: string, value: number): void {

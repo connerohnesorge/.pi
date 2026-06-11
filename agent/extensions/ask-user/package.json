@@ -42,7 +42,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "npm pack --dry-run"
+    "test": "bun test",
+    "check": "npm run test && npm pack --dry-run"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.74.0",

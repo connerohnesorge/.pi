@@ -2,7 +2,6 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
-  SEMANTIC_ALIASES,
   USER_LEVELS,
   type EffortLevel,
   type EffortModel,

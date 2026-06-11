@@ -4,7 +4,7 @@ export type GoalEventKind = "checkpoint" | "stale" | "drafting";
 export type DraftingFocus = "goal" | "sisyphus";
 export type GoalFocusReason = "created" | "selected" | "resumed" | "completed" | "cleared" | "aborted" | "migrated";
 
-export interface GoalUsage {
+interface GoalUsage {
 	tokensUsed: number;
 	activeSeconds: number;
 }
@@ -54,7 +54,7 @@ export interface GoalCreationConfig {
 	sisyphus: boolean;
 }
 
-export interface AssistantUsage {
+interface AssistantUsage {
 	input?: number;
 	output?: number;
 }
@@ -73,7 +73,7 @@ export function safeIdPart(value: string): string {
 	return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "goal";
 }
 
-export function newGoalId(): string {
+function newGoalId(): string {
 	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -85,7 +85,7 @@ export function asRecord(value: unknown): Record<string, unknown> | null {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-export function emptyUsage(): GoalUsage {
+function emptyUsage(): GoalUsage {
 	return { tokensUsed: 0, activeSeconds: 0 };
 }
 
@@ -128,7 +128,7 @@ export function createGoal(config: GoalCreationConfig, now = Date.now()): GoalRe
 	};
 }
 
-export function normalizeUsage(value: unknown): GoalUsage {
+function normalizeUsage(value: unknown): GoalUsage {
 	const raw = asRecord(value);
 	if (!raw) return emptyUsage();
 	const tokensUsed = typeof raw.tokensUsed === "number" && Number.isFinite(raw.tokensUsed) ? Math.max(0, Math.floor(raw.tokensUsed)) : 0;

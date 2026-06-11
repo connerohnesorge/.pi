@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	createAgentSession,
 	createExtensionRuntime,
@@ -19,7 +18,7 @@ export interface GoalAuditorConfig {
 	disabled?: boolean;
 }
 
-export interface AuditorProgress {
+interface AuditorProgress {
 	/** Current tool being executed by the auditor, if any */
 	currentTool?: string;
 	/** Arguments passed to the current tool (truncated for display) */

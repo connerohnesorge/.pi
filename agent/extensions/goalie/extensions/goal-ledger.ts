@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { normalizeRelPath, nowIso, safeIdPart, type GoalRecord } from "./goal-record.ts";
 
-export const GOAL_LEDGER_FILE = ".pi/goals/goal_events.jsonl";
+const GOAL_LEDGER_FILE = ".pi/goals/goal_events.jsonl";
 
 export type GoalLedgerEvent =
   | { type: "goal_created"; goalId: string; objective: string; sisyphus: boolean; autoContinue: boolean; at: string }
@@ -27,7 +27,7 @@ export interface GoalLedgerReadResult {
   malformed: number;
 }
 
-export interface ReconstructedGoalState {
+interface ReconstructedGoalState {
   goalId: string;
   latestStatus: "active" | "paused" | "complete" | "aborted" | "unknown";
   latestFocus: boolean;

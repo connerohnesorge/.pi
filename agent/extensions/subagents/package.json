@@ -5,6 +5,9 @@
   "author": "Conner Ohnesorge",
   "license": "MIT",
   "type": "module",
+  "exports": {
+    ".": "./src/extension/index.ts"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/connerohnesorge/.pi.git",

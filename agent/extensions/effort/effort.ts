@@ -7,20 +7,19 @@ import type { Model, ThinkingLevel } from "@earendil-works/pi-ai";
 export const SETTINGS_NAMESPACE = "effort";
 
 /** All levels the extension knows about, including "off" (Pi's internal state). */
-export const ALL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const ALL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 /** Levels shown to users in usage and tab completion. */
 export const USER_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const satisfies readonly ThinkingLevel[];
 
 /** Semantic aliases that resolve per model. */
-export const SEMANTIC_ALIASES = ["min", "max"] as const;
+const SEMANTIC_ALIASES = ["min", "max"] as const;
 
 /** Fast mode subcommands. */
-export const FAST_MODE_ACTIONS = ["on", "off"] as const;
+const FAST_MODE_ACTIONS = ["on", "off"] as const;
 
 export type EffortLevel = (typeof ALL_LEVELS)[number];
 export type EffortAlias = (typeof SEMANTIC_ALIASES)[number];
-export type FastModeAction = (typeof FAST_MODE_ACTIONS)[number];
 export type PiThinkingLevel = ThinkingLevel | "off";
 
 /** Resolve the Pi ThinkingLevel from our EffortLevel. */
@@ -28,7 +27,7 @@ export function toThinkingLevel(level: EffortLevel): PiThinkingLevel {
   return level;
 }
 
-export function isEffortLevel(value: string): value is EffortLevel {
+function isEffortLevel(value: string): value is EffortLevel {
   return ALL_LEVELS.includes(value as EffortLevel);
 }
 
@@ -165,7 +164,7 @@ export function isFastModelId(modelId: string): boolean {
   return modelId.startsWith("gpt-5") || modelId.includes("/gpt-5") || modelId.startsWith("openai-codex/");
 }
 
-export function readSettingsObject(settingsPath: string): Record<string, unknown> {
+function readSettingsObject(settingsPath: string): Record<string, unknown> {
   try {
     const raw = readFileSync(settingsPath, "utf-8").trim();
     if (raw.length === 0) return {};

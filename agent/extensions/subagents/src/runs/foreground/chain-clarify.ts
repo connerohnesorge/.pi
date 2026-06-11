@@ -423,7 +423,9 @@ export class ChainClarifyComponent implements Component {
 		this.tui.requestRender();
 	}
 
-	handleInput(data: string): void {
+	// TUI Component lifecycle method invoked through the Component interface.
+	// fallow-ignore-next-line unused-class-member
+	readonly handleInput = (data: string): void => {
 		if (this.editingStep !== null) {
 			if (this.editMode === "model") {
 				this.handleModelSelectorInput(data);
@@ -520,7 +522,7 @@ export class ChainClarifyComponent implements Component {
 			return;
 		}
 
-	}
+	};
 
 	private enterEditMode(mode: EditMode): void {
 		this.editingStep = this.selectedStep;
@@ -1325,9 +1327,22 @@ export class ChainClarifyComponent implements Component {
 		return lines;
 	}
 
-	invalidate(): void {}
-	dispose(): void {
+	// TUI Component lifecycle method invoked through the Component interface.
+	// fallow-ignore-next-line unused-class-member
+	readonly invalidate = (): void => {};
+	// TUI Component lifecycle method invoked through the Component interface.
+	// fallow-ignore-next-line unused-class-member
+	readonly dispose = (): void => {
 		if (this.noticeMessageTimer) clearTimeout(this.noticeMessageTimer);
 		this.noticeMessageTimer = null;
-	}
+	};
+}
+
+export function bindChainClarifyComponent(component: ChainClarifyComponent): Component & { dispose(): void } {
+	return {
+		render: (width: number) => component.render(width),
+		handleInput: (data: string) => component.handleInput(data),
+		invalidate: () => component.invalidate(),
+		dispose: () => component.dispose(),
+	};
 }

@@ -2,7 +2,7 @@ import { formatDuration, formatTokens, shortenPath } from "../../shared/formatte
 import { formatActivityLabel } from "../../shared/status-format.ts";
 import type { ActivityState, NestedRunSummary, NestedStepSummary } from "../../shared/types.ts";
 
-export interface NestedRunCounts {
+interface NestedRunCounts {
 	total: number;
 	running: number;
 	paused: number;
@@ -11,7 +11,7 @@ export interface NestedRunCounts {
 	queued: number;
 }
 
-export function countNestedRuns(children: NestedRunSummary[] | undefined): NestedRunCounts {
+function countNestedRuns(children: NestedRunSummary[] | undefined): NestedRunCounts {
 	const counts: NestedRunCounts = { total: 0, running: 0, paused: 0, complete: 0, failed: 0, queued: 0 };
 	for (const child of children ?? []) {
 		counts.total++;

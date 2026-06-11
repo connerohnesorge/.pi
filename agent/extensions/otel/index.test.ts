@@ -3,6 +3,7 @@ import registerOtelTelemetry, {
 	buildCommonMetricAttributes,
 	buildResourceAttributes,
 	claudeAttrs,
+	formatModel,
 	parseMetricExportInterval,
 	parseOtelResourceAttributes,
 	parseOtlpHeaders,
@@ -151,10 +152,15 @@ describe("resource and metric attributes", () => {
 
 	it("builds Claude dashboard-compatible attributes", () => {
 		expect(resolveProjectName("/Users/cohnesor/.pi/agent/extensions/otel")).toBe("otel");
-		expect(claudeAttrs({ "user.email": "agent@example.com" }, "otel", "verify/model")).toEqual({
+		expect(claudeAttrs({ "user.email": "agent@example.com" }, "otel", "model-name")).toEqual({
 			"user.email": "agent@example.com",
 			project_name: "otel",
-			model: "verify/model",
+			model: "model-name",
+			query_source: "main",
+		});
+		expect(formatModel({ provider: "openai-codex", id: "gpt-5.4" })).toEqual({
+			full: "openai-codex/gpt-5.4",
+			dashboard: "gpt-5.4",
 		});
 	});
 });

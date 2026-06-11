@@ -15,7 +15,7 @@ export interface GoalQuestionnaireQuestion {
 	allowCustom?: boolean;
 }
 
-export interface GoalQuestionnaireAnswer {
+interface GoalQuestionnaireAnswer {
 	id: string;
 	question: string;
 	answer: string;
@@ -82,7 +82,7 @@ export function proposalDialogFailureMessage(error: unknown): string {
  * the internal draft-confirm prompt. This keeps pi-goal self-contained and
  * avoids depending on external question/questionnaire packages.
  */
-export async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: GoalQuestionnaireQuestion[]): Promise<GoalQuestionnaireResult> {
+async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: GoalQuestionnaireQuestion[]): Promise<GoalQuestionnaireResult> {
 	if (!ctx.hasUI) {
 		return { questions: [], answers: [], cancelled: true };
 	}

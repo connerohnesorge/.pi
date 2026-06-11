@@ -112,7 +112,8 @@ The extension SHALL emit counters and histograms for prompt, turn, token, tool, 
 
 - WHEN pi sessions, turns, and token usage are recorded
 - THEN the extension emits `claude_code_token_usage_tokens`, `claude_code_session_count`, and `claude_code_active_time_seconds` counter aliases by default
-- AND the aliases include dashboard labels such as `user_email`, `model`, `project_name`, and token `type`
+- AND the aliases include dashboard labels such as `user_email`, Claude-style `model` name without provider prefix, `project_name`, `query_source`, and token `type`
+- AND short sessions produce positive Prometheus `increase()` results by priming aliases with zero samples before final usage is flushed
 - AND setting `PI_OTEL_CLAUDE_DASHBOARD_COMPAT=false` disables those aliases without disabling native `pi_*` metrics
 
 ### Requirement: Identity and Argument Hygiene

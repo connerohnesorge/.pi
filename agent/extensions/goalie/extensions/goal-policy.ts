@@ -1,7 +1,6 @@
 import { statusLabel, type GoalDisplayRecordLike } from "./goal-core.ts";
 
-export type GoalStatusLike = "active" | "paused" | "complete";
-export type StopReasonLike = "user" | "agent";
+type GoalStatusLike = "active" | "paused" | "complete";
 
 export interface GoalPolicyRecordLike extends GoalDisplayRecordLike {
 	id: string;
@@ -15,11 +14,11 @@ export type PolicyValidation =
 	| { ok: true }
 	| { ok: false; message: string };
 
-export function isRunnableStatus(status: GoalStatusLike): boolean {
+function isRunnableStatus(status: GoalStatusLike): boolean {
 	return status === "active";
 }
 
-export function isCompletableStatus(status: GoalStatusLike): boolean {
+function isCompletableStatus(status: GoalStatusLike): boolean {
 	return status === "active" || status === "paused";
 }
 

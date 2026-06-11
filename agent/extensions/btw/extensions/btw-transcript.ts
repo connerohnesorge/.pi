@@ -1,6 +1,6 @@
 import { type AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { type AssistantMessage, type UserMessage } from "@earendil-works/pi-ai";
-import { extractThinking, type BtwDetails } from "./btw.ts";
+import { extractThinking, type BtwDetails } from "./btw-shared.ts";
 
 export type BtwTranscriptEntry =
   | { id: number; turnId: number; type: "turn-boundary"; phase: "start" | "end" }

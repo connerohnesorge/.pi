@@ -12,7 +12,7 @@ import {
   loadAgentRegistry,
   resolveAgentType,
 } from "./agent-registry.js";
-import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
+import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_TOKEN_BUDGET, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
 import { WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
@@ -304,10 +304,11 @@ export async function runWorkflow<T = unknown>(
     options.onPhase?.(title);
   };
 
+  const effectiveTokenBudget = options.tokenBudget === undefined ? DEFAULT_TOKEN_BUDGET : options.tokenBudget;
   const budget = Object.freeze({
-    total: options.tokenBudget ?? null,
+    total: effectiveTokenBudget,
     spent: () => shared.spent,
-    remaining: () => (options.tokenBudget == null ? Infinity : Math.max(0, options.tokenBudget - shared.spent)),
+    remaining: () => (effectiveTokenBudget === null ? Infinity : Math.max(0, effectiveTokenBudget - shared.spent)),
   });
 
   const throwIfAborted = () => {

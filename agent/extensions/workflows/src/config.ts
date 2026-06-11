@@ -9,10 +9,10 @@ export const MAX_AGENTS_PER_RUN = 1000;
 export const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** Maximum concurrent agents (matches Claude Code limit). */
-export const MAX_CONCURRENCY = 16;
+export const MAX_CONCURRENCY = 20;
 
 /** Default token budget if none specified. */
-export const DEFAULT_TOKEN_BUDGET = null;
+export const DEFAULT_TOKEN_BUDGET = 10_000_000;
 
 /** Directory for persisting workflow run state. */
 export const WORKFLOW_RUNS_DIR = ".pi/workflows/runs";

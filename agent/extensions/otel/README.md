@@ -82,11 +82,11 @@ With this extension loaded, pi honors those same variables. Because your `claude
 
 The extension also emits Claude Code dashboard-compatible metric aliases by default:
 
-- `claude_code_token_usage_tokens_total` with `type=input|output|cacheRead|cacheCreation`, `model`, and `project_name`
+- `claude_code_token_usage_tokens_total` with `type=input|output|cacheRead|cacheCreation`, dashboard-style `model` (model id/name only, no provider prefix), `project_name`, and `query_source=main`
 - `claude_code_session_count_total`
 - `claude_code_active_time_seconds_total`
 
-Those aliases are what the current `Claude Code — Team Adoption` dashboard queries. Disable them with `PI_OTEL_CLAUDE_DASHBOARD_COMPAT=false` if you only want the native `pi_*` metrics.
+Those aliases are what the current `Claude Code — Team Adoption` dashboard queries. The extension primes them with a zero sample on session start so even short `pi -p` sessions produce positive Prometheus `increase()` values after their final flush. Disable them with `PI_OTEL_CLAUDE_DASHBOARD_COMPAT=false` if you only want the native `pi_*` metrics.
 
 ## Local collector quick start
 
@@ -107,6 +107,6 @@ open http://localhost:16686
 - Uses package conventions from this extension workspace.
 - Supports both OTLP HTTP/protobuf and Claude-style OTLP gRPC endpoints.
 - Adds an optional cnb bearer-token fallback for athens `*.cnb.rocks` collectors.
-- Emits Claude Code dashboard-compatible metric aliases so pi usage appears on the existing team dashboard.
+- Emits Claude Code dashboard-compatible metric aliases so pi usage appears on the existing team dashboard using the same model-label and `query_source` conventions as Claude Code.
 - Keeps helper logic exported and covered by Vitest.
 - Does not include a bundled Grafana dashboard yet; this package focuses on the extension, emitted telemetry, and documentation.

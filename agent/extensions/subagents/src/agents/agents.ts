@@ -166,25 +166,6 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 	};
 }
 
-function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentOverrideConfig {
-	return {
-		...(override.model !== undefined ? { model: override.model } : {}),
-		...(override.fallbackModels !== undefined
-			? { fallbackModels: override.fallbackModels === false ? false : [...override.fallbackModels] }
-			: {}),
-		...(override.thinking !== undefined ? { thinking: override.thinking } : {}),
-		...(override.systemPromptMode !== undefined ? { systemPromptMode: override.systemPromptMode } : {}),
-		...(override.inheritProjectContext !== undefined ? { inheritProjectContext: override.inheritProjectContext } : {}),
-		...(override.inheritSkills !== undefined ? { inheritSkills: override.inheritSkills } : {}),
-		...(override.defaultContext !== undefined ? { defaultContext: override.defaultContext } : {}),
-		...(override.disabled !== undefined ? { disabled: override.disabled } : {}),
-		...(override.systemPrompt !== undefined ? { systemPrompt: override.systemPrompt } : {}),
-		...(override.skills !== undefined ? { skills: override.skills === false ? false : [...override.skills] } : {}),
-		...(override.tools !== undefined ? { tools: override.tools === false ? false : [...override.tools] } : {}),
-		...(override.completionGuard !== undefined ? { completionGuard: override.completionGuard } : {}),
-	};
-}
-
 function findNearestProjectRoot(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
@@ -461,30 +442,6 @@ export function buildBuiltinOverrideConfig(
 	}
 
 	return Object.keys(override).length > 0 ? override : undefined;
-}
-
-export function saveBuiltinAgentOverride(
-	cwd: string,
-	name: string,
-	scope: "user" | "project",
-	override: BuiltinAgentOverrideConfig,
-): string {
-	const filePath = scope === "project" ? getProjectAgentSettingsPath(cwd) : getUserAgentSettingsPath();
-	if (!filePath) throw new Error("Project override is not available here. No project config root was found.");
-
-	const settings = readSettingsFileStrict(filePath);
-	const subagents = settings.subagents && typeof settings.subagents === "object" && !Array.isArray(settings.subagents)
-		? { ...(settings.subagents as Record<string, unknown>) }
-		: {};
-	const agentOverrides = subagents.agentOverrides && typeof subagents.agentOverrides === "object" && !Array.isArray(subagents.agentOverrides)
-		? { ...(subagents.agentOverrides as Record<string, unknown>) }
-		: {};
-
-	agentOverrides[name] = cloneOverrideValue(override);
-	subagents.agentOverrides = agentOverrides;
-	settings.subagents = subagents;
-	writeSettingsFile(filePath, settings);
-	return filePath;
 }
 
 export function removeBuiltinAgentOverride(cwd: string, name: string, scope: "user" | "project"): string {

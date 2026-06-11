@@ -17,10 +17,6 @@ export enum WorkflowErrorCode {
   SCHEMA_NONCOMPLIANCE = "SCHEMA_NONCOMPLIANCE",
   /** Agent execution failed. */
   AGENT_EXECUTION_ERROR = "AGENT_EXECUTION_ERROR",
-  /** Run state persistence failed. */
-  PERSISTENCE_ERROR = "PERSISTENCE_ERROR",
-  /** Unknown error. */
-  UNKNOWN = "UNKNOWN",
 }
 
 export class WorkflowError extends Error {

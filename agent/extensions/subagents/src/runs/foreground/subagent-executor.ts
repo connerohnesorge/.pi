@@ -5,7 +5,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig, type AgentScope } from "../../agents/agents.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
-import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
+import { ChainClarifyComponent, bindChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { executeChain } from "./chain-execution.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
@@ -1610,7 +1610,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
 			(tui, theme, _kb, done) =>
-				new ChainClarifyComponent(
+				bindChainClarifyComponent(new ChainClarifyComponent(
 					tui, theme,
 					agentConfigs,
 					taskTexts,
@@ -1622,7 +1622,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 					availableSkills,
 					done,
 					"parallel",
-				),
+				)),
 			{ overlay: true, overlayOptions: { anchor: "center", width: 84, maxHeight: "80%" } },
 		);
 
@@ -1899,7 +1899,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
 			(tui, theme, _kb, done) =>
-				new ChainClarifyComponent(
+				bindChainClarifyComponent(new ChainClarifyComponent(
 					tui, theme,
 					[agentConfig],
 					[task],
@@ -1911,7 +1911,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 					availableSkills,
 					done,
 					"single",
-				),
+				)),
 			{ overlay: true, overlayOptions: { anchor: "center", width: 84, maxHeight: "80%" } },
 		);
 

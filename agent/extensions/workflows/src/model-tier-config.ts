@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { listAvailableModelSpecs } from "./agent.js";
+import { listAvailableModelSpecs } from "./available-models.js";
 import { MODEL_TIERS_FILE } from "./config.js";
 
 // ---------------------------------------------------------------------------

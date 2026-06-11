@@ -1,3 +1,5 @@
+// fallow-ignore-file unused-file
+// Exercised by ask-user/package.json's `bun test` script; Fallow does not infer Bun test entry points.
 import { describe, expect, test } from "bun:test";
 import { buildSelectionRowModel, renderSingleSelectRows } from "./single-select-layout";
 

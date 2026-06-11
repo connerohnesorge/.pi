@@ -1,18 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  createEffortState,
-  createWorkflowStorage,
-  createWorkflowTool,
-  installResultDelivery,
-  installTaskPanel,
-  installWorkflowEditor,
-  registerAllSavedWorkflows,
-  registerBuiltinWorkflows,
-  registerEffortCommand,
-  registerWorkflowCommands,
-  registerWorkflowModelsCommand,
-  WorkflowManager,
-} from "../src/index.js";
+import { registerBuiltinWorkflows } from "./builtin-commands.js";
+import { createEffortState, registerEffortCommand } from "./effort-command.js";
+import { registerAllSavedWorkflows } from "./saved-commands.js";
+import { installResultDelivery, installTaskPanel } from "./task-panel.js";
+import { registerWorkflowCommands } from "./workflow-commands.js";
+import { installWorkflowEditor } from "./workflow-editor.js";
+import { WorkflowManager } from "./workflow-manager.js";
+import { createWorkflowStorage } from "./workflow-saved.js";
+import { createWorkflowTool } from "./workflow-tool.js";
+import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
 
 export default function extension(pi: ExtensionAPI) {
   // Single manager/storage shared by the workflow tool and the /workflows command,

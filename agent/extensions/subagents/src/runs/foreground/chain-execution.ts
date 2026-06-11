@@ -7,7 +7,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
-import { ChainClarifyComponent, type ChainClarifyResult, type BehaviorOverride } from "./chain-clarify.ts";
+import { ChainClarifyComponent, bindChainClarifyComponent, type ChainClarifyResult, type BehaviorOverride } from "./chain-clarify.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import {
 	resolveChainTemplates,
@@ -404,7 +404,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
 			(tui, theme, _kb, done) =>
-				new ChainClarifyComponent(
+				bindChainClarifyComponent(new ChainClarifyComponent(
 					tui,
 					theme,
 					agentConfigs,
@@ -416,7 +416,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					ctx.model?.provider,
 					availableSkills,
 					done,
-				),
+				)),
 			{
 				overlay: true,
 				overlayOptions: { anchor: "center", width: 84, maxHeight: "80%" },

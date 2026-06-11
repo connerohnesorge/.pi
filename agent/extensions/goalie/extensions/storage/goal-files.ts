@@ -15,14 +15,14 @@ import {
 	type GoalRecord,
 } from "../goal-record.ts";
 
-export const GOALS_DIR = ".pi/goals";
-export const ARCHIVED_GOALS_DIR = ".pi/goals/archived";
+const GOALS_DIR = ".pi/goals";
+const ARCHIVED_GOALS_DIR = ".pi/goals/archived";
 
 export interface GoalFileContext {
 	cwd: string;
 }
 
-export function timestampForFile(iso = nowIso()): string {
+function timestampForFile(iso = nowIso()): string {
 	const date = new Date(iso);
 	const safe = Number.isFinite(date.getTime()) ? date : new Date();
 	const pad = (value: number, width = 2) => String(value).padStart(width, "0");
@@ -37,7 +37,7 @@ export function timestampForFile(iso = nowIso()): string {
 	].join("");
 }
 
-export function isSafeRelativeUnder(ctx: GoalFileContext, rootRel: string, relPath: string | undefined): relPath is string {
+function isSafeRelativeUnder(ctx: GoalFileContext, rootRel: string, relPath: string | undefined): relPath is string {
 	if (!relPath || path.isAbsolute(relPath) || relPath.includes("\0")) return false;
 	const normalized = normalizeRelPath(relPath);
 	const parent = normalizeRelPath(path.posix.dirname(normalized));
@@ -48,14 +48,14 @@ export function isSafeRelativeUnder(ctx: GoalFileContext, rootRel: string, relPa
 	return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-export function isSafeActivePath(ctx: GoalFileContext, relPath: string | undefined): relPath is string {
+function isSafeActivePath(ctx: GoalFileContext, relPath: string | undefined): relPath is string {
 	return Boolean(
 		isSafeRelativeUnder(ctx, GOALS_DIR, relPath)
 			&& /^active_goal_.*\.md$/.test(path.posix.basename(normalizeRelPath(relPath))),
 	);
 }
 
-export function isSafeArchivedPath(ctx: GoalFileContext, relPath: string | undefined): relPath is string {
+function isSafeArchivedPath(ctx: GoalFileContext, relPath: string | undefined): relPath is string {
 	return Boolean(
 		isSafeRelativeUnder(ctx, ARCHIVED_GOALS_DIR, relPath)
 			&& /^goal_.*\.md$/.test(path.posix.basename(normalizeRelPath(relPath))),
@@ -69,13 +69,13 @@ export function sanitizeGoalPaths(ctx: GoalFileContext, goal: GoalRecord): GoalR
 	return next;
 }
 
-export function ensureDirectory(ctx: GoalFileContext, relPath: string): void {
+function ensureDirectory(ctx: GoalFileContext, relPath: string): void {
 	const absolutePath = path.resolve(ctx.cwd, relPath);
 	fs.mkdirSync(absolutePath, { recursive: true });
 	if (fs.lstatSync(absolutePath).isSymbolicLink()) throw new Error(`Goal directory is a symlink: ${relPath}`);
 }
 
-export function resolveGoalPath(ctx: GoalFileContext, rootRel: string, relPath: string): string {
+function resolveGoalPath(ctx: GoalFileContext, rootRel: string, relPath: string): string {
 	const root = path.resolve(ctx.cwd, rootRel);
 	const absolutePath = path.resolve(ctx.cwd, normalizeRelPath(relPath));
 	const relative = path.relative(root, absolutePath);
@@ -83,7 +83,7 @@ export function resolveGoalPath(ctx: GoalFileContext, rootRel: string, relPath: 
 	return absolutePath;
 }
 
-export function atomicWriteGoalFile(ctx: GoalFileContext, rootRel: string, relPath: string, content: string): void {
+function atomicWriteGoalFile(ctx: GoalFileContext, rootRel: string, relPath: string, content: string): void {
 	ensureDirectory(ctx, rootRel);
 	const filePath = resolveGoalPath(ctx, rootRel, relPath);
 	if (fs.existsSync(filePath) && fs.lstatSync(filePath).isSymbolicLink()) {
@@ -94,16 +94,16 @@ export function atomicWriteGoalFile(ctx: GoalFileContext, rootRel: string, relPa
 	fs.renameSync(tempPath, filePath);
 }
 
-export function safeUnlinkGoalFile(ctx: GoalFileContext, rootRel: string, relPath: string): void {
+function safeUnlinkGoalFile(ctx: GoalFileContext, rootRel: string, relPath: string): void {
 	const filePath = resolveGoalPath(ctx, rootRel, relPath);
 	if (fs.existsSync(filePath) && !fs.lstatSync(filePath).isSymbolicLink()) fs.unlinkSync(filePath);
 }
 
-export function makeActiveGoalPath(goal: GoalRecord): string {
+function makeActiveGoalPath(goal: GoalRecord): string {
 	return `${GOALS_DIR}/active_goal_${timestampForFile(goal.createdAt)}_${safeIdPart(goal.id)}.md`;
 }
 
-export function makeArchivedGoalPath(goal: GoalRecord): string {
+function makeArchivedGoalPath(goal: GoalRecord): string {
 	return `${ARCHIVED_GOALS_DIR}/goal_${timestampForFile(goal.updatedAt)}_${safeIdPart(goal.id)}.md`;
 }
 
@@ -137,7 +137,7 @@ ${goal.objective.trim()}
 `;
 }
 
-export function findJsonObjectEnd(content: string): number {
+function findJsonObjectEnd(content: string): number {
 	let depth = 0;
 	let inString = false;
 	let escaped = false;
@@ -170,7 +170,7 @@ export function findJsonObjectEnd(content: string): number {
 	return -1;
 }
 
-export function extractObjectiveFromBody(body: string): string | undefined {
+function extractObjectiveFromBody(body: string): string | undefined {
 	const lines = body.replace(/^\s+/, "").split(/\r?\n/);
 	const start = lines.findIndex((line) => line.trim() === "# Goal Prompt");
 	if (start < 0) return body.trim() || undefined;

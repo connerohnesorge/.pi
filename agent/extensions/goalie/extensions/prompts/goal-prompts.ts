@@ -12,7 +12,7 @@ ${promptSafeObjective(goal.objective)}
 </untrusted_objective>`;
 }
 
-export function sisyphusDisciplineBlock(goal: GoalRecord): string {
+function sisyphusDisciplineBlock(goal: GoalRecord): string {
 	if (!goal.sisyphus) return "";
 	return [
 		"",

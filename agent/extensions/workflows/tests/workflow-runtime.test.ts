@@ -609,18 +609,18 @@ return { cwd: process.cwd() }`;
   assert.ok(result.result.cwd.length > 0, "result.cwd should not be empty");
 });
 
-test("runWorkflow budget object exposes spent() and remaining()", async () => {
+test("runWorkflow budget object exposes spent() and default remaining()", async () => {
   const script = `export const meta = { name: 'budget_api', description: 'budget API' }
-try { const s = budget.spent(); const r = budget.remaining(); return { spent: s, remaining: typeof r } }
+try { const s = budget.spent(); const r = budget.remaining(); return { spent: s, remaining: r } }
 catch(e) { return { error: String(e) } }`;
 
-  const result = await runWorkflow<{ spent: number; remaining: string }>(script, {
+  const result = await runWorkflow<{ spent: number; remaining: number }>(script, {
     agent: fakeAgent({ total: 100 }),
     persistLogs: false,
   });
 
   assert.equal(result.result.spent, 0); // before first agent
-  assert.equal(result.result.remaining, "number");
+  assert.equal(result.result.remaining, 272_000);
 });
 
 test("runWorkflow returns empty logs array when nothing logged", async () => {

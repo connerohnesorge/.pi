@@ -27,8 +27,7 @@ export interface MockPi {
 	callCount(): number;
 }
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT_PATH = path.join(__dirname, "mock-pi-script.mjs");
+const SCRIPT_PATH = fileURLToPath(new URL("./mock-pi-script.mjs", import.meta.url));
 const CALL_PREFIX = "call-";
 const DEFAULT_RESPONSE_FILE = "default-response.json";
 const QUEUED_PREFIX = "pending-";

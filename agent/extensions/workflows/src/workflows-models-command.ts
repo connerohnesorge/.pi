@@ -21,7 +21,7 @@ import {
   Text,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { listAvailableModelSpecs } from "./agent.js";
+import { listAvailableModelSpecs } from "./available-models.js";
 import {
   buildDefaultTierConfig,
   loadModelTierConfig,

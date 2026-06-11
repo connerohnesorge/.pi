@@ -1,8 +1,24 @@
-import { beforeAll, describe, expect, mock, onTestFinished, test } from "bun:test";
+// fallow-ignore-file unused-file
+// Exercised by ask-user/package.json's `bun test` script; Fallow does not infer Bun test entry points.
+import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 
 let editorInputs: string[] = [];
 let editorText = "";
 let emittedEvents: Array<{ name: string; payload: any }> = [];
+const envRestorers: Array<() => void> = [];
+
+function restoreEnv(): void {
+   while (envRestorers.length > 0) {
+      envRestorers.pop()?.();
+   }
+}
+
+afterEach(() => {
+   restoreEnv();
+   editorInputs = [];
+   editorText = "";
+   emittedEvents = [];
+});
 
 class MockText {
    constructor(private text: string) { }
@@ -163,7 +179,7 @@ type RegisteredTool = {
 function stubEnv(key: string, value: string): void {
    const original = process.env[key];
    process.env[key] = value;
-   onTestFinished(() => {
+   envRestorers.push(() => {
       if (original === undefined) {
          delete process.env[key];
       } else {

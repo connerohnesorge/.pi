@@ -18,6 +18,8 @@ import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { loadModelTierConfig, type ModelTierConfig, resolveTierModel } from "./model-tier-config.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
+export { listAvailableModelSpecs } from "./available-models.js";
+
 /**
  * Find a JSON object/array in free-form text: a fenced ```json block if present,
  * else the first balanced {...} or [...]. Best-effort (the schema check is the
@@ -166,22 +168,6 @@ export interface WorkflowAgentOptions {
   mainModel?: string;
 }
 
-/**
- * List the user's currently available models (those with auth configured) as
- * `provider/modelId` specs. Used to tell the workflow author which models it may
- * route agents to. Best-effort: returns [] if the registry can't be built.
- */
-export function listAvailableModelSpecs(): string[] {
-  try {
-    const dir = getAgentDir();
-    const auth = AuthStorage.create(join(dir, "auth.json"));
-    const registry = ModelRegistry.create(auth, join(dir, "models.json"));
-    return registry.getAvailable().map((m) => `${m.provider}/${m.id}`);
-  } catch {
-    return [];
-  }
-}
-
 /** Real token/cost usage for a single subagent run, read from the SDK session. */
 export interface AgentUsage {
   input: number;
@@ -288,6 +274,8 @@ export class WorkflowAgent {
     return registry.getAvailable().find((m) => m.id === spec) ?? registry.getAll().find((m) => m.id === spec);
   }
 
+  // Public API; invoked through Pick<WorkflowAgent, "run">.
+  // fallow-ignore-next-line unused-class-member
   async run<TSchemaDef extends TSchema | undefined = undefined>(
     prompt: string,
     options: AgentRunOptions<TSchemaDef> = {},

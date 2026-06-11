@@ -16,7 +16,6 @@
   },
   "files": [
     "dist/",
-    "extensions/",
     "src/",
     "README.md"
   ],
@@ -51,7 +50,7 @@
   ],
   "pi": {
     "extensions": [
-      "extensions/workflow.ts"
+      "src/extension.ts"
     ]
   },
   "repository": {

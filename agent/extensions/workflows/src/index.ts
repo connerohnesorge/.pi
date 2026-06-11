@@ -1,9 +1,10 @@
 export type { AdversarialReviewConfig } from "./adversarial-review.js";
 export { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
 export type { AgentRunOptions, AgentRunResult, WorkflowAgentOptions } from "./agent.js";
-export { listAvailableModelSpecs, WorkflowAgent } from "./agent.js";
+export { WorkflowAgent } from "./agent.js";
 export type { AgentDefinition, AgentRegistry } from "./agent-registry.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
+export { listAvailableModelSpecs } from "./available-models.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";
 export * from "./config.js";
 export type { DeepResearchConfig } from "./deep-research.js";
@@ -40,6 +41,7 @@ export {
   WorkflowErrorCode,
   wrapError,
 } from "./errors.js";
+export { default as workflowExtension } from "./extension.js";
 export type { WorkflowLogger, WorkflowLoggerOptions } from "./logger.js";
 export { createWorkflowLogger } from "./logger.js";
 export type { ModelRoute, ModelRoutingConfig } from "./model-routing.js";

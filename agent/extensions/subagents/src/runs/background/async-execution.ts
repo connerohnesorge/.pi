@@ -59,7 +59,10 @@ function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefi
 
 function resolveJitiCliPath(): string | undefined {
 	const candidates: Array<() => string | undefined> = [
-		() => require.resolve("jiti/package.json"),
+		() => {
+			const resolved = import.meta.resolve("jiti/package.json");
+			return resolved.startsWith("file:") ? fileURLToPath(resolved) : resolved;
+		},
 		() => piPackageRoot
 			? createRequire(path.join(piPackageRoot, "package.json")).resolve("jiti/package.json")
 			: undefined,
@@ -185,7 +188,7 @@ function spawnRunner(cfg: object, suffix: string, cwd: string): { pid?: number; 
 	fs.mkdirSync(TEMP_ROOT_DIR, { recursive: true });
 	const cfgPath = getAsyncConfigPath(suffix);
 	fs.writeFileSync(cfgPath, JSON.stringify(cfg));
-	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
+	const runner = fileURLToPath(new URL("./subagent-runner.ts", import.meta.url));
 
 	const proc = spawn(process.execPath, [jitiCliPath, runner, cfgPath], {
 		cwd,

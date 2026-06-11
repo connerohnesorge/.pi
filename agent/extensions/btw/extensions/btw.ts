@@ -10,7 +10,7 @@ import {
   type ExtensionContext,
   type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
-import { type AssistantMessage, type Message, type ThinkingLevel as AiThinkingLevel } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Message } from "@earendil-works/pi-ai";
 import {
   appendPersistedTranscriptTurn,
   applyTranscriptEvent,
@@ -24,6 +24,7 @@ import {
   type BtwTranscript,
   type BtwTranscriptState,
 } from "./btw-transcript.ts";
+import { extractAssistantText, extractThinking, type BtwDetails, type SessionThinkingLevel } from "./btw-shared.ts";
 import {
   Box,
   Container,
@@ -65,7 +66,6 @@ const BTW_SUMMARIZE_SYSTEM_PROMPT =
 const BTW_CONTINUE_THREAD_USER_TEXT = "[The following is a separate side conversation. Continue this thread.]";
 const BTW_CONTINUE_THREAD_ASSISTANT_TEXT = "Understood, continuing our side conversation.";
 
-type SessionThinkingLevel = "off" | AiThinkingLevel;
 type BtwThreadMode = "contextual" | "tangent";
 type SessionModel = NonNullable<ExtensionCommandContext["model"]>;
 /**
@@ -73,18 +73,6 @@ type SessionModel = NonNullable<ExtensionCommandContext["model"]>;
  * session entries. Resolved to a full SessionModel via ctx.modelRegistry.find(...).
  */
 type BtwModelRef = Pick<SessionModel, "provider" | "id" | "api">;
-
-export type BtwDetails = {
-  question: string;
-  thinking: string;
-  answer: string;
-  provider: string;
-  model: string;
-  api: string;
-  thinkingLevel: SessionThinkingLevel;
-  timestamp: number;
-  usage?: AssistantMessage["usage"];
-};
 
 type ParsedBtwArgs = {
   question: string;
@@ -173,26 +161,8 @@ function createBtwResourceLoader(
   };
 }
 
-function extractText(parts: AssistantMessage["content"], type: "text" | "thinking"): string {
-  const chunks: string[] = [];
-
-  for (const part of parts) {
-    if (type === "text" && part.type === "text") {
-      chunks.push(part.text);
-    } else if (type === "thinking" && part.type === "thinking") {
-      chunks.push(part.thinking);
-    }
-  }
-
-  return chunks.join("\n").trim();
-}
-
 function extractAnswer(message: AssistantMessage): string {
-  return extractText(message.content, "text") || "(No text response)";
-}
-
-export function extractThinking(message: AssistantMessage): string {
-  return extractText(message.content, "thinking");
+  return extractAssistantText(message) || "(No text response)";
 }
 
 function parseBtwArgs(args: string): ParsedBtwArgs {
