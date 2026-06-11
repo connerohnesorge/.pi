@@ -1,12 +1,16 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { ASYNC_DIR, INTERCOM_DETACH_REQUEST_EVENT, RESULTS_DIR } from "../../src/shared/types.ts";
+import { createSubagentState } from "../../src/shared/subagent-state.ts";
+import { readMockPiArgs, waitForFile } from "../support/async-helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
+	createRecordingEventBus,
 	createTempDir,
 	events,
 	makeAgent,
@@ -41,36 +45,6 @@ interface ExecutorModule {
 const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
 const available = !!executorMod?.createSubagentExecutor;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
-
-function createRecordingEventBus(options: { acknowledgeResults?: boolean } = {}) {
-	const listeners = new Map<string, Set<(payload: unknown) => void>>();
-	const emitted: Array<{ channel: string; payload: unknown }> = [];
-	const bus = {
-		emitted,
-		on(channel: string, handler: (payload: unknown) => void) {
-			const channelListeners = listeners.get(channel) ?? new Set();
-			channelListeners.add(handler);
-			listeners.set(channel, channelListeners);
-			return () => {
-				channelListeners.delete(handler);
-				if (channelListeners.size === 0) listeners.delete(channel);
-			};
-		},
-		emit(channel: string, payload: unknown) {
-			emitted.push({ channel, payload });
-			for (const handler of listeners.get(channel) ?? []) {
-				handler(payload);
-			}
-			if (options.acknowledgeResults && channel === "subagent:result-intercom") {
-				const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
-				if (typeof requestId === "string") {
-					setImmediate(() => bus.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
-				}
-			}
-		},
-	};
-	return bus;
-}
 
 describe("intercom result delivery cutover", { skip: !available ? "executor not importable" : undefined }, () => {
 	let tempDir: string;
@@ -112,38 +86,19 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 
 	async function readMockCallArgs(index: number): Promise<string[]> {
 		const deadline = Date.now() + 10_000;
-		let callFile: string | undefined;
-		while (!callFile) {
-			callFile = fs.readdirSync(mockPi.dir)
-				.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
-				.sort()[index];
-			if (callFile || Date.now() > deadline) break;
-			await new Promise((resolve) => setTimeout(resolve, 50));
+		while (Date.now() <= deadline) {
+			try {
+				return readMockPiArgs(mockPi, index);
+			} catch {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
 		}
-		assert.ok(callFile, `expected mock pi call at index ${index}`);
-		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+		assert.fail(`expected mock pi call at index ${index}`);
 	}
 
 	function makeExecutor(options: { bridgeMode?: "always" | "off"; agents?: ReturnType<typeof makeAgent>[]; acknowledgeResults?: boolean } = {}) {
-		const events = createRecordingEventBus({ acknowledgeResults: options.acknowledgeResults ?? true });
-		const state = {
-			baseCwd: tempDir,
-			currentSessionId: null,
-			asyncJobs: new Map(),
-			foregroundRuns: new Map(),
-			foregroundControls: new Map(),
-			lastForegroundControlId: null,
-			cleanupTimers: new Map(),
-			lastUiContext: null,
-			poller: null,
-			completionSeen: new Map(),
-			watcher: null,
-			watcherRestartTimer: null,
-			resultFileCoalescer: {
-				schedule: () => false,
-				clear: () => {},
-			},
-		};
+		const events = createRecordingEventBus({ acknowledgeResultIntercom: options.acknowledgeResults ?? true });
+		const state = createSubagentState({ baseCwd: tempDir });
 		const executor = createSubagentExecutor!({
 			pi: {
 				events,
@@ -426,11 +381,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 			const revivedId = result.details?.asyncId;
 			assert.ok(revivedId, "expected revived async id");
 			const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
-			const deadline = Date.now() + 10_000;
-			while (!fs.existsSync(resultPath)) {
-				if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
-				await new Promise((resolve) => setTimeout(resolve, 50));
-			}
+			await waitForFile(resultPath, { timeoutMs: 10_000, intervalMs: 50, describe: "revived result file" });
 		} finally {
 			fs.rmSync(asyncDir, { recursive: true, force: true });
 		}
@@ -470,11 +421,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		const revivedId = revived.details?.asyncId;
 		assert.ok(revivedId, "expected revived async id");
 		const resultPath = path.join(RESULTS_DIR, `${revivedId}.json`);
-		const deadline = Date.now() + 10_000;
-		while (!fs.existsSync(resultPath)) {
-			if (Date.now() > deadline) assert.fail(`Timed out waiting for revived result file: ${resultPath}`);
-			await new Promise((resolve) => setTimeout(resolve, 50));
-		}
+		await waitForFile(resultPath, { timeoutMs: 10_000, intervalMs: 50, describe: "revived result file" });
 	});
 
 	it("resume action rejects detached foreground children that may still be live", async () => {

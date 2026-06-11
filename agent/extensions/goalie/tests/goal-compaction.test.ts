@@ -1,9 +1,11 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildCompactionSummary, buildGoalCompactSummary } from "../extensions/goal-compaction.ts";
 import { type GoalLedgerEvent } from "../extensions/goal-ledger.ts";
 import { type GoalRecord } from "../extensions/goal-record.ts";
+import { assertMatchesAll } from "./helpers/assertions.ts";
 
 function goal(overrides: Partial<GoalRecord> = {}): GoalRecord {
   return {
@@ -28,12 +30,7 @@ test("buildGoalCompactSummary includes status, objective, usage, and recent even
   ];
 
   const summary = buildGoalCompactSummary(g, events);
-  assert.match(summary, /g1/);
-  assert.match(summary, /running/);
-  assert.match(summary, /Build tests/);
-  assert.match(summary, /5K \(5,000\) tokens/);
-  assert.match(summary, /paused: missing tests/);
-  assert.match(summary, /resumed: user/);
+  assertMatchesAll(summary, [/g1/, /running/, /Build tests/, /5K \(5,000\) tokens/, /paused: missing tests/, /resumed: user/]);
 });
 
 test("buildGoalCompactSummary includes auditor rejection", () => {
@@ -73,13 +70,7 @@ test("buildCompactionSummary produces full session snapshot", () => {
   ];
 
   const summary = buildCompactionSummary({ goalsById, focusedGoalId: "g1", ledgerEvents: events });
-  assert.match(summary, /FOCUSED GOAL/);
-  assert.match(summary, /Goal A/);
-  assert.match(summary, /OTHER OPEN GOALS/);
-  assert.match(summary, /Goal B/);
-  assert.match(summary, /TERMINAL GOALS/);
-  assert.match(summary, /g3/);
-  assert.match(summary, /Continue from the focused goal/);
+  assertMatchesAll(summary, [/FOCUSED GOAL/, /Goal A/, /OTHER OPEN GOALS/, /Goal B/, /TERMINAL GOALS/, /g3/, /Continue from the focused goal/]);
 });
 
 test("buildCompactionSummary handles no goals", () => {
@@ -108,6 +99,5 @@ test("buildCompactionSummary handles focused goal with pause reason", () => {
   ];
 
   const summary = buildGoalCompactSummary(g, events);
-  assert.match(summary, /Pause reason: missing dependency/);
-  assert.match(summary, /Suggested action: install libfoo/);
+  assertMatchesAll(summary, [/Pause reason: missing dependency/, /Suggested action: install libfoo/]);
 });

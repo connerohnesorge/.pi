@@ -219,89 +219,238 @@ function createTheme() {
    };
 }
 
+const TOOL_CALL_ID = "tool-call-id";
+const DEFAULT_ASK_QUESTION = "Which option should we use?";
+const BASIC_OPTIONS = ["A", "B"];
+const ALPHA_BETA_OPTIONS = ["Alpha", "Beta"];
+const ALPHA_OPTIONS = ["Alpha", "Beta", "Gamma"];
+const DESCRIBED_OPTIONS = [
+   { title: "Alpha", description: "The alpha option keeps the rollout conservative." },
+   { title: "Beta", description: "The beta option favors faster iteration." },
+];
+
+async function executeAsk(
+   tool: RegisteredTool,
+   params: any,
+   ui: any,
+   onPartial?: (update: any) => void,
+): Promise<any> {
+   return await tool.execute(
+      TOOL_CALL_ID,
+      params,
+      undefined,
+      onPartial,
+      { hasUI: true, ui },
+   );
+}
+
+async function captureCustomOptions(params: any): Promise<{ result: any; capturedOptions: any }> {
+   const tool = await setupTool();
+   let capturedOptions: any;
+   const result = await executeAsk(tool, params, {
+      custom: async (_factory: any, options: any) => {
+         capturedOptions = options;
+         return null;
+      },
+   });
+   return { result, capturedOptions };
+}
+
+async function expectNoTerminalInputRegistration(params: any): Promise<void> {
+   const tool = await setupTool();
+   let registered = false;
+
+   await executeAsk(tool, params, {
+      custom: async () => null,
+      onTerminalInput: () => {
+         registered = true;
+         return () => { };
+      },
+   });
+
+   expect(registered).toBe(false);
+}
+
+function createOverlayHandle() {
+   let hidden = false;
+   const calls: boolean[] = [];
+   return {
+      handle: {
+         hide() { },
+         setHidden(value: boolean) {
+            hidden = value;
+            calls.push(value);
+         },
+         isHidden() {
+            return hidden;
+         },
+         focus() { },
+         unfocus() { },
+         isFocused() {
+            return false;
+         },
+      },
+      calls,
+   };
+}
+
+type OverlayScenarioState = {
+   inputHandler: (data: string) => any;
+   calls: boolean[];
+   notifications: Array<{ message: string; type?: string }>;
+};
+
+async function runOverlayInputScenario({
+   params = { question: "Q", options: ["A"] },
+   exercise,
+   notify,
+}: {
+   params?: any;
+   exercise: (state: OverlayScenarioState) => void | Promise<void>;
+   notify?: (message: string, type?: string) => void;
+}): Promise<OverlayScenarioState> {
+   const tool = await setupTool();
+   const { handle, calls } = createOverlayHandle();
+   let inputHandler: ((data: string) => any) | undefined;
+   const notifications: Array<{ message: string; type?: string }> = [];
+   const state = {
+      inputHandler: (data: string) => inputHandler?.(data),
+      calls,
+      notifications,
+   };
+
+   await executeAsk(tool, params, {
+      custom: async (_factory: any, options: any) => {
+         options.onHandle?.(handle);
+         await exercise(state);
+         return null;
+      },
+      onTerminalInput: (handler: (data: string) => any) => {
+         inputHandler = handler;
+         return () => { };
+      },
+      notify: (message: string, type?: string) => {
+         notifications.push({ message, type });
+         notify?.(message, type);
+      },
+   });
+
+   return state;
+}
+
+function expectOverlayToggleBinding(inputHandler: (data: string) => any, ignoredKey: string, toggleKey: string): void {
+   expect(inputHandler(ignoredKey)).toBeUndefined();
+   expect(inputHandler(toggleKey)).toEqual({ consume: true });
+}
+
+type ComponentScenarioState = {
+   component: any;
+   getResolved: () => any;
+};
+
+function applyInputs(component: any, inputs: string[]): void {
+   for (const input of inputs) {
+      component.handleInput(input);
+   }
+}
+
+function expectSuccessfulSelection(result: any, selections: string[], comment?: string): void {
+   const response: any = { kind: "selection", selections };
+   if (comment !== undefined) response.comment = comment;
+   expect(result.isError).not.toBe(true);
+   expect(result.details.response).toEqual(response);
+   expect(result.details.cancelled).toBe(false);
+}
+
+async function runComponentScenario(
+   params: any,
+   exercise: (state: ComponentScenarioState) => any | Promise<any>,
+   keybindings = createKeybindings(),
+): Promise<{ result: any; resolved: any }> {
+   const tool = await setupTool();
+   let resolved: any;
+
+   const result = await executeAsk(tool, params, {
+      custom: async (factory: any) => {
+         const component = factory(
+            { requestRender() { }, terminal: { rows: 24 } },
+            createTheme(),
+            keybindings,
+            (value: any) => {
+               resolved = value;
+            },
+         );
+         const exerciseResult = await exercise({ component, getResolved: () => resolved });
+         return exerciseResult === undefined ? resolved ?? null : exerciseResult;
+      },
+   });
+
+   return { result, resolved };
+}
+
+function renderSingleSelectList(component: any, width: number): string {
+   return ((component as any).singleSelectList as any).render(width).join("\n");
+}
+
+function renderHelpText(component: any): string {
+   return (component as any).helpText.render().join("\n");
+}
+
+function captureCommentToggleRender(component: any, inputs: string[]): {
+   before: string;
+   after: string;
+   helpText: string;
+} {
+   const before = renderSingleSelectList(component, 80);
+   const helpText = renderHelpText(component);
+   applyInputs(component, inputs);
+   const after = renderSingleSelectList(component, 80);
+   return { before, after, helpText };
+}
+
+async function renderSingleSelect(
+   params: any,
+   width: number,
+   beforeRender?: (component: any) => void,
+): Promise<{ result: any; rendered: string }> {
+   let rendered = "";
+   const { result } = await runComponentScenario(params, ({ component }) => {
+      beforeRender?.(component);
+      rendered = renderSingleSelectList(component, width);
+   });
+   return { result, rendered };
+}
+
 describe("ask_user", () => {
    test("uses overlay mode by default", async () => {
-      const tool = await setupTool();
-      let capturedOptions: any;
-
-      await tool.execute(
-         "tool-call-id",
-         {
-            question: "Which option should we use?",
-            options: ["A", "B"],
-         },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (_factory: any, options: any) => {
-                  capturedOptions = options;
-                  return null;
-               },
-            },
-         },
-      );
+      const { capturedOptions } = await captureCustomOptions({
+         question: DEFAULT_ASK_QUESTION,
+         options: BASIC_OPTIONS,
+      });
 
       expect(capturedOptions.overlay).toBe(true);
       expect(capturedOptions.overlayOptions.visible).toBeUndefined();
    });
 
    test("uses non-overlay custom UI when displayMode is inline", async () => {
-      const tool = await setupTool();
-      let capturedOptions: any;
-
-      const result = await tool.execute(
-         "tool-call-id",
-         {
-            question: "Which option should we use?",
-            options: ["A", "B"],
-            displayMode: "inline",
-         },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (_factory: any, options: any) => {
-                  capturedOptions = options;
-                  return null;
-               },
-            },
-         },
-      );
+      const { result, capturedOptions } = await captureCustomOptions({
+         question: DEFAULT_ASK_QUESTION,
+         options: BASIC_OPTIONS,
+         displayMode: "inline",
+      });
 
       expect(capturedOptions).toBeUndefined();
       expect(result.details.cancelled).toBe(true);
    });
 
    test("inline mode resolves with the user's selection", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["A", "B"],
+            question: DEFAULT_ASK_QUESTION,
+            options: BASIC_OPTIONS,
             displayMode: "inline",
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) =>
-                  await new Promise((resolve) => {
-                     factory(
-                        { requestRender() { }, terminal: { rows: 24 } },
-                        createTheme(),
-                        createKeybindings(),
-                        resolve,
-                     );
-                     resolve({ kind: "selection", selections: ["A"] });
-                  }),
-            },
-         },
+         () => ({ kind: "selection", selections: ["A"] }),
       );
 
       expect(result.details.cancelled).toBe(false);
@@ -310,30 +459,25 @@ describe("ask_user", () => {
 
    test("inline mode still respects timeout cancellation", async () => {
       const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const result = await executeAsk(
+         tool,
          {
-            question: "Which option should we use?",
-            options: ["A", "B"],
+            question: DEFAULT_ASK_QUESTION,
+            options: BASIC_OPTIONS,
             displayMode: "inline",
             timeout: 5,
          },
-         undefined,
-         undefined,
          {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) =>
-                  await new Promise((resolve) => {
-                     factory(
-                        { requestRender() { }, terminal: { rows: 24 } },
-                        createTheme(),
-                        createKeybindings(),
-                        resolve,
-                     );
-                  }),
-            },
+            custom: async (factory: any) =>
+               await new Promise((resolve) => {
+                  factory(
+                     { requestRender() { }, terminal: { rows: 24 } },
+                     createTheme(),
+                     createKeybindings(),
+                     resolve,
+                  );
+                  setTimeout(() => resolve(null), 20);
+               }),
          },
       );
 
@@ -343,110 +487,36 @@ describe("ask_user", () => {
 
    test("uses PI_ASK_USER_DISPLAY_MODE env var when call-level displayMode is omitted", async () => {
       stubEnv("PI_ASK_USER_DISPLAY_MODE", "inline");
-      const tool = await setupTool();
-      let capturedOptions: any;
-
-      await tool.execute(
-         "tool-call-id",
-         {
-            question: "Which option should we use?",
-            options: ["A", "B"],
-         },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (_factory: any, options: any) => {
-                  capturedOptions = options;
-                  return null;
-               },
-            },
-         },
-      );
+      const { capturedOptions } = await captureCustomOptions({
+         question: DEFAULT_ASK_QUESTION,
+         options: BASIC_OPTIONS,
+      });
 
       expect(capturedOptions).toBeUndefined();
    });
 
    test("call-level displayMode overrides PI_ASK_USER_DISPLAY_MODE env var", async () => {
       stubEnv("PI_ASK_USER_DISPLAY_MODE", "inline");
-      const tool = await setupTool();
-      let capturedOptions: any;
-
-      await tool.execute(
-         "tool-call-id",
-         {
-            question: "Which option should we use?",
-            options: ["A", "B"],
-            displayMode: "overlay",
-         },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (_factory: any, options: any) => {
-                  capturedOptions = options;
-                  return null;
-               },
-            },
-         },
-      );
+      const { capturedOptions } = await captureCustomOptions({
+         question: DEFAULT_ASK_QUESTION,
+         options: BASIC_OPTIONS,
+         displayMode: "overlay",
+      });
 
       expect(capturedOptions.overlay).toBe(true);
    });
 
    test("ignores unrecognised PI_ASK_USER_DISPLAY_MODE value and falls back to overlay", async () => {
       stubEnv("PI_ASK_USER_DISPLAY_MODE", "fullscreen");
-      const tool = await setupTool();
-      let capturedOptions: any;
-
-      await tool.execute(
-         "tool-call-id",
-         {
-            question: "Which option should we use?",
-            options: ["A", "B"],
-         },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (_factory: any, options: any) => {
-                  capturedOptions = options;
-                  return null;
-               },
-            },
-         },
-      );
+      const { capturedOptions } = await captureCustomOptions({
+         question: DEFAULT_ASK_QUESTION,
+         options: BASIC_OPTIONS,
+      });
 
       expect(capturedOptions.overlay).toBe(true);
    });
 
    describe("overlay hide/show toggle (alt+o)", () => {
-      function createOverlayHandle() {
-         let hidden = false;
-         const calls: boolean[] = [];
-         return {
-            handle: {
-               hide() { },
-               setHidden(value: boolean) {
-                  hidden = value;
-                  calls.push(value);
-               },
-               isHidden() {
-                  return hidden;
-               },
-               focus() { },
-               unfocus() { },
-               isFocused() {
-                  return false;
-               },
-            },
-            calls,
-         };
-      }
-
       test("registers an onTerminalInput listener and passes onHandle in overlay mode", async () => {
          const tool = await setupTool();
          let capturedOptions: any;
@@ -482,62 +552,19 @@ describe("ask_user", () => {
       });
 
       test("does not register onTerminalInput in inline mode", async () => {
-         const tool = await setupTool();
-         let registered = false;
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"], displayMode: "inline" },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async () => null,
-                  onTerminalInput: () => {
-                     registered = true;
-                     return () => { };
-                  },
-               },
-            },
-         );
-
-         expect(registered).toBe(false);
+         await expectNoTerminalInputRegistration({ question: "Q", options: ["A"], displayMode: "inline" });
       });
 
       test("alt+o toggles overlay visibility via OverlayHandle.setHidden", async () => {
-         const tool = await setupTool();
-         const { handle, calls } = createOverlayHandle();
-         let inputHandler: ((data: string) => any) | undefined;
-         const notifications: Array<{ message: string; type?: string }> = [];
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"] },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async (_factory: any, options: any) => {
-                     options.onHandle?.(handle);
-                     // Simulate the user pressing alt+o twice while the overlay is shown.
-                     const firstResult = inputHandler?.("alt+o");
-                     const secondResult = inputHandler?.("alt+o");
-                     expect(firstResult).toEqual({ consume: true });
-                     expect(secondResult).toEqual({ consume: true });
-                     return null;
-                  },
-                  onTerminalInput: (handler: (data: string) => any) => {
-                     inputHandler = handler;
-                     return () => { };
-                  },
-                  notify: (message: string, type?: string) => {
-                     notifications.push({ message, type });
-                  },
-               },
+         const { calls, notifications } = await runOverlayInputScenario({
+            exercise: ({ inputHandler }) => {
+               // Simulate the user pressing alt+o twice while the overlay is shown.
+               const firstResult = inputHandler?.("alt+o");
+               const secondResult = inputHandler?.("alt+o");
+               expect(firstResult).toEqual({ consume: true });
+               expect(secondResult).toEqual({ consume: true });
             },
-         );
+         });
 
          expect(calls).toEqual([true, false]);
          expect(notifications).toHaveLength(1);
@@ -546,99 +573,34 @@ describe("ask_user", () => {
       });
 
       test("does not consume ctrl+o from the terminal listener", async () => {
-         const tool = await setupTool();
-         const { handle, calls } = createOverlayHandle();
-         let inputHandler: ((data: string) => any) | undefined;
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"] },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async (_factory: any, options: any) => {
-                     options.onHandle?.(handle);
-                     const result = inputHandler?.("ctrl+o");
-                     expect(result).toBeUndefined();
-                     return null;
-                  },
-                  onTerminalInput: (handler: (data: string) => any) => {
-                     inputHandler = handler;
-                     return () => { };
-                  },
-                  notify: () => { },
-               },
+         const { calls } = await runOverlayInputScenario({
+            exercise: ({ inputHandler }) => {
+               const result = inputHandler?.("ctrl+o");
+               expect(result).toBeUndefined();
             },
-         );
+         });
 
          expect(calls).toEqual([]);
       });
 
       test("does not force a hidden overlay visible during cleanup", async () => {
-         const tool = await setupTool();
-         const { handle, calls } = createOverlayHandle();
-         let inputHandler: ((data: string) => any) | undefined;
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"] },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async (_factory: any, options: any) => {
-                     options.onHandle?.(handle);
-                     // Hide and resolve while still hidden.
-                     inputHandler?.("alt+o");
-                     return null;
-                  },
-                  onTerminalInput: (handler: (data: string) => any) => {
-                     inputHandler = handler;
-                     return () => { };
-                  },
-                  notify: () => { },
-               },
+         const { calls } = await runOverlayInputScenario({
+            exercise: ({ inputHandler }) => {
+               // Hide and resolve while still hidden.
+               inputHandler?.("alt+o");
             },
-         );
+         });
 
          expect(calls).toEqual([true]);
       });
 
       test("per-call overlayToggleKey replaces the default alt+o binding", async () => {
-         const tool = await setupTool();
-         const { handle, calls } = createOverlayHandle();
-         let inputHandler: ((data: string) => any) | undefined;
-         const notifications: Array<{ message: string; type?: string }> = [];
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"], overlayToggleKey: "alt+h" },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async (_factory: any, options: any) => {
-                     options.onHandle?.(handle);
-                     const ignored = inputHandler?.("alt+o");
-                     const consumed = inputHandler?.("alt+h");
-                     expect(ignored).toBeUndefined();
-                     expect(consumed).toEqual({ consume: true });
-                     return null;
-                  },
-                  onTerminalInput: (handler: (data: string) => any) => {
-                     inputHandler = handler;
-                     return () => { };
-                  },
-                  notify: (message: string, type?: string) => {
-                     notifications.push({ message, type });
-                  },
-               },
+         const { calls, notifications } = await runOverlayInputScenario({
+            params: { question: "Q", options: ["A"], overlayToggleKey: "alt+h" },
+            exercise: ({ inputHandler }) => {
+               expectOverlayToggleBinding(inputHandler, "alt+o", "alt+h");
             },
-         );
+         });
 
          expect(calls).toEqual([true]);
          expect(notifications).toHaveLength(1);
@@ -647,124 +609,40 @@ describe("ask_user", () => {
 
       test("PI_ASK_USER_OVERLAY_TOGGLE_KEY env var overrides default", async () => {
          stubEnv("PI_ASK_USER_OVERLAY_TOGGLE_KEY", "alt+h");
-         const tool = await setupTool();
-         const { handle, calls } = createOverlayHandle();
-         let inputHandler: ((data: string) => any) | undefined;
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"] },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async (_factory: any, options: any) => {
-                     options.onHandle?.(handle);
-                     const ignored = inputHandler?.("alt+o");
-                     const consumed = inputHandler?.("alt+h");
-                     expect(ignored).toBeUndefined();
-                     expect(consumed).toEqual({ consume: true });
-                     return null;
-                  },
-                  onTerminalInput: (handler: (data: string) => any) => {
-                     inputHandler = handler;
-                     return () => { };
-                  },
-                  notify: () => { },
-               },
+         const { calls } = await runOverlayInputScenario({
+            exercise: ({ inputHandler }) => {
+               expectOverlayToggleBinding(inputHandler, "alt+o", "alt+h");
             },
-         );
+         });
 
          expect(calls).toEqual([true]);
       });
 
       test("per-call overlayToggleKey wins over env var", async () => {
          stubEnv("PI_ASK_USER_OVERLAY_TOGGLE_KEY", "alt+h");
-         const tool = await setupTool();
-         const { handle, calls } = createOverlayHandle();
-         let inputHandler: ((data: string) => any) | undefined;
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"], overlayToggleKey: "alt+x" },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async (_factory: any, options: any) => {
-                     options.onHandle?.(handle);
-                     const ignoredEnv = inputHandler?.("alt+h");
-                     const consumed = inputHandler?.("alt+x");
-                     expect(ignoredEnv).toBeUndefined();
-                     expect(consumed).toEqual({ consume: true });
-                     return null;
-                  },
-                  onTerminalInput: (handler: (data: string) => any) => {
-                     inputHandler = handler;
-                     return () => { };
-                  },
-                  notify: () => { },
-               },
+         const { calls } = await runOverlayInputScenario({
+            params: { question: "Q", options: ["A"], overlayToggleKey: "alt+x" },
+            exercise: ({ inputHandler }) => {
+               expectOverlayToggleBinding(inputHandler, "alt+h", "alt+x");
             },
-         );
+         });
 
          expect(calls).toEqual([true]);
       });
 
       test("overlayToggleKey 'off' disables the listener entirely", async () => {
-         const tool = await setupTool();
-         let registered = false;
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"], overlayToggleKey: "off" },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async () => null,
-                  onTerminalInput: () => {
-                     registered = true;
-                     return () => { };
-                  },
-               },
-            },
-         );
-
-         expect(registered).toBe(false);
+         await expectNoTerminalInputRegistration({ question: "Q", options: ["A"], overlayToggleKey: "off" });
       });
 
       test("invalid overlayToggleKey falls through to env var", async () => {
          stubEnv("PI_ASK_USER_OVERLAY_TOGGLE_KEY", "alt+h");
-         const tool = await setupTool();
-         const { handle, calls } = createOverlayHandle();
-         let inputHandler: ((data: string) => any) | undefined;
-
-         await tool.execute(
-            "tool-call-id",
-            { question: "Q", options: ["A"], overlayToggleKey: "++bad++" },
-            undefined,
-            undefined,
-            {
-               hasUI: true,
-               ui: {
-                  custom: async (_factory: any, options: any) => {
-                     options.onHandle?.(handle);
-                     const consumed = inputHandler?.("alt+h");
-                     expect(consumed).toEqual({ consume: true });
-                     return null;
-                  },
-                  onTerminalInput: (handler: (data: string) => any) => {
-                     inputHandler = handler;
-                     return () => { };
-                  },
-                  notify: () => { },
-               },
+         const { calls } = await runOverlayInputScenario({
+            params: { question: "Q", options: ["A"], overlayToggleKey: "++bad++" },
+            exercise: ({ inputHandler }) => {
+               const consumed = inputHandler?.("alt+h");
+               expect(consumed).toEqual({ consume: true });
             },
-         );
+         });
 
          expect(calls).toEqual([true]);
       });
@@ -884,79 +762,29 @@ describe("ask_user", () => {
    });
 
    test("uses shared confirm keybinding in single-select mode", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["A", "B"],
+            question: DEFAULT_ASK_QUESTION,
+            options: BASIC_OPTIONS,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings({ "tui.select.confirm": ["x"] }),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("x");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["x"]),
+         createKeybindings({ "tui.select.confirm": ["x"] }),
       );
 
-      expect(result.isError).not.toBe(true);
-      expect(result.details.response).toEqual({ kind: "selection", selections: ["A"] });
-      expect(result.details.cancelled).toBe(false);
+      expectSuccessfulSelection(result, ["A"]);
    });
 
    test("forwards ctrl+enter to the editor instead of submitting freeform mode", async () => {
-      const tool = await setupTool();
       editorInputs = [];
       editorText = "draft answer";
 
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["A", "B"],
+            question: DEFAULT_ASK_QUESTION,
+            options: BASIC_OPTIONS,
             allowFreeform: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("down");
-                  component.handleInput("down");
-                  component.handleInput("enter");
-                  component.handleInput("ctrl+enter");
-
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["down", "down", "enter", "ctrl+enter"]),
       );
 
       expect(result.isError).not.toBe(true);
@@ -965,311 +793,105 @@ describe("ask_user", () => {
    });
 
    test("filters single-select options from typed search before confirming", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta", "Gamma"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_OPTIONS,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("b");
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["b", "enter"]),
       );
 
-      expect(result.isError).not.toBe(true);
-      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
-      expect(result.details.cancelled).toBe(false);
+      expectSuccessfulSelection(result, ["Beta"]);
    });
 
    test("navigates single-select options with ctrl+j (vim down)", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta", "Gamma"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_OPTIONS,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("ctrl+j");
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["ctrl+j", "enter"]),
       );
 
-      expect(result.isError).not.toBe(true);
-      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
-      expect(result.details.cancelled).toBe(false);
+      expectSuccessfulSelection(result, ["Beta"]);
    });
 
    test("wraps to last option when ctrl+k (vim up) is pressed at the top", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta", "Gamma"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_OPTIONS,
             allowFreeform: false,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("ctrl+k");
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["ctrl+k", "enter"]),
       );
 
-      expect(result.isError).not.toBe(true);
-      expect(result.details.response).toEqual({ kind: "selection", selections: ["Gamma"] });
-      expect(result.details.cancelled).toBe(false);
+      expectSuccessfulSelection(result, ["Gamma"]);
    });
 
    test("treats bare j as fuzzy-search input rather than navigation", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
+            question: DEFAULT_ASK_QUESTION,
             options: ["Alpha", "June", "Gamma"],
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("j");
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["j", "enter"]),
       );
 
-      expect(result.isError).not.toBe(true);
-      expect(result.details.response).toEqual({ kind: "selection", selections: ["June"] });
-      expect(result.details.cancelled).toBe(false);
+      expectSuccessfulSelection(result, ["June"]);
    });
 
    test("navigates multi-select options with ctrl+j before toggling", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
             question: "Which options should we use?",
-            options: ["Alpha", "Beta", "Gamma"],
+            options: ALPHA_OPTIONS,
             allowMultiple: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: any;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: any) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("ctrl+j");
-                  component.handleInput("space");
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["ctrl+j", "space", "enter"]),
       );
 
-      expect(result.isError).not.toBe(true);
-      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta"] });
-      expect(result.details.cancelled).toBe(false);
+      expectSuccessfulSelection(result, ["Beta"]);
    });
 
    test("keeps single-select search usable when comment toggling is enabled", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
+            question: DEFAULT_ASK_QUESTION,
             options: ["Chrome", "Firefox", "Safari"],
             allowComment: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("c");
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["c", "enter"]),
       );
 
-      expect(result.isError).not.toBe(true);
-      expect(result.details.response).toEqual({ kind: "selection", selections: ["Chrome"] });
-      expect(result.details.cancelled).toBe(false);
+      expectSuccessfulSelection(result, ["Chrome"]);
    });
 
    test("treats out-of-range number keys as search input in single-select mode", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
+            question: DEFAULT_ASK_QUESTION,
             options: ["Alpha", "Beta 7", "Gamma"],
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("7");
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["7", "enter"]),
       );
 
-      expect(result.isError).not.toBe(true);
-      expect(result.details.response).toEqual({ kind: "selection", selections: ["Beta 7"] });
-      expect(result.details.cancelled).toBe(false);
+      expectSuccessfulSelection(result, ["Beta 7"]);
    });
 
    test("keeps freeform available when search filters out every option", async () => {
-      const tool = await setupTool();
       editorInputs = [];
 
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_BETA_OPTIONS,
             allowFreeform: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: string | null | undefined;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: string | null) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("z");
-                  component.handleInput("z");
-                  component.handleInput("z");
-                  component.handleInput("enter");
-                  editorText = "custom from editor";
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
+         ({ component }) => {
+            applyInputs(component, ["z", "z", "z", "enter"]);
+            editorText = "custom from editor";
+            applyInputs(component, ["enter"]);
          },
       );
 
@@ -1283,37 +905,18 @@ describe("ask_user", () => {
    });
 
    test("shows the remapped cancel key in freeform help text", async () => {
-      const tool = await setupTool();
       let helpText = "";
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_BETA_OPTIONS,
             allowFreeform: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings({ "tui.select.cancel": ["q"] }),
-                     () => { },
-                  );
-
-                  component.handleInput("down");
-                  component.handleInput("down");
-                  component.handleInput("enter");
-                  helpText = (component as any).helpText.render().join("\n");
-                  return null;
-               },
-            },
+         ({ component }) => {
+            applyInputs(component, ["down", "down", "enter"]);
+            helpText = renderHelpText(component);
          },
+         createKeybindings({ "tui.select.cancel": ["q"] }),
       );
 
       expect(result.isError).not.toBe(true);
@@ -1323,35 +926,12 @@ describe("ask_user", () => {
    });
 
    test("renders a details pane for wide single-select layouts", async () => {
-      const tool = await setupTool();
-      let rendered = "";
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result, rendered } = await renderSingleSelect(
          {
-            question: "Which option should we use?",
-            options: [
-               { title: "Alpha", description: "The alpha option keeps the rollout conservative." },
-               { title: "Beta", description: "The beta option favors faster iteration." },
-            ],
+            question: DEFAULT_ASK_QUESTION,
+            options: DESCRIBED_OPTIONS,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     () => { },
-                  );
-                  rendered = ((component as any).singleSelectList as any).render(120).join("\n");
-                  return null;
-               },
-            },
-         },
+         120,
       );
 
       expect(result.isError).not.toBe(true);
@@ -1360,35 +940,14 @@ describe("ask_user", () => {
    });
 
    test("shows a custom response preview in the wide details pane", async () => {
-      const tool = await setupTool();
-      let rendered = "";
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result, rendered } = await renderSingleSelect(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_BETA_OPTIONS,
             allowFreeform: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     () => { },
-                  );
-                  component.handleInput("down");
-                  component.handleInput("down");
-                  rendered = ((component as any).singleSelectList as any).render(120).join("\n");
-                  return null;
-               },
-            },
-         },
+         120,
+         (component) => applyInputs(component, ["down", "down"]),
       );
 
       expect(result.isError).not.toBe(true);
@@ -1397,35 +956,12 @@ describe("ask_user", () => {
    });
 
    test("falls back to the single-column list on narrow widths", async () => {
-      const tool = await setupTool();
-      let rendered = "";
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result, rendered } = await renderSingleSelect(
          {
-            question: "Which option should we use?",
-            options: [
-               { title: "Alpha", description: "The alpha option keeps the rollout conservative." },
-               { title: "Beta", description: "The beta option favors faster iteration." },
-            ],
+            question: DEFAULT_ASK_QUESTION,
+            options: DESCRIBED_OPTIONS,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     () => { },
-                  );
-                  rendered = ((component as any).singleSelectList as any).render(60).join("\n");
-                  return null;
-               },
-            },
-         },
+         60,
       );
 
       expect(result.isError).not.toBe(true);
@@ -1433,37 +969,15 @@ describe("ask_user", () => {
       expect(rendered).not.toContain(" │ ");
       expect(rendered).toContain("The alpha option keeps the rollout conservative.");
    });
-   test("submits immediately when the comment toggle is off", async () => {
-      const tool = await setupTool();
 
-      const result = await tool.execute(
-         "tool-call-id",
+   test("submits immediately when the comment toggle is off", async () => {
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_BETA_OPTIONS,
             allowComment: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: any;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: any) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
-         },
+         ({ component }) => applyInputs(component, ["enter"]),
       );
 
       expect(result.isError).not.toBe(true);
@@ -1472,38 +986,21 @@ describe("ask_user", () => {
    });
 
    test("toggles extra context with the ctrl+g key and shows it in help text", async () => {
-      const tool = await setupTool();
       let renderedBefore = "";
       let renderedAfter = "";
       let helpText = "";
 
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_BETA_OPTIONS,
             allowComment: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     () => { },
-                  );
-
-                  renderedBefore = ((component as any).singleSelectList as any).render(80).join("\n");
-                  helpText = (component as any).helpText.render().join("\n");
-                  component.handleInput("ctrl+g");
-                  renderedAfter = ((component as any).singleSelectList as any).render(80).join("\n");
-                  return null;
-               },
-            },
+         ({ component }) => {
+            const state = captureCommentToggleRender(component, ["ctrl+g"]);
+            renderedBefore = state.before;
+            renderedAfter = state.after;
+            helpText = state.helpText;
          },
       );
 
@@ -1514,44 +1011,26 @@ describe("ask_user", () => {
    });
 
    test("uses custom commentToggleKey for comment toggling and help text", async () => {
-      const tool = await setupTool();
       let renderedBefore = "";
       let renderedAfterIgnored = "";
       let renderedAfterCustom = "";
       let helpText = "";
 
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_BETA_OPTIONS,
             allowComment: true,
             commentToggleKey: "alt+c",
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     () => { },
-                  );
-
-                  renderedBefore = ((component as any).singleSelectList as any).render(80).join("\n");
-                  helpText = (component as any).helpText.render().join("\n");
-                  // Default ctrl+g should no longer toggle.
-                  component.handleInput("ctrl+g");
-                  renderedAfterIgnored = ((component as any).singleSelectList as any).render(80).join("\n");
-                  // Configured alt+c should toggle.
-                  component.handleInput("alt+c");
-                  renderedAfterCustom = ((component as any).singleSelectList as any).render(80).join("\n");
-                  return null;
-               },
-            },
+         ({ component }) => {
+            const ignoredState = captureCommentToggleRender(component, ["ctrl+g"]);
+            renderedBefore = ignoredState.before;
+            renderedAfterIgnored = ignoredState.after;
+            helpText = ignoredState.helpText;
+            // Configured alt+c should toggle.
+            applyInputs(component, ["alt+c"]);
+            renderedAfterCustom = renderSingleSelectList(component, 80);
          },
       );
 
@@ -1564,38 +1043,22 @@ describe("ask_user", () => {
    });
 
    test("commentToggleKey 'off' hides the toggle hint and ignores ctrl+g", async () => {
-      const tool = await setupTool();
       let renderedBefore = "";
       let renderedAfter = "";
       let helpText = "";
 
-      await tool.execute(
-         "tool-call-id",
+      await runComponentScenario(
          {
             question: "Q",
-            options: ["Alpha", "Beta"],
+            options: ALPHA_BETA_OPTIONS,
             allowComment: true,
             commentToggleKey: "off",
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     () => { },
-                  );
-                  renderedBefore = ((component as any).singleSelectList as any).render(80).join("\n");
-                  helpText = (component as any).helpText.render().join("\n");
-                  component.handleInput("ctrl+g");
-                  renderedAfter = ((component as any).singleSelectList as any).render(80).join("\n");
-                  return null;
-               },
-            },
+         ({ component }) => {
+            const state = captureCommentToggleRender(component, ["ctrl+g"]);
+            renderedBefore = state.before;
+            renderedAfter = state.after;
+            helpText = state.helpText;
          },
       );
 
@@ -1606,39 +1069,17 @@ describe("ask_user", () => {
 
 
    test("collects an optional comment after a single selection before resolving", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
-            question: "Which option should we use?",
-            options: ["Alpha", "Beta"],
+            question: DEFAULT_ASK_QUESTION,
+            options: ALPHA_BETA_OPTIONS,
             allowComment: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: any;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: any) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("ctrl+g");
-                  component.handleInput("enter");
-                  expect(resolved).toBeUndefined();
-                  editorText = "Needs audit logging before rollout.";
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
+         ({ component, getResolved }) => {
+            applyInputs(component, ["ctrl+g", "enter"]);
+            expect(getResolved()).toBeUndefined();
+            editorText = "Needs audit logging before rollout.";
+            applyInputs(component, ["enter"]);
          },
       );
 
@@ -1652,44 +1093,18 @@ describe("ask_user", () => {
    });
 
    test("collects an optional comment for multi-select answers", async () => {
-      const tool = await setupTool();
-
-      const result = await tool.execute(
-         "tool-call-id",
+      const { result } = await runComponentScenario(
          {
             question: "Which options should we use?",
-            options: ["Alpha", "Beta", "Gamma"],
+            options: ALPHA_OPTIONS,
             allowMultiple: true,
             allowComment: true,
          },
-         undefined,
-         undefined,
-         {
-            hasUI: true,
-            ui: {
-               custom: async (factory: any) => {
-                  let resolved: any;
-                  const component = factory(
-                     { requestRender() { }, terminal: { rows: 24 } },
-                     createTheme(),
-                     createKeybindings(),
-                     (value: any) => {
-                        resolved = value;
-                     },
-                  );
-
-                  component.handleInput("space");
-                  component.handleInput("down");
-                  component.handleInput("down");
-                  component.handleInput("space");
-                  component.handleInput("ctrl+g");
-                  component.handleInput("enter");
-                  expect(resolved).toBeUndefined();
-                  editorText = "Roll out both behind the same flag.";
-                  component.handleInput("enter");
-                  return resolved ?? null;
-               },
-            },
+         ({ component, getResolved }) => {
+            applyInputs(component, ["space", "down", "down", "space", "ctrl+g", "enter"]);
+            expect(getResolved()).toBeUndefined();
+            editorText = "Roll out both behind the same flag.";
+            applyInputs(component, ["enter"]);
          },
       );
 

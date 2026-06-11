@@ -191,14 +191,23 @@ function isSelectionResponse(response: AskResponse): response is Extract<AskResp
    return response.kind === "selection";
 }
 
-function createSelectListTheme(theme: Theme) {
-   return {
-      selectedPrefix: (t: string) => theme.fg("accent", t),
-      selectedText: (t: string) => theme.fg("accent", t),
-      description: (t: string) => theme.fg("muted", t),
-      scrollInfo: (t: string) => theme.fg("dim", t),
-      noMatch: (t: string) => theme.fg("warning", t),
-   };
+const SELECT_LIST_THEME_COLORS = [
+   ["selectedPrefix", "accent"],
+   ["selectedText", "accent"],
+   ["description", "muted"],
+   ["scrollInfo", "dim"],
+   ["noMatch", "warning"],
+] as const;
+
+type SelectListTheme = Record<(typeof SELECT_LIST_THEME_COLORS)[number][0], (text: string) => string>;
+
+function themeStyle(theme: Theme, color: string): (text: string) => string {
+   return (text: string) => theme.fg(color, text);
+}
+
+function createSelectListTheme(theme: Theme): SelectListTheme {
+   const entries = SELECT_LIST_THEME_COLORS.map(([name, color]) => [name, themeStyle(theme, color)]);
+   return Object.fromEntries(entries) as SelectListTheme;
 }
 
 function createEditorTheme(theme: Theme): EditorTheme {
@@ -275,6 +284,19 @@ function keybindingHint(
 
 function literalHint(theme: Theme, key: string, description: string): string {
    return `${theme.fg("dim", key)}${theme.fg("muted", ` ${description}`)}`;
+}
+
+function alternateCancelHint(theme: Theme, keybindings: KeybindingsManager): string | null {
+   const alternateCancelKeys = keybindings
+      .getKeys("tui.select.cancel")
+      .filter((key) => key !== "escape" && key !== "esc");
+   return alternateCancelKeys.length > 0
+      ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel")
+      : null;
+}
+
+function setDimHelpText(helpText: Text, theme: Theme, hints: Array<string | null>): void {
+   helpText.setText(theme.fg("dim", hints.filter((hint): hint is string => !!hint).join(" • ")));
 }
 
 type ResolvedShortcut =
@@ -408,21 +430,19 @@ function buildCustomUIOptions(
    }
 }
 
-class MultiSelectList implements Component {
-   private options: QuestionOption[];
-   private allowFreeform: boolean;
-   private allowComment: boolean;
-   private theme: Theme;
-   private keybindings: KeybindingsManager;
-   private commentToggle: ResolvedShortcut;
-   private selectedIndex = 0;
-   private checked = new Set<number>();
-   private commentEnabled = false;
-   private cachedWidth?: number;
-   private cachedLines?: string[];
+abstract class SelectionListBase<TResult> implements Component {
+   protected options: QuestionOption[];
+   protected allowFreeform: boolean;
+   protected allowComment: boolean;
+   protected theme: Theme;
+   protected keybindings: KeybindingsManager;
+   protected commentToggle: ResolvedShortcut;
+   protected commentEnabled = false;
+   protected cachedWidth?: number;
+   protected cachedLines?: string[];
 
    public onCancel?: () => void;
-   public onSubmit?: (result: string[]) => void;
+   public onSubmit?: (result: TResult) => void;
    public onEnterFreeform?: () => void;
 
    constructor(
@@ -445,10 +465,23 @@ class MultiSelectList implements Component {
       return this.commentEnabled;
    }
 
+   abstract render(width: number): string[];
+
    invalidate(): void {
       this.cachedWidth = undefined;
       this.cachedLines = undefined;
    }
+
+   protected toggleComment(): void {
+      if (!this.allowComment) return;
+      this.commentEnabled = !this.commentEnabled;
+      this.invalidate();
+   }
+}
+
+class MultiSelectList extends SelectionListBase<string[]> {
+   private selectedIndex = 0;
+   private checked = new Set<number>();
 
    private getRowModel() {
       return buildSelectionRowModel({
@@ -462,12 +495,6 @@ class MultiSelectList implements Component {
       if (index < 0 || index >= this.options.length) return;
       if (this.checked.has(index)) this.checked.delete(index);
       else this.checked.add(index);
-   }
-
-   private toggleComment(): void {
-      if (!this.allowComment) return;
-      this.commentEnabled = !this.commentEnabled;
-      this.invalidate();
    }
 
    handleInput(data: string): void {
@@ -622,43 +649,10 @@ class MultiSelectList implements Component {
    }
 }
 
-class WrappedSingleSelectList implements Component {
-   private options: QuestionOption[];
-   private allowFreeform: boolean;
-   private allowComment: boolean;
-   private theme: Theme;
-   private keybindings: KeybindingsManager;
-   private commentToggle: ResolvedShortcut;
+class WrappedSingleSelectList extends SelectionListBase<string> {
    private selectedIndex = 0;
    private searchQuery = "";
-   private commentEnabled = false;
    private maxVisibleRows = 12;
-   private cachedWidth?: number;
-   private cachedLines?: string[];
-
-   public onCancel?: () => void;
-   public onSubmit?: (result: string) => void;
-   public onEnterFreeform?: () => void;
-
-   constructor(
-      options: QuestionOption[],
-      allowFreeform: boolean,
-      allowComment: boolean,
-      theme: Theme,
-      keybindings: KeybindingsManager,
-      commentToggle: ResolvedShortcut,
-   ) {
-      this.options = options;
-      this.allowFreeform = allowFreeform;
-      this.allowComment = allowComment;
-      this.theme = theme;
-      this.keybindings = keybindings;
-      this.commentToggle = commentToggle;
-   }
-
-   public isCommentEnabled(): boolean {
-      return this.commentEnabled;
-   }
 
    setMaxVisibleRows(rows: number): void {
       const next = Math.max(1, Math.floor(rows));
@@ -666,11 +660,6 @@ class WrappedSingleSelectList implements Component {
          this.maxVisibleRows = next;
          this.invalidate();
       }
-   }
-
-   invalidate(): void {
-      this.cachedWidth = undefined;
-      this.cachedLines = undefined;
    }
 
    private getFilteredOptions(): QuestionOption[] {
@@ -683,12 +672,6 @@ class WrappedSingleSelectList implements Component {
          allowComment: this.allowComment,
          allowFreeform: this.allowFreeform,
       });
-   }
-
-   private toggleComment(): void {
-      if (!this.allowComment) return;
-      this.commentEnabled = !this.commentEnabled;
-      this.invalidate();
    }
 
    private setSearchQuery(query: string): void {
@@ -1159,40 +1142,29 @@ class AskComponent extends Container {
       const commentHint = this.allowComment && !this.shortcuts.commentToggle.disabled
          ? literalHint(theme, this.shortcuts.commentToggle.spec, "toggle context")
          : null;
+
       if (this.mode === "freeform" || this.mode === "comment") {
-         const alternateCancelKeys = this.keybindings
-            .getKeys("tui.select.cancel")
-            .filter((key) => key !== "escape" && key !== "esc");
-         const hints = [
+         setDimHelpText(this.helpText, theme, [
             keybindingHint(theme, this.keybindings, "tui.input.submit", this.mode === "comment" ? "submit/skip" : "submit"),
             keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
             literalHint(theme, "esc", "back"),
             overlayHint,
-            alternateCancelKeys.length > 0 ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel") : null,
-         ]
-            .filter((hint): hint is string => !!hint)
-            .join(" • ");
-         this.helpText.setText(theme.fg("dim", hints));
+            alternateCancelHint(theme, this.keybindings),
+         ]);
          return;
       }
 
       if (this.allowMultiple) {
-         const hints = [
+         setDimHelpText(this.helpText, theme, [
             literalHint(theme, "↑↓", "navigate"),
             literalHint(theme, "space", "toggle"),
             commentHint,
             overlayHint,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit"),
             keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
-         ]
-            .filter((hint): hint is string => !!hint)
-            .join(" • ");
-         this.helpText.setText(theme.fg("dim", hints));
+         ]);
       } else {
-         const alternateCancelKeys = this.keybindings
-            .getKeys("tui.select.cancel")
-            .filter((key) => key !== "escape" && key !== "esc");
-         const hints = [
+         setDimHelpText(this.helpText, theme, [
             literalHint(theme, "type", "filter"),
             keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase"),
             literalHint(theme, "↑↓", "navigate"),
@@ -1200,13 +1172,8 @@ class AskComponent extends Container {
             overlayHint,
             keybindingHint(theme, this.keybindings, "tui.select.confirm", "select"),
             literalHint(theme, "esc", "clear/cancel"),
-            alternateCancelKeys.length > 0
-               ? literalHint(theme, formatKeyList(alternateCancelKeys), "cancel")
-               : null,
-         ]
-            .filter((hint): hint is string => !!hint)
-            .join(" • ");
-         this.helpText.setText(theme.fg("dim", hints));
+            alternateCancelHint(theme, this.keybindings),
+         ]);
       }
    }
 
@@ -1303,6 +1270,12 @@ class AskComponent extends Container {
       }
    }
 
+   private finishModeSwitch(): void {
+      this.updateHelpText();
+      this.invalidate();
+      this.tui.requestRender();
+   }
+
    private showSelectMode(): void {
       if (this.mode === "freeform" || this.mode === "comment") {
          this.saveEditorDraft();
@@ -1318,9 +1291,7 @@ class AskComponent extends Container {
          this.modeContainer.addChild(this.ensureSingleSelectList());
       }
 
-      this.updateHelpText();
-      this.invalidate();
-      this.tui.requestRender();
+      this.finishModeSwitch();
    }
 
    private showFreeformMode(): void {
@@ -1339,9 +1310,7 @@ class AskComponent extends Container {
       this.modeContainer.addChild(new Spacer(1));
       this.modeContainer.addChild(editor);
 
-      this.updateHelpText();
-      this.invalidate();
-      this.tui.requestRender();
+      this.finishModeSwitch();
    }
 
    private showCommentMode(): void {
@@ -1362,9 +1331,7 @@ class AskComponent extends Container {
       this.modeContainer.addChild(new Spacer(1));
       this.modeContainer.addChild(editor);
 
-      this.updateHelpText();
-      this.invalidate();
-      this.tui.requestRender();
+      this.finishModeSwitch();
    }
 
    handleInput(data: string): void {

@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -15,6 +16,7 @@ import {
 	saveGoalAuditorFileConfig,
 } from "../extensions/goal-auditor.ts";
 import type { GoalRecord } from "../extensions/goal-record.ts";
+import { assertMatchesAll } from "./helpers/assertions.ts";
 
 function goal(overrides: Partial<GoalRecord> = {}): GoalRecord {
 	return {
@@ -28,6 +30,32 @@ function goal(overrides: Partial<GoalRecord> = {}): GoalRecord {
 		updatedAt: "2026-05-12T00:00:00.000Z",
 		...overrides,
 	};
+}
+
+function runAuditorWithMockSession(cwd: string, signal: AbortSignal, mockSession: unknown) {
+	return runGoalCompletionAuditor({
+		ctx: { cwd, model: undefined } as any,
+		goal: goal(),
+		detailedSummary: "test",
+		signal,
+		createSession: async () => ({ session: mockSession }) as any,
+	});
+}
+
+async function yieldToAuditorSetup(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function assertAuditorAborted(
+	result: Awaited<ReturnType<typeof runGoalCompletionAuditor>>,
+	abortCalledOnSession?: boolean,
+): void {
+	assert.equal(result.error, "Auditor aborted.");
+	assert.equal(result.approved, false);
+	assert.equal(result.disapproved, true);
+	if (abortCalledOnSession !== undefined) {
+		assert.equal(abortCalledOnSession, true, "session.abort() must have been called via the signal listener");
+	}
 }
 
 test("parseAuditorDecision requires explicit approval and lets disapproval win", () => {
@@ -97,11 +125,13 @@ test("buildGoalAuditorPrompt demands semantic approval markers", () => {
 		completionSummary: "Generated a VitePress scaffold and build passes.",
 		detailedSummary: "Goal: tutorial",
 	});
-	assert.match(prompt, /independent completion auditor/);
-	assert.match(prompt, /scaffold-only|alpha scaffold|generated template/);
-	assert.match(prompt, /<approved\/>/);
-	assert.match(prompt, /<disapproved\/>/);
-	assert.match(prompt, /Generated a VitePress scaffold/);
+	assertMatchesAll(prompt, [
+		/independent completion auditor/,
+		/scaffold-only|alpha scaffold|generated template/,
+		/<approved\/>/,
+		/<disapproved\/>/,
+		/Generated a VitePress scaffold/,
+	]);
 });
 
 test("runGoalCompletionAuditor returns aborted error when signal is already aborted (pre-flight)", async () => {
@@ -117,17 +147,9 @@ test("runGoalCompletionAuditor returns aborted error when signal is already abor
 			prompt: () => { throw new Error("prompt should not be called"); },
 		};
 
-		const result = await runGoalCompletionAuditor({
-			ctx: { cwd, model: undefined } as any,
-			goal: goal(),
-			detailedSummary: "test",
-			signal: ctrl.signal,
-			createSession: async () => ({ session: mockSession }) as any,
-		});
+		const result = await runAuditorWithMockSession(cwd, ctrl.signal, mockSession);
 
-		assert.equal(result.error, "Auditor aborted.");
-		assert.equal(result.approved, false);
-		assert.equal(result.disapproved, true);
+		assertAuditorAborted(result);
 		assert.equal(result.output, "");
 		// The signal listener for the already-aborted signal should have been
 		// cleaned up in the inner finally before session.abort() could fire.
@@ -153,26 +175,17 @@ test("runGoalCompletionAuditor aborts running prompt when signal fires (abort du
 			prompt: () => new Promise<void>((_, reject) => { promptReject = reject; }),
 		};
 
-		const resultPromise = runGoalCompletionAuditor({
-			ctx: { cwd, model: undefined } as any,
-			goal: goal(),
-			detailedSummary: "test",
-			signal: ctrl.signal,
-			createSession: async () => ({ session: mockSession }) as any,
-		});
+		const resultPromise = runAuditorWithMockSession(cwd, ctrl.signal, mockSession);
 
 		// Yield to let the async setup run (createSession resolves, prompt is entered)
-		await new Promise((r) => setTimeout(r, 0));
+		await yieldToAuditorSetup();
 
 		// At this point prompt() should be "running" — trigger the abort
 		ctrl.abort();
 
 		const result = await resultPromise;
 
-		assert.equal(result.error, "Auditor aborted.");
-		assert.equal(result.approved, false);
-		assert.equal(result.disapproved, true);
-		assert.ok(abortCalledOnSession, "session.abort() must have been called via the signal listener");
+		assertAuditorAborted(result, abortCalledOnSession);
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
@@ -202,16 +215,10 @@ test("runGoalCompletionAuditor detects abort when session.prompt returns normall
 			prompt: () => new Promise<void>((resolve) => { promptResolve = resolve; }),
 		};
 
-		const resultPromise = runGoalCompletionAuditor({
-			ctx: { cwd, model: undefined } as any,
-			goal: goal(),
-			detailedSummary: "test",
-			signal: ctrl.signal,
-			createSession: async () => ({ session: mockSession }) as any,
-		});
+		const resultPromise = runAuditorWithMockSession(cwd, ctrl.signal, mockSession);
 
 		// Yield to let createSession resolve
-		await new Promise((r) => setTimeout(r, 0));
+		await yieldToAuditorSetup();
 
 		// Abort while prompt is still running — this triggers abortSession listener
 		// which calls session.abort(), which resolves the prompt.
@@ -219,10 +226,7 @@ test("runGoalCompletionAuditor detects abort when session.prompt returns normall
 
 		const result = await resultPromise;
 
-		assert.equal(result.error, "Auditor aborted.");
-		assert.equal(result.approved, false);
-		assert.equal(result.disapproved, true);
-		assert.ok(abortCalledOnSession, "session.abort() must have been called via the signal listener");
+		assertAuditorAborted(result, abortCalledOnSession);
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}

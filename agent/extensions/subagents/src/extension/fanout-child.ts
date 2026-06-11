@@ -1,6 +1,4 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "../agents/agents.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
@@ -11,42 +9,9 @@ import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
+import { expandTilde, getSubagentSessionRoot } from "../shared/runtime-paths.ts";
+import { createSubagentState } from "../shared/subagent-state.ts";
 import { type Details, type SubagentState } from "../shared/types.ts";
-
-function getSubagentSessionRoot(parentSessionFile: string | null): string {
-	if (parentSessionFile) {
-		const baseName = path.basename(parentSessionFile, ".jsonl");
-		const sessionsDir = path.dirname(parentSessionFile);
-		return path.join(sessionsDir, baseName);
-	}
-	return fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-"));
-}
-
-function expandTilde(p: string): string {
-	return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
-}
-
-function createChildSafeState(): SubagentState {
-	return {
-		baseCwd: "",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		foregroundRuns: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
-}
 
 function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState): NodeJS.Timeout | undefined {
 	let route;
@@ -138,7 +103,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	registeredApis.add(pi);
 
 	const config = loadConfig();
-	const state = createChildSafeState();
+	const state = createSubagentState();
 	const executor = createSubagentExecutor({
 		pi,
 		state,

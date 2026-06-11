@@ -23,7 +23,7 @@ export function removeTempDir(dir: string): void {
 	} catch {}
 }
 
-export function createEventBus() {
+function createListenerCore() {
 	const listeners = new Map<string, Set<(payload: unknown) => void>>();
 	return {
 		on(channel: string, handler: (payload: unknown) => void) {
@@ -35,8 +35,40 @@ export function createEventBus() {
 				if (channelListeners.size === 0) listeners.delete(channel);
 			};
 		},
-		emit(channel: string, payload: unknown) {
+		emitToListeners(channel: string, payload: unknown) {
 			for (const handler of listeners.get(channel) ?? []) handler(payload);
+		},
+	};
+}
+
+export function createRecordingEventBus(options: { acknowledgeResultIntercom?: boolean } = {}) {
+	const core = createListenerCore();
+	const emitted: Array<{ channel: string; payload: unknown; event: string; data: unknown }> = [];
+	const bus = {
+		emitted,
+		on: core.on,
+		emit(channel: string, payload: unknown) {
+			emitted.push({ channel, payload, event: channel, data: payload });
+			core.emitToListeners(channel, payload);
+			if (options.acknowledgeResultIntercom && channel === "subagent:result-intercom") {
+				const requestId = typeof payload === "object" && payload !== null && "requestId" in payload
+					? (payload as { requestId?: unknown }).requestId
+					: undefined;
+				if (typeof requestId === "string") {
+					setImmediate(() => bus.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
+				}
+			}
+		},
+	};
+	return bus;
+}
+
+export function createEventBus() {
+	const core = createListenerCore();
+	return {
+		on: core.on,
+		emit(channel: string, payload: unknown) {
+			core.emitToListeners(channel, payload);
 		},
 	};
 }

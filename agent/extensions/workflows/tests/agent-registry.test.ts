@@ -13,7 +13,7 @@ import {
   parseAgentDefinition,
   resolveAgentType,
 } from "../src/agent-registry.js";
-import { runWorkflow } from "../src/workflow.js";
+import { type JournalEntry, runWorkflow } from "../src/workflow.js";
 
 // ── parseAgentDefinition ───────────────────────────────────────────────────
 
@@ -191,6 +191,24 @@ function capturingAgent() {
   return { seen, runner };
 }
 
+const agentTypeScript = `export const meta = { name: 'at', description: 'agentType' }
+const r = await agent('audit', { label: 'a', agentType: 'security-auditor' })
+return r`;
+
+async function journalAgentTypeRun(
+  agentRegistry: AgentRegistry,
+): Promise<{ journal: JournalEntry[]; first: ReturnType<typeof capturingAgent> }> {
+  const journal: JournalEntry[] = [];
+  const first = capturingAgent();
+  await runWorkflow(agentTypeScript, {
+    agent: first.runner,
+    persistLogs: false,
+    agentRegistry,
+    onAgentJournal: (entry) => journal.push(entry),
+  });
+  return { journal, first };
+}
+
 const registry: AgentRegistry = new Map([
   [
     "security-auditor",
@@ -262,52 +280,34 @@ return {}`;
 
   it("editing a definition invalidates the resume cache for that call", async () => {
     // First run journals the call under the original definition's hash.
-    const journal: import("../src/workflow.js").JournalEntry[] = [];
-    const first = capturingAgent();
-    const script = `export const meta = { name: 'at', description: 'agentType' }
-const r = await agent('audit', { label: 'a', agentType: 'security-auditor' })
-return r`;
-    await runWorkflow(script, {
-      agent: first.runner,
-      persistLogs: false,
-      agentRegistry: registry,
-      onAgentJournal: (e) => journal.push(e),
-    });
+    const { journal, first } = await journalAgentTypeRun(registry);
     assert.equal(first.seen.length, 1);
 
     // Resume with an EDITED definition (different model) → cache must miss → re-run.
+    const securityAuditor = registry.get("security-auditor");
+    assert.ok(securityAuditor, "security-auditor fixture should exist");
     const editedRegistry: AgentRegistry = new Map([
-      ["security-auditor", { ...registry.get("security-auditor")!, model: "vendor/changed-model" }],
+      ["security-auditor", { ...securityAuditor, model: "vendor/changed-model" }],
     ]);
     const second = capturingAgent();
-    await runWorkflow(script, {
+    await runWorkflow(agentTypeScript, {
       agent: second.runner,
       persistLogs: false,
       agentRegistry: editedRegistry,
-      resumeJournal: new Map(journal.map((e) => [e.index, e])),
+      resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
     });
     assert.equal(second.seen.length, 1, "edited definition busts the cache and re-runs live");
     assert.equal(second.seen[0].model, "vendor/changed-model");
   });
 
   it("resume cache HITS when the definition is unchanged", async () => {
-    const journal: import("../src/workflow.js").JournalEntry[] = [];
-    const first = capturingAgent();
-    const script = `export const meta = { name: 'at', description: 'agentType' }
-const r = await agent('audit', { label: 'a', agentType: 'security-auditor' })
-return r`;
-    await runWorkflow(script, {
-      agent: first.runner,
-      persistLogs: false,
-      agentRegistry: registry,
-      onAgentJournal: (e) => journal.push(e),
-    });
+    const { journal } = await journalAgentTypeRun(registry);
     const second = capturingAgent();
-    await runWorkflow(script, {
+    await runWorkflow(agentTypeScript, {
       agent: second.runner,
       persistLogs: false,
       agentRegistry: registry,
-      resumeJournal: new Map(journal.map((e) => [e.index, e])),
+      resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
     });
     assert.equal(second.seen.length, 0, "unchanged definition → cache hit → no live run");
   });

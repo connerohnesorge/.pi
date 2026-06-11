@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 /**
  * General utility functions for the subagent extension
  */

@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -8,6 +9,7 @@ import {
 	validateGoalDraftProposal,
 	type GoalConfirmationIntentLike,
 } from "../extensions/goal-draft.ts";
+import { assertMatchesAll } from "./helpers/assertions.ts";
 
 function intent(overrides: Partial<GoalConfirmationIntentLike> = {}): GoalConfirmationIntentLike {
 	return {
@@ -35,12 +37,14 @@ test("buildDraftConfirmationText previews mode, original topic, and proposed goa
 		autoContinue: true,
 	});
 
-	assert.match(summary, /^Goal draft ready for confirmation\./);
-	assert.match(summary, /Mode: Sisyphus/);
-	assert.match(summary, /Auto-continue: yes/);
-	assert.match(summary, /Original topic:\n\nfirst line\nsecond line/);
-	assert.match(summary, /Proposed goal:/);
-	assert.match(summary, /Objective: Ship safely/);
+	assertMatchesAll(summary, [
+		/^Goal draft ready for confirmation\./,
+		/Mode: Sisyphus/,
+		/Auto-continue: yes/,
+		/Original topic:\n\nfirst line\nsecond line/,
+		/Proposed goal:/,
+		/Objective: Ship safely/,
+	]);
 	assert.doesNotMatch(summary, /\*\*|---|^> /m);
 });
 

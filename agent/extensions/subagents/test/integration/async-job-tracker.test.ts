@@ -1,7 +1,9 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { createSubagentState } from "../../src/shared/subagent-state.ts";
 import { createTempDir, removeTempDir, tryImport } from "../support/helpers.ts";
 
 interface AsyncJobTrackerModule {
@@ -27,21 +29,7 @@ const trackerMod = await tryImport<AsyncJobTrackerModule>("./src/runs/background
 const available = !!trackerMod;
 
 function createState() {
-	return {
-		baseCwd: "/repo",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
+	return createSubagentState({ baseCwd: "/repo" });
 }
 
 function createEventRecorder() {

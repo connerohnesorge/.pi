@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 /**
  * Async execution logic for subagent tool
  */

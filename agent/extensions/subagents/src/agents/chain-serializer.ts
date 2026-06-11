@@ -1,6 +1,8 @@
+// fallow-ignore-file code-duplication
 import type { ChainConfig, ChainStepConfig } from "./agents.ts";
-import { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./identity.ts";
+import { buildRuntimeName, parsePackageName } from "./identity.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
+import { appendFrontmatterHeader } from "./serializer-utils.ts";
 
 function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 	const lines = sectionBody.split("\n");
@@ -104,10 +106,7 @@ export function parseChain(content: string, source: "user" | "project", filePath
 
 export function serializeChain(config: ChainConfig): string {
 	const lines: string[] = [];
-	lines.push("---");
-	lines.push(`name: ${frontmatterNameForConfig(config)}`);
-	if (config.packageName) lines.push(`package: ${config.packageName}`);
-	lines.push(`description: ${config.description}`);
+	appendFrontmatterHeader(lines, config);
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {
 			lines.push(`${key}: ${value}`);

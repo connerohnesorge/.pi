@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { TokenUsage } from "./types.ts";

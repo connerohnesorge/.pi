@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -5,26 +6,12 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { createSubagentState } from "../../src/shared/subagent-state.ts";
 import type { SubagentState } from "../../src/shared/types.ts";
+import { createRecordingEventBus } from "../support/helpers.ts";
 
 function createState(): SubagentState {
-	return {
-		baseCwd: "/repo",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
+	return createSubagentState({ baseCwd: "/repo" });
 }
 
 describe("result watcher", () => {
@@ -111,28 +98,9 @@ describe("result watcher", () => {
 	it("falls back to polling when fs.watch throws EMFILE and preserves grouped intercom delivery", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {
-			const emitted: Array<{ event: string; data: unknown }> = [];
-			const listeners = new Map<string, Set<(payload: unknown) => void>>();
-			const pi = {
-				events: {
-					on(event: string, handler: (payload: unknown) => void) {
-						const eventListeners = listeners.get(event) ?? new Set();
-						eventListeners.add(handler);
-						listeners.set(event, eventListeners);
-						return () => eventListeners.delete(handler);
-					},
-					emit(event: string, data: unknown) {
-						emitted.push({ event, data });
-						for (const handler of listeners.get(event) ?? []) handler(data);
-						if (event === "subagent:result-intercom") {
-							const requestId = data && typeof data === "object" ? (data as { requestId?: unknown }).requestId : undefined;
-							if (typeof requestId === "string") {
-								setImmediate(() => pi.events.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
-							}
-						}
-					},
-				},
-			};
+			const events = createRecordingEventBus({ acknowledgeResultIntercom: true });
+			const pi = { events };
+			const emitted = events.emitted;
 			const state = createState();
 			state.currentSessionId = "session-1";
 			let poll: (() => void) | undefined;
@@ -279,28 +247,9 @@ describe("result watcher", () => {
 	it("emits async completion plus one grouped intercom result event when an intercom target is present", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {
-			const emitted: Array<{ event: string; data: unknown }> = [];
-			const listeners = new Map<string, Set<(payload: unknown) => void>>();
-			const pi = {
-				events: {
-					on(event: string, handler: (payload: unknown) => void) {
-						const eventListeners = listeners.get(event) ?? new Set();
-						eventListeners.add(handler);
-						listeners.set(event, eventListeners);
-						return () => eventListeners.delete(handler);
-					},
-					emit(event: string, data: unknown) {
-						emitted.push({ event, data });
-						for (const handler of listeners.get(event) ?? []) handler(data);
-						if (event === "subagent:result-intercom") {
-							const requestId = data && typeof data === "object" ? (data as { requestId?: unknown }).requestId : undefined;
-							if (typeof requestId === "string") {
-								setImmediate(() => pi.events.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
-							}
-						}
-					},
-				},
-			};
+			const events = createRecordingEventBus({ acknowledgeResultIntercom: true });
+			const pi = { events };
+			const emitted = events.emitted;
 			const state = createState();
 			state.currentSessionId = "session-1";
 			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
@@ -366,28 +315,9 @@ describe("result watcher", () => {
 					sessionFile: path.join(resultsDir, "nested-child.jsonl"),
 				},
 			});
-			const emitted: Array<{ event: string; data: unknown }> = [];
-			const listeners = new Map<string, Set<(payload: unknown) => void>>();
-			const pi = {
-				events: {
-					on(event: string, handler: (payload: unknown) => void) {
-						const eventListeners = listeners.get(event) ?? new Set();
-						eventListeners.add(handler);
-						listeners.set(event, eventListeners);
-						return () => eventListeners.delete(handler);
-					},
-					emit(event: string, data: unknown) {
-						emitted.push({ event, data });
-						for (const handler of listeners.get(event) ?? []) handler(data);
-						if (event === "subagent:result-intercom") {
-							const requestId = data && typeof data === "object" ? (data as { requestId?: unknown }).requestId : undefined;
-							if (typeof requestId === "string") {
-								setImmediate(() => pi.events.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
-							}
-						}
-					},
-				},
-			};
+			const events = createRecordingEventBus({ acknowledgeResultIntercom: true });
+			const pi = { events };
+			const emitted = events.emitted;
 			const state = createState();
 			state.currentSessionId = "session-1";
 			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
@@ -429,28 +359,9 @@ describe("result watcher", () => {
 	it("filters malformed explicit nested children in result files before compacting", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-nested-malformed-"));
 		try {
-			const emitted: Array<{ event: string; data: unknown }> = [];
-			const listeners = new Map<string, Set<(payload: unknown) => void>>();
-			const pi = {
-				events: {
-					on(event: string, handler: (payload: unknown) => void) {
-						const eventListeners = listeners.get(event) ?? new Set();
-						eventListeners.add(handler);
-						listeners.set(event, eventListeners);
-						return () => eventListeners.delete(handler);
-					},
-					emit(event: string, data: unknown) {
-						emitted.push({ event, data });
-						for (const handler of listeners.get(event) ?? []) handler(data);
-						if (event === "subagent:result-intercom") {
-							const requestId = data && typeof data === "object" ? (data as { requestId?: unknown }).requestId : undefined;
-							if (typeof requestId === "string") {
-								setImmediate(() => pi.events.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
-							}
-						}
-					},
-				},
-			};
+			const events = createRecordingEventBus({ acknowledgeResultIntercom: true });
+			const pi = { events };
+			const emitted = events.emitted;
 			const state = createState();
 			state.currentSessionId = "session-1";
 			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
@@ -526,22 +437,9 @@ describe("result watcher", () => {
 					agent: "child",
 				},
 			});
-			const emitted: Array<{ event: string; data: unknown }> = [];
-			const listeners = new Map<string, Set<(payload: unknown) => void>>();
-			const pi = {
-				events: {
-					on(event: string, listener: (payload: unknown) => void) {
-						const set = listeners.get(event) ?? new Set();
-						set.add(listener);
-						listeners.set(event, set);
-						return () => set.delete(listener);
-					},
-					emit(event: string, data: unknown) {
-						emitted.push({ event, data });
-						for (const listener of listeners.get(event) ?? []) listener(data);
-					},
-				},
-			};
+			const events = createRecordingEventBus({ acknowledgeResultIntercom: true });
+			const pi = { events };
+			const emitted = events.emitted;
 			const state = createState();
 			state.currentSessionId = "session-1";
 			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
@@ -646,28 +544,9 @@ describe("result watcher", () => {
 	it("marks grouped async results as paused when the result file is paused", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {
-			const emitted: Array<{ event: string; data: unknown }> = [];
-			const listeners = new Map<string, Set<(payload: unknown) => void>>();
-			const pi = {
-				events: {
-					on(event: string, handler: (payload: unknown) => void) {
-						const eventListeners = listeners.get(event) ?? new Set();
-						eventListeners.add(handler);
-						listeners.set(event, eventListeners);
-						return () => eventListeners.delete(handler);
-					},
-					emit(event: string, data: unknown) {
-						emitted.push({ event, data });
-						for (const handler of listeners.get(event) ?? []) handler(data);
-						if (event === "subagent:result-intercom") {
-							const requestId = data && typeof data === "object" ? (data as { requestId?: unknown }).requestId : undefined;
-							if (typeof requestId === "string") {
-								setImmediate(() => pi.events.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
-							}
-						}
-					},
-				},
-			};
+			const events = createRecordingEventBus({ acknowledgeResultIntercom: true });
+			const pi = { events };
+			const emitted = events.emitted;
 			const state = createState();
 			state.currentSessionId = "session-1";
 			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);

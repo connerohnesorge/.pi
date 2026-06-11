@@ -58,6 +58,21 @@ async function loadTool() {
   return import("../src/workflow-tool.js");
 }
 
+async function widgetHarness(options: Record<string, unknown> = {}, hasUI = true) {
+  const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
+  const setWidget = mock.fn();
+  const setStatus = mock.fn();
+  const ctx = { hasUI, ui: { setWidget, setStatus } };
+  const display = createWidgetWorkflowDisplay(ctx as never, options as never);
+  const snap = createWorkflowSnapshot(fakeMeta());
+  return { display, setStatus, setWidget, snap };
+}
+
+async function renderedFreshLines(): Promise<string> {
+  const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+  return renderWorkflowLines(createWorkflowSnapshot(fakeMeta())).join("\n");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // renderWorkflowText
 // ═══════════════════════════════════════════════════════════════════════════
@@ -209,17 +224,7 @@ describe("renderWorkflowText", () => {
 
 describe("createWidgetWorkflowDisplay lifecycle", () => {
   it("update calls setWidget with rendered lines", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never, { key: "test-wf" });
-    const snap = createWorkflowSnapshot(fakeMeta());
+    const { display, setWidget, snap } = await widgetHarness({ key: "test-wf" });
     display.update(snap);
 
     assert.equal(setWidget.mock.callCount(), 1);
@@ -229,32 +234,14 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   });
 
   it("complete calls setWidget", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus: mock.fn() },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never);
-    const snap = createWorkflowSnapshot(fakeMeta());
+    const { display, setWidget, snap } = await widgetHarness();
     display.complete(snap);
 
     assert.equal(setWidget.mock.callCount(), 1);
   });
 
   it("clear removes widget and status", async () => {
-    const { createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never, { showStatus: true });
+    const { display, setStatus, setWidget } = await widgetHarness({ showStatus: true });
     display.clear();
 
     assert.equal(setWidget.mock.callCount(), 1);
@@ -264,17 +251,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   });
 
   it("does nothing when hasUI is false", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: false,
-      ui: { setWidget, setStatus },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never);
-    const snap = createWorkflowSnapshot(fakeMeta());
+    const { display, setWidget, snap } = await widgetHarness({}, false);
     display.update(snap);
     display.complete(snap);
     display.clear();
@@ -283,16 +260,8 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   });
 
   it("sets status line when showStatus is enabled", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget: mock.fn(), setStatus },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never, { key: "wf", showStatus: true });
-    const snap = createWorkflowSnapshot(fakeMeta("test-wf"));
+    const { display, setStatus, snap } = await widgetHarness({ key: "wf", showStatus: true });
+    snap.name = "test-wf";
     snap.agents = [agent(1, "a1", "done", "Research"), agent(2, "a2", "running", "Research")] as never[];
     display.update(snap);
 
@@ -428,12 +397,9 @@ describe("display pure helpers", () => {
   });
 
   it("statusLine shows completed state", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
     // statusLine is internal to display.ts — tested via widget display
-    const setStatus = mock.fn();
-    const ctx = { hasUI: true, ui: { setWidget: mock.fn(), setStatus } };
-    const display = createWidgetWorkflowDisplay(ctx as never, { key: "s", showStatus: true });
-    const snap = createWorkflowSnapshot(fakeMeta("bench"));
+    const { display, setStatus, snap } = await widgetHarness({ key: "s", showStatus: true });
+    snap.name = "bench";
     snap.agents = [agent(1, "a1", "done", "Research")] as never[];
     snap.agentCount = 1;
     snap.doneCount = 1;
@@ -703,23 +669,17 @@ describe("TUI rendering has no markdown syntax", () => {
   });
 
   it("renderWorkflowLines has no **bold** markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = await renderedFreshLines();
     assert.ok(!text.includes("**"), "should not have bold markdown markers");
   });
 
   it("renderWorkflowLines has no ## heading markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = await renderedFreshLines();
     assert.ok(!text.includes("##"), "should not have heading markdown markers");
   });
 
   it("renderWorkflowLines has no code fence markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = await renderedFreshLines();
     assert.ok(!text.includes("```"), "should not have code fence markers");
   });
 

@@ -8,11 +8,11 @@ export const MAX_AGENTS_PER_RUN = 1000;
 /** Default timeout for a single agent in milliseconds (5 minutes). */
 export const DEFAULT_AGENT_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Maximum concurrent agents (matches Claude Code limit). */
-export const MAX_CONCURRENCY = 20;
+/** Maximum concurrent agents (matches workflow tool cap). */
+export const MAX_CONCURRENCY = 16;
 
 /** Default token budget if none specified. */
-export const DEFAULT_TOKEN_BUDGET = 10_000_000;
+export const DEFAULT_TOKEN_BUDGET = 272_000;
 
 /** Directory for persisting workflow run state. */
 export const WORKFLOW_RUNS_DIR = ".pi/workflows/runs";

@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { MockPi } from "../support/helpers.ts";

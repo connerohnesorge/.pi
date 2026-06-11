@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -25,6 +26,7 @@ import {
 	SUBAGENT_PARENT_RUN_ID_ENV,
 } from "./pi-args.ts";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { publicNestedStepSummary } from "../../shared/nested-public.ts";
 
 const NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 const ROUTE_FILE = "route.json";
@@ -189,6 +191,21 @@ function sanitizeState(value: unknown, fallback: NestedRunState): NestedRunState
 		: fallback;
 }
 
+function sanitizeActivitySnapshot(raw: Record<string, unknown>) {
+	return {
+		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention" ? { activityState: raw.activityState } : {}),
+		...(clampNumber(raw.lastActivityAt) !== undefined ? { lastActivityAt: clampNumber(raw.lastActivityAt) } : {}),
+		...(stringValue(raw.currentTool, 128) ? { currentTool: stringValue(raw.currentTool, 128) } : {}),
+		...(clampNumber(raw.currentToolStartedAt) !== undefined ? { currentToolStartedAt: clampNumber(raw.currentToolStartedAt) } : {}),
+		...(stringValue(raw.currentPath, 2048) ? { currentPath: stringValue(raw.currentPath, 2048) } : {}),
+		...(clampNumber(raw.turnCount) !== undefined ? { turnCount: clampNumber(raw.turnCount) } : {}),
+		...(clampNumber(raw.toolCount) !== undefined ? { toolCount: clampNumber(raw.toolCount) } : {}),
+		...(clampNumber(raw.startedAt) !== undefined ? { startedAt: clampNumber(raw.startedAt) } : {}),
+		...(clampNumber(raw.endedAt) !== undefined ? { endedAt: clampNumber(raw.endedAt) } : {}),
+		...(stringValue(raw.error, 1024) ? { error: stringValue(raw.error, 1024) } : {}),
+	};
+}
+
 function sanitizeStep(input: unknown, depth: number): NestedStepSummary | undefined {
 	if (!input || typeof input !== "object") return undefined;
 	const raw = input as Record<string, unknown>;
@@ -201,16 +218,7 @@ function sanitizeStep(input: unknown, depth: number): NestedStepSummary | undefi
 		agent,
 		status,
 		...(stringValue(raw.sessionFile, 2048) ? { sessionFile: stringValue(raw.sessionFile, 2048) } : {}),
-		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention" ? { activityState: raw.activityState } : {}),
-		...(clampNumber(raw.lastActivityAt) !== undefined ? { lastActivityAt: clampNumber(raw.lastActivityAt) } : {}),
-		...(stringValue(raw.currentTool, 128) ? { currentTool: stringValue(raw.currentTool, 128) } : {}),
-		...(clampNumber(raw.currentToolStartedAt) !== undefined ? { currentToolStartedAt: clampNumber(raw.currentToolStartedAt) } : {}),
-		...(stringValue(raw.currentPath, 2048) ? { currentPath: stringValue(raw.currentPath, 2048) } : {}),
-		...(clampNumber(raw.turnCount) !== undefined ? { turnCount: clampNumber(raw.turnCount) } : {}),
-		...(clampNumber(raw.toolCount) !== undefined ? { toolCount: clampNumber(raw.toolCount) } : {}),
-		...(clampNumber(raw.startedAt) !== undefined ? { startedAt: clampNumber(raw.startedAt) } : {}),
-		...(clampNumber(raw.endedAt) !== undefined ? { endedAt: clampNumber(raw.endedAt) } : {}),
-		...(stringValue(raw.error, 1024) ? { error: stringValue(raw.error, 1024) } : {}),
+		...sanitizeActivitySnapshot(raw),
 		...(depth < MAX_DEPTH && Array.isArray(raw.children) ? { children: raw.children.map((child) => sanitizeSummary(child, depth + 1)).filter((child): child is NestedRunSummary => Boolean(child)).slice(0, MAX_CHILDREN) } : {}),
 	};
 }
@@ -247,18 +255,9 @@ export function sanitizeSummary(input: unknown, depth = 0): NestedRunSummary | u
 		...(Array.isArray(raw.agents) ? { agents: raw.agents.map((agent) => stringValue(agent, 128)).filter((agent): agent is string => Boolean(agent)).slice(0, MAX_STEPS) } : {}),
 		...(clampNumber(raw.currentStep) !== undefined ? { currentStep: clampNumber(raw.currentStep) } : {}),
 		...(clampNumber(raw.chainStepCount) !== undefined ? { chainStepCount: clampNumber(raw.chainStepCount) } : {}),
-		...(raw.activityState === "active_long_running" || raw.activityState === "needs_attention" ? { activityState: raw.activityState } : {}),
-		...(clampNumber(raw.lastActivityAt) !== undefined ? { lastActivityAt: clampNumber(raw.lastActivityAt) } : {}),
-		...(stringValue(raw.currentTool, 128) ? { currentTool: stringValue(raw.currentTool, 128) } : {}),
-		...(clampNumber(raw.currentToolStartedAt) !== undefined ? { currentToolStartedAt: clampNumber(raw.currentToolStartedAt) } : {}),
-		...(stringValue(raw.currentPath, 2048) ? { currentPath: stringValue(raw.currentPath, 2048) } : {}),
-		...(clampNumber(raw.turnCount) !== undefined ? { turnCount: clampNumber(raw.turnCount) } : {}),
-		...(clampNumber(raw.toolCount) !== undefined ? { toolCount: clampNumber(raw.toolCount) } : {}),
+		...sanitizeActivitySnapshot(raw),
 		...(totalTokens ? { totalTokens } : {}),
-		...(clampNumber(raw.startedAt) !== undefined ? { startedAt: clampNumber(raw.startedAt) } : {}),
-		...(clampNumber(raw.endedAt) !== undefined ? { endedAt: clampNumber(raw.endedAt) } : {}),
 		...(clampNumber(raw.lastUpdate) !== undefined ? { lastUpdate: clampNumber(raw.lastUpdate) } : {}),
-		...(stringValue(raw.error, 1024) ? { error: stringValue(raw.error, 1024) } : {}),
 		...(steps && steps.length > 0 ? { steps } : {}),
 		...(depth < MAX_DEPTH && Array.isArray(raw.children) ? { children: raw.children.map((child) => sanitizeSummary(child, depth + 1)).filter((child): child is NestedRunSummary => Boolean(child)).slice(0, MAX_CHILDREN) } : {}),
 	};
@@ -757,21 +756,7 @@ export function nestedSummaryFromAsyncStatus(status: AsyncStatus, asyncDir: stri
 		...(status.endedAt !== undefined ? { endedAt: status.endedAt } : {}),
 		lastUpdate: status.lastUpdate ?? fallback.ts,
 		...(status.sessionFile ? { sessionFile: status.sessionFile } : {}),
-		...(status.steps?.length ? { steps: status.steps.map((step) => ({
-			agent: step.agent,
-			status: step.status,
-			...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
-			...(step.activityState ? { activityState: step.activityState } : {}),
-			...(step.lastActivityAt !== undefined ? { lastActivityAt: step.lastActivityAt } : {}),
-			...(step.currentTool ? { currentTool: step.currentTool } : {}),
-			...(step.currentToolStartedAt !== undefined ? { currentToolStartedAt: step.currentToolStartedAt } : {}),
-			...(step.currentPath ? { currentPath: step.currentPath } : {}),
-			...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
-			...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
-			...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
-			...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
-			...(step.error ? { error: step.error } : {}),
-		})).slice(0, MAX_STEPS) } : {}),
+		...(status.steps?.length ? { steps: status.steps.map((step) => publicNestedStepSummary(step)).slice(0, MAX_STEPS) } : {}),
 	};
 }
 

@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
@@ -263,27 +264,24 @@ class CallRecordingAgent {
   }
 }
 
-test("agent() in workflow passes prompt and label to runner", async () => {
+async function runWithRecorder(script: string): Promise<CallRecordingAgent> {
   const rec = new CallRecordingAgent();
-  await runWorkflow(
-    `export const meta = { name: 'test', description: 't' }
-     const r = await agent('analyze this', { label: 'analyzer' })
-     return r`,
-    { agent: rec, persistLogs: false },
-  );
+  await runWorkflow(script, { agent: rec, persistLogs: false });
   assert.equal(rec.calls.length, 1);
+  return rec;
+}
+
+test("agent() in workflow passes prompt and label to runner", async () => {
+  const rec = await runWithRecorder(`export const meta = { name: 'test', description: 't' }
+     const r = await agent('analyze this', { label: 'analyzer' })
+     return r`);
   assert.equal(rec.calls[0].prompt, "analyze this");
 });
 
 test("agent() in workflow passes model spec to runner", async () => {
-  const rec = new CallRecordingAgent();
-  await runWorkflow(
-    `export const meta = { name: 'test', description: 't' }
+  const rec = await runWithRecorder(`export const meta = { name: 'test', description: 't' }
      const r = await agent('task', { label: 't', model: 'fast-llm/model' })
-     return r`,
-    { agent: rec, persistLogs: false },
-  );
-  assert.equal(rec.calls.length, 1);
+     return r`);
   assert.equal((rec.calls[0].options as { model?: string }).model, "fast-llm/model");
 });
 

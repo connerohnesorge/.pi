@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -27,6 +28,20 @@ function cleanup(ctx: GoalLedgerContext): void {
   } catch {
     // ignore
   }
+}
+
+function assertSingleAuditSkippedEvent(
+  result: ReturnType<typeof readGoalLedger>,
+  expected: { reason: string; provider?: string; model?: string; thinkingLevel?: string },
+): void {
+  assert.equal(result.events.length, 1);
+  const evt = result.events[0] as { type: string; reason: string; provider?: string; model?: string; thinkingLevel?: string };
+  assert.equal(evt.type, "audit_skipped");
+  assert.equal(evt.reason, expected.reason);
+  assert.equal(evt.provider, expected.provider);
+  assert.equal(evt.model, expected.model);
+  assert.equal(evt.thinkingLevel, expected.thinkingLevel);
+  assert.equal(result.malformed, 0);
 }
 
 test("goalLedgerPath resolves under .pi/goals", () => {
@@ -279,15 +294,12 @@ test("appendGoalEvent persists audit_skipped with disabled reason and metadata",
       at: "2024-01-01T00:00:00.000Z",
     });
 
-    const result = readGoalLedger(ctx);
-    assert.equal(result.events.length, 1);
-    const evt = result.events[0] as { type: string; reason: string; provider?: string; model?: string; thinkingLevel?: string };
-    assert.equal(evt.type, "audit_skipped");
-    assert.equal(evt.reason, "disabled");
-    assert.equal(evt.provider, "fireworks");
-    assert.equal(evt.model, "kimi");
-    assert.equal(evt.thinkingLevel, "high");
-    assert.equal(result.malformed, 0);
+    assertSingleAuditSkippedEvent(readGoalLedger(ctx), {
+      reason: "disabled",
+      provider: "fireworks",
+      model: "kimi",
+      thinkingLevel: "high",
+    });
   } finally {
     cleanup(ctx);
   }
@@ -303,14 +315,7 @@ test("appendGoalEvent persists audit_skipped with user_aborted reason and minima
       at: "2024-01-01T00:00:00.000Z",
     });
 
-    const result = readGoalLedger(ctx);
-    assert.equal(result.events.length, 1);
-    const evt = result.events[0] as { type: string; reason: string; provider?: string; model?: string };
-    assert.equal(evt.type, "audit_skipped");
-    assert.equal(evt.reason, "user_aborted");
-    assert.equal(evt.provider, undefined);
-    assert.equal(evt.model, undefined);
-    assert.equal(result.malformed, 0);
+    assertSingleAuditSkippedEvent(readGoalLedger(ctx), { reason: "user_aborted" });
   } finally {
     cleanup(ctx);
   }

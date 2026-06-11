@@ -1,10 +1,13 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, describe, it } from "node:test";
 
+import { createSubagentState } from "../../src/shared/subagent-state.ts";
 import { ASYNC_DIR } from "../../src/shared/types.ts";
+import { createEventBus } from "../support/helpers.ts";
 
 const SLASH_RESULT_TYPE = "subagent-slash-result";
 const SLASH_SUBAGENT_REQUEST_EVENT = "subagent:slash:request";
@@ -62,42 +65,40 @@ try {
 	available = false;
 }
 
-function createEventBus(): EventBus {
-	const handlers = new Map<string, Array<(data: unknown) => void>>();
+function createState(cwd: string) {
+	return createSubagentState({ baseCwd: cwd });
+}
+
+function makeSlashPi(
+	events: EventBus,
+	commands: Map<string, RegisteredSlashCommand>,
+	sent: unknown[] = [],
+	onSend?: (message: unknown) => void,
+) {
 	return {
-		on(event, handler) {
-			const existing = handlers.get(event) ?? [];
-			existing.push(handler);
-			handlers.set(event, existing);
-			return () => {
-				const current = handlers.get(event) ?? [];
-				handlers.set(event, current.filter((entry) => entry !== handler));
-			};
+		events,
+		registerCommand(name: string, spec: RegisteredSlashCommand) {
+			commands.set(name, spec);
 		},
-		emit(event, data) {
-			for (const handler of handlers.get(event) ?? []) {
-				handler(data);
-			}
+		registerShortcut() {},
+		sendMessage(message: unknown) {
+			sent.push(message);
+			onSend?.(message);
 		},
 	};
 }
 
-function createState(cwd: string) {
-	return {
-		baseCwd: cwd,
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
+function autoRespondToSlash(
+	events: EventBus,
+	makeResult: (payload: { requestId: string; params?: unknown }) => { result: unknown; isError?: boolean; errorText?: string },
+	onRequest?: (payload: { requestId: string; params?: unknown }) => void,
+): void {
+	events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
+		const payload = data as { requestId: string; params?: unknown };
+		onRequest?.(payload);
+		events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
+		events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, { requestId: payload.requestId, ...makeResult(payload) });
+	});
 }
 
 async function withIsolatedHome<T>(fn: () => Promise<T>): Promise<T> {
@@ -174,28 +175,21 @@ async function captureSlashCommandParams(
 		const events = createEventBus();
 		let requestedParams: unknown;
 		const notifications: string[] = [];
-		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-			const payload = data as { requestId: string; params?: unknown };
-			requestedParams = payload.params;
-			events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
-			events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-				requestId: payload.requestId,
+		autoRespondToSlash(
+			events,
+			() => ({
 				result: {
 					content: [{ type: "text", text: `${commandName} finished` }],
 					details: { mode: "chain", results: [] },
 				},
 				isError: false,
-			});
-		});
-
-		const pi = {
-			events,
-			registerCommand(name: string, spec: RegisteredSlashCommand) {
-				commands.set(name, spec);
+			}),
+			(payload) => {
+				requestedParams = payload.params;
 			},
-			registerShortcut() {},
-			sendMessage(_message: unknown) {},
-		};
+		);
+
+		const pi = makeSlashPi(events, commands);
 
 		registerSlashCommands!(pi, createState(cwd));
 		await commands.get(commandName)!.handler(args, createCommandContext({
@@ -226,30 +220,21 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 				this.rewrites++;
 			},
 		};
-		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-			const payload = data as { requestId: string; params?: unknown };
-			requestedParams = payload.params;
-			events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
-			events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-				requestId: payload.requestId,
+		autoRespondToSlash(
+			events,
+			() => ({
 				result: {
 					content: [{ type: "text", text: "Commit finished" }],
 					details: { mode: "single", results: [] },
 				},
 				isError: false,
-			});
-		});
+			}),
+			(payload) => {
+				requestedParams = payload.params;
+			},
+		);
 
-		const pi = {
-			events,
-			registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
-				commands.set(name, spec);
-			},
-			registerShortcut() {},
-			sendMessage(message: unknown) {
-				sent.push(message);
-			},
-		};
+		const pi = makeSlashPi(events, commands, sent);
 
 		registerSlashCommands!(pi, createState(process.cwd()));
 		await commands.get("run")!.handler("scout", createCommandContext({ sessionManager }));
@@ -269,30 +254,17 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		const log: string[] = [];
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
 		const events = createEventBus();
-		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-			const requestId = (data as { requestId: string }).requestId;
-			events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
-			events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-				requestId,
-				result: {
-					content: [{ type: "text", text: "Scout finished" }],
-					details: { mode: "single", results: [{ sessionFile: "/tmp/child-session.jsonl" }] },
-				},
-				isError: false,
-			});
-		});
+		autoRespondToSlash(events, () => ({
+			result: {
+				content: [{ type: "text", text: "Scout finished" }],
+				details: { mode: "single", results: [{ sessionFile: "/tmp/child-session.jsonl" }] },
+			},
+			isError: false,
+		}));
 
-		const pi = {
-			events,
-			registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
-				commands.set(name, spec);
-			},
-			registerShortcut() {},
-			sendMessage(message: unknown) {
-				sent.push(message);
-				log.push(`send:${(message as { display?: boolean }).display === false ? "hidden" : "visible"}`);
-			},
-		};
+		const pi = makeSlashPi(events, commands, sent, (message) => {
+			log.push(`send:${(message as { display?: boolean }).display === false ? "hidden" : "visible"}`);
+		});
 
 		registerSlashCommands!(pi, createState(process.cwd()));
 		await commands.get("run")!.handler("scout inspect this", createCommandContext({
@@ -322,26 +294,12 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		const log: string[] = [];
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
 		const events = createEventBus();
-		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-			const requestId = (data as { requestId: string }).requestId;
-			events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
-			events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-				requestId,
-				result: { content: [{ type: "text", text: "done" }], details: { mode: "single", results: [] } },
-				isError: false,
-			});
-		});
+		autoRespondToSlash(events, () => ({
+			result: { content: [{ type: "text", text: "done" }], details: { mode: "single", results: [] } },
+			isError: false,
+		}));
 
-		const pi = {
-			events,
-			registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
-				commands.set(name, spec);
-			},
-			registerShortcut() {},
-			sendMessage() {
-				log.push("send");
-			},
-		};
+		const pi = makeSlashPi(events, commands, [], () => log.push("send"));
 
 		registerSlashCommands!(pi, createState(process.cwd()));
 		await commands.get("run")!.handler("scout inspect this", createCommandContext({
@@ -357,31 +315,18 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		const log: string[] = [];
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
 		const events = createEventBus();
-		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-			const requestId = (data as { requestId: string }).requestId;
-			events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
-			events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-				requestId,
-				result: {
-					content: [{ type: "text", text: "Subagent failed" }],
-					details: { mode: "single", results: [] },
-				},
-				isError: true,
-				errorText: "Subagent failed",
-			});
-		});
+		autoRespondToSlash(events, () => ({
+			result: {
+				content: [{ type: "text", text: "Subagent failed" }],
+				details: { mode: "single", results: [] },
+			},
+			isError: true,
+			errorText: "Subagent failed",
+		}));
 
-		const pi = {
-			events,
-			registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
-				commands.set(name, spec);
-			},
-			registerShortcut() {},
-			sendMessage(message: unknown) {
-				sent.push(message);
-				log.push(`send:${(message as { display?: boolean }).display === false ? "hidden" : "visible"}`);
-			},
-		};
+		const pi = makeSlashPi(events, commands, sent, (message) => {
+			log.push(`send:${(message as { display?: boolean }).display === false ? "hidden" : "visible"}`);
+		});
 
 		registerSlashCommands!(pi, createState(process.cwd()));
 		await commands.get("run")!.handler("scout inspect this", createCommandContext({
@@ -410,28 +355,21 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
 		const events = createEventBus();
 		let requestedParams: unknown;
-		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-			const payload = data as { requestId: string; params?: unknown };
-			requestedParams = payload.params;
-			events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
-			events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-				requestId: payload.requestId,
+		autoRespondToSlash(
+			events,
+			() => ({
 				result: {
 					content: [{ type: "text", text: "parallel finished" }],
 					details: { mode: "parallel", results: [] },
 				},
 				isError: false,
-			});
-		});
-
-		const pi = {
-			events,
-			registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
-				commands.set(name, spec);
+			}),
+			(payload) => {
+				requestedParams = payload.params;
 			},
-			registerShortcut() {},
-			sendMessage(_message: unknown) {},
-		};
+		);
+
+		const pi = makeSlashPi(events, commands);
 
 		registerSlashCommands!(pi, createState(process.cwd()));
 		await commands.get("parallel")!.handler("scout[output=x.md,outputMode=file-only,reads=a.md+b.md,progress] -- Review", createCommandContext());
@@ -448,30 +386,21 @@ describe("slash command custom message delivery", { skip: !available ? "slash-co
 		const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
 		const events = createEventBus();
 		let requestedTasks = 0;
-		events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
-			const payload = data as { requestId: string; params?: { tasks?: unknown[] } };
-			requestedTasks = payload.params?.tasks?.length ?? 0;
-			events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: payload.requestId });
-			events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
-				requestId: payload.requestId,
+		autoRespondToSlash(
+			events,
+			() => ({
 				result: {
 					content: [{ type: "text", text: "parallel finished" }],
 					details: { mode: "parallel", results: [] },
 				},
 				isError: false,
-			});
-		});
+			}),
+			(payload) => {
+				requestedTasks = (payload.params as { tasks?: unknown[] } | undefined)?.tasks?.length ?? 0;
+			},
+		);
 
-		const pi = {
-			events,
-			registerCommand(name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
-				commands.set(name, spec);
-			},
-			registerShortcut() {},
-			sendMessage(message: unknown) {
-				sent.push(message);
-			},
-		};
+		const pi = makeSlashPi(events, commands, sent);
 
 		registerSlashCommands!(pi, createState(process.cwd()));
 		const args = Array.from({ length: 9 }, (_, index) => `scout \"task ${index + 1}\"`).join(" -> ");

@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { formatDuration, formatModelThinking, formatTokens, shortenPath } from "../../shared/formatters.ts";

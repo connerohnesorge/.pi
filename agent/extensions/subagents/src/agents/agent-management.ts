@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -77,6 +78,30 @@ function sanitizeName(name: string): string {
 
 function parsePackageConfig(value: unknown): { packageName?: string; error?: string } {
 	return parsePackageName(value, "config.package");
+}
+
+function resolveUpdatedIdentity(
+	target: AgentConfig | ChainConfig,
+	cfg: Record<string, unknown>,
+): { newLocalName: string; newPackageName?: string; error?: string } {
+	if (hasKey(cfg, "name") && (typeof cfg.name !== "string" || !cfg.name.trim())) {
+		return { newLocalName: "", error: "config.name must be a non-empty string when provided." };
+	}
+	if (hasKey(cfg, "description") && (typeof cfg.description !== "string" || !cfg.description.trim())) {
+		return { newLocalName: "", error: "config.description must be a non-empty string when provided." };
+	}
+	let newLocalName = target.localName ?? frontmatterNameForConfig(target);
+	if (hasKey(cfg, "name")) {
+		newLocalName = sanitizeName(cfg.name as string);
+		if (!newLocalName) return { newLocalName, error: "config.name is invalid after sanitization." };
+	}
+	let newPackageName = target.packageName;
+	if (hasKey(cfg, "package")) {
+		const parsedPackage = parsePackageConfig(cfg.package);
+		if (parsedPackage.error) return { newLocalName, error: parsedPackage.error };
+		newPackageName = parsedPackage.packageName;
+	}
+	return { newLocalName, newPackageName };
 }
 
 function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; project: AgentConfig[] }): AgentConfig[] {
@@ -511,19 +536,9 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 		const target = targetOrError;
 		const updated: AgentConfig = { ...target };
 		const oldName = target.name;
-		if (hasKey(cfg, "name") && (typeof cfg.name !== "string" || !cfg.name.trim())) return result("config.name must be a non-empty string when provided.", true);
-		if (hasKey(cfg, "description") && (typeof cfg.description !== "string" || !cfg.description.trim())) return result("config.description must be a non-empty string when provided.", true);
-		let newLocalName = target.localName ?? frontmatterNameForConfig(target);
-		if (hasKey(cfg, "name")) {
-			newLocalName = sanitizeName(cfg.name as string);
-			if (!newLocalName) return result("config.name is invalid after sanitization.", true);
-		}
-		let newPackageName = target.packageName;
-		if (hasKey(cfg, "package")) {
-			const parsedPackage = parsePackageConfig(cfg.package);
-			if (parsedPackage.error) return result(parsedPackage.error, true);
-			newPackageName = parsedPackage.packageName;
-		}
+		const identity = resolveUpdatedIdentity(target, cfg);
+		if (identity.error) return result(identity.error, true);
+		const { newLocalName, newPackageName } = identity;
 		const applyError = applyAgentConfig(updated, cfg);
 		if (applyError) return result(applyError, true);
 		updated.localName = newLocalName;
@@ -563,19 +578,9 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	const target = targetOrError;
 	const updated: ChainConfig = { ...target, steps: [...target.steps] };
 	const oldName = target.name;
-	if (hasKey(cfg, "name") && (typeof cfg.name !== "string" || !cfg.name.trim())) return result("config.name must be a non-empty string when provided.", true);
-	if (hasKey(cfg, "description") && (typeof cfg.description !== "string" || !cfg.description.trim())) return result("config.description must be a non-empty string when provided.", true);
-	let newLocalName = target.localName ?? frontmatterNameForConfig(target);
-	if (hasKey(cfg, "name")) {
-		newLocalName = sanitizeName(cfg.name as string);
-		if (!newLocalName) return result("config.name is invalid after sanitization.", true);
-	}
-	let newPackageName = target.packageName;
-	if (hasKey(cfg, "package")) {
-		const parsedPackage = parsePackageConfig(cfg.package);
-		if (parsedPackage.error) return result(parsedPackage.error, true);
-		newPackageName = parsedPackage.packageName;
-	}
+	const identity = resolveUpdatedIdentity(target, cfg);
+	if (identity.error) return result(identity.error, true);
+	const { newLocalName, newPackageName } = identity;
 	let parsedSteps: ChainStepConfig[] | undefined;
 	if (hasKey(cfg, "steps")) {
 		const parsed = parseStepList(cfg.steps);

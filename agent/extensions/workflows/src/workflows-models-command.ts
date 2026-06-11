@@ -114,6 +114,23 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
  *
  * Returns the updated tiers object, or null if nothing changed.
  */
+function createModelSelectTheme(theme: Theme): SelectListTheme {
+  const simpleColors = {
+    description: "muted",
+    scrollInfo: "dim",
+    noMatch: "warning",
+  } as const;
+  const simpleRenderers = Object.fromEntries(
+    Object.entries(simpleColors).map(([slot, color]) => [slot, (text: string) => theme.fg(color, text)]),
+  );
+
+  return {
+    selectedPrefix: (text: string) => theme.bg("selectedBg", theme.fg("accent", text)),
+    selectedText: (text: string) => theme.bg("selectedBg", theme.bold(text)),
+    ...simpleRenderers,
+  } as SelectListTheme;
+}
+
 export async function editSingleTier(
   ctx: ExtensionCommandContext,
   tiers: Record<string, string>,
@@ -135,16 +152,7 @@ export async function editSingleTier(
     container.addChild(new Text(theme.fg("accent", titleText), 1, 0));
     container.addChild(new Spacer(1));
 
-    // SelectList theme
-    const selectTheme: SelectListTheme = {
-      selectedPrefix: (t: string) => theme.bg("selectedBg", theme.fg("accent", t)),
-      selectedText: (t: string) => theme.bg("selectedBg", theme.bold(t)),
-      description: (t: string) => theme.fg("muted", t),
-      scrollInfo: (t: string) => theme.fg("dim", t),
-      noMatch: (t: string) => theme.fg("warning", t),
-    };
-
-    const selectList = new SelectList(items, 12, selectTheme);
+    const selectList = new SelectList(items, 12, createModelSelectTheme(theme));
 
     // Preselect the current model
     if (current) {

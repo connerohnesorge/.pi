@@ -18,8 +18,8 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { parseKey } from "@earendil-works/pi-tui";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
 import type { PersistedRunState } from "./run-persistence.js";
-import { registerSavedWorkflow } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
+import { saveRunAsWorkflow } from "./workflow-save-run.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 
 const STATUS_ICON: Record<string, string> = {
@@ -553,6 +553,10 @@ export function openWorkflowNavigator(
       const cleanup = () => {
         for (const ev of events) manager.off(ev, onEvent);
       };
+      const activePersistedRun = () => {
+        const id = state.activeRunId(model);
+        return id ? manager.listRuns().find((run) => run.runId === id) : undefined;
+      };
 
       const act = (data: string) => {
         const itemKind = state.kind === "runs" ? state.itemKindAt(model, state.cursor) : undefined;
@@ -601,10 +605,12 @@ export function openWorkflowNavigator(
             break;
           }
           case "restart": {
-            const id = state.activeRunId(model);
-            const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+            const run = activePersistedRun();
             if (!run?.script) {
-              ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
+              ui.notify(
+                run ? `Cannot restart ${run.runId} (no script saved)` : "No run selected to restart",
+                "warning",
+              );
               break;
             }
             const { runId: newId } = manager.startInBackground(run.script, run.args);
@@ -612,8 +618,7 @@ export function openWorkflowNavigator(
             break;
           }
           case "save": {
-            const id = state.activeRunId(model);
-            const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+            const run = activePersistedRun();
             if (!run?.script) {
               ui.notify("No saved run script to save", "warning");
             } else if (!opts.storage) {
@@ -621,15 +626,7 @@ export function openWorkflowNavigator(
             } else {
               const storage = opts.storage;
               const name = run.workflowName || "workflow";
-              const saved = storage.save({
-                name,
-                description: run.workflowName,
-                script: run.script,
-                location: "project",
-              });
-              registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
-                storage.list().some((w) => w.name === saved.name),
-              );
+              saveRunAsWorkflow(pi, storage, opts.cwd ?? process.cwd(), name, run);
               ui.notify(`Saved /${name}`, "info");
             }
             break;

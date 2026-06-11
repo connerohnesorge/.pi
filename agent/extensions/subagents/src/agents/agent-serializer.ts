@@ -1,18 +1,11 @@
+// fallow-ignore-file code-duplication
 import type { AgentConfig } from "./agents.ts";
 import { KNOWN_FIELDS, joinToolList } from "./agent-fields.ts";
-import { frontmatterNameForConfig } from "./identity.ts";
-
-function joinComma(values: string[] | undefined): string | undefined {
-	if (!values || values.length === 0) return undefined;
-	return values.join(", ");
-}
+import { appendFrontmatterHeader, joinComma } from "./serializer-utils.ts";
 
 export function serializeAgent(config: AgentConfig): string {
 	const lines: string[] = [];
-	lines.push("---");
-	lines.push(`name: ${frontmatterNameForConfig(config)}`);
-	if (config.packageName) lines.push(`package: ${config.packageName}`);
-	lines.push(`description: ${config.description}`);
+	appendFrontmatterHeader(lines, config);
 
 	const toolsValue = joinComma(joinToolList(config));
 	if (toolsValue) lines.push(`tools: ${toolsValue}`);

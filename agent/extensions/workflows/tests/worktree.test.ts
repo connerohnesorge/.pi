@@ -6,7 +6,23 @@ import { join } from "node:path";
 import test from "node:test";
 import { createWorktree as createWorktreeLive, removeWorktree } from "../src/worktree.js";
 
-// ── Existing tests (unchanged) ──
+type Git = (...args: string[]) => Buffer;
+
+async function withGitRepo(prefix: string, fn: (repo: string, git: Git) => Promise<void>): Promise<void> {
+  const repo = mkdtempSync(join(tmpdir(), prefix));
+  const git: Git = (...args) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "file.txt"), "base\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "init");
+    await fn(repo, git);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
 
 test("createWorktree no-ops (not isolated) outside a git repo", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-wt-nogit-"));
@@ -21,16 +37,7 @@ test("createWorktree no-ops (not isolated) outside a git repo", async () => {
 });
 
 test("createWorktree isolates in a git repo, then removeWorktree cleans up", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "pi-wt-git-"));
-  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
-  try {
-    git("init", "-q");
-    git("config", "user.email", "t@t.t");
-    git("config", "user.name", "t");
-    writeFileSync(join(repo, "file.txt"), "base\n");
-    git("add", ".");
-    git("commit", "-q", "-m", "init");
-
+  await withGitRepo("pi-wt-git-", async (repo) => {
     const wt = await createWorktreeLive(repo, "run-9-0-edit");
     assert.equal(wt.isolated, true);
     assert.ok(wt.cwd !== repo && existsSync(wt.cwd), "worktree dir exists");
@@ -44,12 +51,8 @@ test("createWorktree isolates in a git repo, then removeWorktree cleans up", asy
     assert.ok(!existsSync(wt.cwd), "worktree dir removed");
     const branches = execFileSync("git", ["-C", repo, "branch", "--list", wt.branch ?? ""], { encoding: "utf8" });
     assert.equal(branches.trim(), "", "branch deleted");
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
-
-// ── NEW TESTS ──
 
 test("createWorktree falls back when git fails (non-git directory)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-wt-noexec-"));
@@ -65,83 +68,42 @@ test("createWorktree falls back when git fails (non-git directory)", async () =>
 });
 
 test("removeWorktree does not throw when worktree directory is already missing", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "pi-wt-missing-"));
-  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
-  try {
-    git("init", "-q");
-    git("config", "user.email", "t@t.t");
-    git("config", "user.name", "t");
-    writeFileSync(join(repo, "file.txt"), "base\n");
-    git("add", ".");
-    git("commit", "-q", "-m", "init");
-
+  await withGitRepo("pi-wt-missing-", async (repo) => {
     const wt = await createWorktreeLive(repo, "run-missing-dir");
     assert.equal(wt.isolated, true);
 
-    // Remove the worktree directory so git worktree remove --force fails
     rmSync(wt.cwd, { recursive: true, force: true });
     assert.ok(!existsSync(wt.cwd), "worktree dir removed manually before removeWorktree");
 
-    // removeWorktree must not throw despite git commands failing
     await assert.doesNotReject(removeWorktree(wt));
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 test("createWorktree falls back when target branch already exists", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "pi-wt-conflict-"));
-  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
-  try {
-    git("init", "-q");
-    git("config", "user.email", "t@t.t");
-    git("config", "user.name", "t");
-    writeFileSync(join(repo, "file.txt"), "base\n");
-    git("add", ".");
-    git("commit", "-q", "-m", "init");
-
-    // Pre-create the branch that createWorktree will try to create.
-    // slug("conflict-branch") → "conflict-branch"
+  await withGitRepo("pi-wt-conflict-", async (repo, git) => {
     const name = "conflict-branch";
     git("branch", "pi/wf/conflict-branch");
 
-    // createWorktree should fail: git worktree add -b <existing-branch> errors out
     const wt = await createWorktreeLive(repo, name);
     assert.equal(wt.isolated, false);
     assert.equal(wt.cwd, repo);
     assert.ok(/already exists/i.test(wt.reason ?? ""), `Expected 'already exists' error, got: ${wt.reason}`);
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });
 
 test("removeWorktree does not throw when git operations fail (corrupted metadata)", async () => {
-  const repo = mkdtempSync(join(tmpdir(), "pi-wt-failrm-"));
-  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
-  try {
-    git("init", "-q");
-    git("config", "user.email", "t@t.t");
-    git("config", "user.name", "t");
-    writeFileSync(join(repo, "file.txt"), "base\n");
-    git("add", ".");
-    git("commit", "-q", "-m", "init");
-
+  await withGitRepo("pi-wt-failrm-", async (repo) => {
     const wt = await createWorktreeLive(repo, "run-fail-rm");
     assert.equal(wt.isolated, true);
 
-    // Remove worktree dir so git worktree remove fails
     rmSync(wt.cwd, { recursive: true, force: true });
 
-    // Corrupt git worktree metadata so git worktree remove --force also fails
     const branchSuffix = wt.branch?.replace("pi/wf/", "") ?? "";
     const worktreeMeta = join(repo, ".git", "worktrees", branchSuffix);
     if (existsSync(worktreeMeta)) {
       writeFileSync(join(worktreeMeta, "gitdir"), "/nonexistent/path\n");
     }
 
-    // Both git operations should fail silently — no throw from removeWorktree
     await assert.doesNotReject(removeWorktree(wt));
-  } finally {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  });
 });

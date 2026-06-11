@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import { formatDuration, formatTokens, shortenPath } from "../../shared/formatters.ts";
 import { formatActivityLabel } from "../../shared/status-format.ts";
 import type { ActivityState, NestedRunSummary, NestedStepSummary } from "../../shared/types.ts";

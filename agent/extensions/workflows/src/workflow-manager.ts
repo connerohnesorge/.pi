@@ -13,7 +13,13 @@ import {
   type RunPersistence,
   type RunStatus,
 } from "./run-persistence.js";
-import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import {
+  type JournalEntry,
+  parseWorkflowScript,
+  runWorkflow,
+  type WorkflowMeta,
+  type WorkflowRunResult,
+} from "./workflow.js";
 
 export interface ManagedRun {
   runId: string;
@@ -66,6 +72,20 @@ export interface WorkflowManagerOptions {
   mainModel?: string;
   /** The pi session id to tag runs with (see setSessionId). */
   sessionId?: string;
+}
+
+function createInitialSnapshot(meta: WorkflowMeta): WorkflowSnapshot {
+  return {
+    name: meta.name,
+    description: meta.description,
+    phases: meta.phases?.map((p) => p.title) ?? [],
+    logs: [],
+    agents: [],
+    agentCount: 0,
+    runningCount: 0,
+    doneCount: 0,
+    errorCount: 0,
+  };
 }
 
 export class WorkflowManager extends EventEmitter {
@@ -137,17 +157,7 @@ export class WorkflowManager extends EventEmitter {
     const managed: ManagedRun = {
       runId,
       status: "running",
-      snapshot: {
-        name: parsed.meta.name,
-        description: parsed.meta.description,
-        phases: parsed.meta.phases?.map((p) => p.title) ?? [],
-        logs: [],
-        agents: [],
-        agentCount: 0,
-        runningCount: 0,
-        doneCount: 0,
-        errorCount: 0,
-      },
+      snapshot: createInitialSnapshot(parsed.meta),
       controller,
       startedAt: new Date(),
       script,
@@ -205,17 +215,7 @@ export class WorkflowManager extends EventEmitter {
     return {
       runId: generateRunId(),
       status: "running",
-      snapshot: {
-        name: parsed.meta.name,
-        description: parsed.meta.description,
-        phases: parsed.meta.phases?.map((p) => p.title) ?? [],
-        logs: [],
-        agents: [],
-        agentCount: 0,
-        runningCount: 0,
-        doneCount: 0,
-        errorCount: 0,
-      },
+      snapshot: createInitialSnapshot(parsed.meta),
       controller: new AbortController(),
       startedAt: new Date(),
       script,

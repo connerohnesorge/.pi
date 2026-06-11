@@ -141,6 +141,26 @@ function stripDynamicSystemPromptFooter(systemPrompt: string): string {
     .trim();
 }
 
+function emptyBtwSkillsResult() {
+  return { skills: [], diagnostics: [] };
+}
+
+function emptyBtwPromptsResult() {
+  return { prompts: [], diagnostics: [] };
+}
+
+function emptyBtwThemesResult() {
+  return { themes: [], diagnostics: [] };
+}
+
+function emptyBtwAgentsFilesResult() {
+  return { agentsFiles: [] };
+}
+
+function ignoreBtwResourceExtensions(): void {}
+
+async function reloadNoBtwResources(): Promise<void> {}
+
 function createBtwResourceLoader(
   ctx: ExtensionCommandContext,
   appendSystemPrompt: string[] = [BTW_SYSTEM_PROMPT],
@@ -149,15 +169,17 @@ function createBtwResourceLoader(
   const systemPrompt = stripDynamicSystemPromptFooter(ctx.getSystemPrompt());
 
   return {
-    getExtensions: () => extensionsResult,
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () => systemPrompt,
     getAppendSystemPrompt: () => appendSystemPrompt,
-    extendResources: () => {},
-    reload: async () => {},
+    getExtensions() {
+      return extensionsResult;
+    },
+    getSkills: emptyBtwSkillsResult,
+    getPrompts: emptyBtwPromptsResult,
+    getThemes: emptyBtwThemesResult,
+    getAgentsFiles: emptyBtwAgentsFilesResult,
+    extendResources: ignoreBtwResourceExtensions,
+    reload: reloadNoBtwResources,
   };
 }
 
@@ -1256,6 +1278,18 @@ export default function (pi: ExtensionAPI) {
       });
   }
 
+  function formatExchangeCount(count: number): string {
+    return `${count} exchange${count === 1 ? "" : "s"}`;
+  }
+
+  async function completeBtwHandoff(ctx: ExtensionCommandContext, thread: BtwHandoffExchange[], content: string, label: string): Promise<void> {
+    sendThreadToMain(ctx, content);
+    const count = thread.length;
+    await resetThread(ctx);
+    dismissOverlay();
+    notify(ctx, `Injected BTW ${label} (${formatExchangeCount(count)}).`, "info");
+  }
+
   async function dispatchBtwCommand(name: string, args: string, ctx: ExtensionCommandContext): Promise<boolean> {
     const trimmedArgs = args.trim();
 
@@ -1374,11 +1408,7 @@ export default function (pi: ExtensionAPI) {
           ? `Here is a side conversation I had. ${instructions}\n\n${formatThread(thread)}`
           : `Here is a side conversation I had for additional context:\n\n${formatThread(thread)}`;
 
-        sendThreadToMain(ctx, content);
-        const count = thread.length;
-        await resetThread(ctx);
-        dismissOverlay();
-        notify(ctx, `Injected BTW thread (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+        await completeBtwHandoff(ctx, thread, content, "thread");
       } catch (error) {
         setOverlayStatus("Inject failed. Thread preserved for retry or summarize.", ctx);
         notify(ctx, error instanceof Error ? error.message : String(error), "error");
@@ -1403,11 +1433,7 @@ export default function (pi: ExtensionAPI) {
           ? `Here is a summary of a side conversation I had. ${instructions}\n\n${summary}`
           : `Here is a summary of a side conversation I had:\n\n${summary}`;
 
-        sendThreadToMain(ctx, content);
-        const count = thread.length;
-        await resetThread(ctx);
-        dismissOverlay();
-        notify(ctx, `Injected BTW summary (${count} exchange${count === 1 ? "" : "s"}).`, "info");
+        await completeBtwHandoff(ctx, thread, content, "summary");
       } catch (error) {
         setOverlayStatus("Summarize failed. Thread preserved for retry or injection.", ctx);
         notify(ctx, error instanceof Error ? error.message : String(error), "error");

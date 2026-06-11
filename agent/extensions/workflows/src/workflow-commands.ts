@@ -6,8 +6,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { recomputeWorkflowSnapshot, renderWorkflowText, type WorkflowSnapshot } from "./display.js";
 import type { PersistedRunState } from "./run-persistence.js";
-import { registerSavedWorkflow } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
+import { saveRunAsWorkflow } from "./workflow-save-run.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import { openWorkflowNavigator } from "./workflow-ui.js";
 
@@ -210,15 +210,7 @@ export function registerWorkflowCommands(
             ctx.ui.notify(runIdArg ? `No run ${runIdArg} with a script` : "No saved run to save", "error");
             return;
           }
-          const saved = storage.save({
-            name,
-            description: run.workflowName,
-            script: run.script,
-            location: "project",
-          });
-          registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
-            storage.list().some((w) => w.name === saved.name),
-          );
+          saveRunAsWorkflow(pi, storage, opts.cwd ?? process.cwd(), name, run);
           ctx.ui.notify(`Saved /${name} (from ${run.runId})`, "info");
           return;
         }

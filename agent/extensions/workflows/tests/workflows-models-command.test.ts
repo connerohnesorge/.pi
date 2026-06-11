@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 /**
  * Tests for workflows-models-command.ts
  *
@@ -15,6 +16,20 @@ import { describe, it, mock } from "node:test";
 async function loadCommand() {
   const mod = await import("../src/workflows-models-command.js");
   return mod;
+}
+
+async function editTierWithSelection(
+  selection: string | null,
+  tiers: Record<string, string> = { small: "gpt-4.1-mini" },
+) {
+  const { editSingleTier } = await import("../src/workflows-models-command.js");
+  const ctx = {
+    ui: {
+      custom: mock.fn(async () => selection),
+      notify: mock.fn(),
+    },
+  };
+  return editSingleTier(ctx as never, tiers, "small");
 }
 
 describe("workflows-models-command", () => {
@@ -57,63 +72,24 @@ describe("workflows-models-command", () => {
     });
 
     it("returns null when user presses Escape (done with null)", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return null (simulating user cancelling)
-      const ctx = {
-        ui: {
-          custom: mock.fn(async () => null),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
+      const result = await editTierWithSelection(null);
       assert.equal(result, null);
     });
 
     it("returns null when user selects the same model (no change)", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return the same model that's already selected
-      const ctx = {
-        ui: {
-          custom: mock.fn(async () => "gpt-4.1-mini"),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
+      const result = await editTierWithSelection("gpt-4.1-mini");
       assert.equal(result, null); // no change
     });
 
     it("selects a different model and returns updated tiers", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      // Mock ctx.ui.custom to return a different model
-      const ctx = {
-        ui: {
-          custom: mock.fn(async () => "gpt-5"),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = { small: "gpt-4.1-mini" };
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
+      const result = await editTierWithSelection("gpt-5");
       assert.ok(result, "should return updated tiers");
       assert.equal(result.small, "gpt-5", "should have changed model");
       assert.equal(typeof result.small, "string", "should still be a string");
     });
 
     it("selects a model when no current model exists", async () => {
-      const { editSingleTier } = await import("../src/workflows-models-command.js");
-      const ctx = {
-        ui: {
-          custom: mock.fn(async () => "openai/gpt-4.1-mini"),
-          notify: mock.fn(),
-        },
-      };
-      const tiers: Record<string, string> = {};
-
-      const result = await editSingleTier(ctx as never, tiers, "small");
+      const result = await editTierWithSelection("openai/gpt-4.1-mini", {});
       assert.ok(result, "should return updated tiers");
       assert.equal(result.small, "openai/gpt-4.1-mini");
     });

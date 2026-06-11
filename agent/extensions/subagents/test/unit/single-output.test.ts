@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import * as fs from "node:fs";

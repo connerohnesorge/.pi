@@ -159,20 +159,29 @@ export function buildGoalAuditorPrompt(args: {
 }
 
 function makeAuditorResourceLoader(): ResourceLoader {
+	const getAuditorExtensions = () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() });
+	const getNoSkills = () => ({ skills: [], diagnostics: [] });
+	const getNoPrompts = () => ({ prompts: [], diagnostics: [] });
+	const getNoThemes = () => ({ themes: [], diagnostics: [] });
+	const getNoAgentsFiles = () => ({ agentsFiles: [] });
+	const getAuditorSystemPrompt = () => [
+		"You are a read-only completion auditor running in an isolated pi agent session.",
+		"Inspect the repository and decide whether the claimed goal completion is genuinely satisfied.",
+		"Never modify files. Never approve unless the actual user objective is complete.",
+	].join("\n");
+	const getNoAppendSystemPrompt = () => [];
+	const noopExtendResources = () => {};
+	const noopReload = async () => {};
 	return {
-		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-		getSkills: () => ({ skills: [], diagnostics: [] }),
-		getPrompts: () => ({ prompts: [], diagnostics: [] }),
-		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [] }),
-		getSystemPrompt: () => [
-			"You are a read-only completion auditor running in an isolated pi agent session.",
-			"Inspect the repository and decide whether the claimed goal completion is genuinely satisfied.",
-			"Never modify files. Never approve unless the actual user objective is complete.",
-		].join("\n"),
-		getAppendSystemPrompt: () => [],
-		extendResources: () => {},
-		reload: async () => {},
+		getExtensions: getAuditorExtensions,
+		getSkills: getNoSkills,
+		getPrompts: getNoPrompts,
+		getThemes: getNoThemes,
+		getAgentsFiles: getNoAgentsFiles,
+		getSystemPrompt: getAuditorSystemPrompt,
+		getAppendSystemPrompt: getNoAppendSystemPrompt,
+		extendResources: noopExtendResources,
+		reload: noopReload,
 	};
 }
 

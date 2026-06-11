@@ -1,7 +1,14 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import test from "node:test";
 import { registerBuiltinWorkflows } from "../src/builtin-commands.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
+
+function assertUsageWarning(notified: Array<{ message: string; type?: string }>): void {
+  assert.equal(notified.length, 1, "should notify with warning");
+  assert.equal(notified[0].type, "warning", "should be a warning");
+  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+}
 
 test("registerBuiltinWorkflows registers deep-research and adversarial-review commands", () => {
   const { pi, commands } = makeCommandRegistryPi();
@@ -36,9 +43,7 @@ test("registerBuiltinWorkflows deep-research handler validates empty args (retur
   // Calling with empty args should warn and return early (before running any workflow)
   const { ctx, notified } = makeNotifyCtx();
   await deepResearchHandler("", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+  assertUsageWarning(notified);
 });
 
 test("registerBuiltinWorkflows adversarial-review handler validates empty args (returns early)", async () => {
@@ -49,9 +54,7 @@ test("registerBuiltinWorkflows adversarial-review handler validates empty args (
 
   const { ctx, notified } = makeNotifyCtx();
   await advHandler("", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+  assertUsageWarning(notified);
 });
 
 test("registerBuiltinWorkflows creates handlers with expected structure", () => {

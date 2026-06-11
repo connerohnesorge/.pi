@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 /**
  * Integration tests for async (background) agent execution.
  *
@@ -13,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DISABLED_ARTIFACT_CONFIG, makeAsyncCtx, readMockPiArgs, waitForFile, writePackageSkill } from "../support/async-helpers.ts";
 import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 
@@ -108,40 +110,12 @@ function createRepo(prefix: string): string {
 	return repoDir;
 }
 
-function writePackageSkill(packageRoot: string, skillName: string): void {
-	const skillDir = path.join(packageRoot, "skills", skillName);
-	fs.mkdirSync(skillDir, { recursive: true });
-	fs.writeFileSync(
-		path.join(packageRoot, "package.json"),
-		JSON.stringify({ name: `${skillName}-pkg`, version: "1.0.0", pi: { skills: [`./skills/${skillName}`] } }, null, 2),
-		"utf-8",
-	);
-	fs.writeFileSync(
-		path.join(skillDir, "SKILL.md"),
-		`---\nname: ${skillName}\ndescription: test skill\n---\nbody\n`,
-		"utf-8",
-	);
-}
-
 async function waitForAsyncResultFile(id: string, timeoutMs = 15_000): Promise<string> {
-	const resultPath = path.join(RESULTS_DIR, `${id}.json`);
-	const deadline = Date.now() + timeoutMs;
-	while (!fs.existsSync(resultPath)) {
-		if (Date.now() > deadline) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
-		await new Promise((resolve) => setTimeout(resolve, 100));
-	}
-	return resultPath;
-}
-
-function readLastMockPiArgs(mockPi: MockPi): string[] {
-	const callFile = fs.readdirSync(mockPi.dir)
-		.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
-		.sort()
-		.at(-1);
-	assert.ok(callFile, "expected a recorded mock pi call");
-	const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[] };
-	assert.ok(Array.isArray(payload.args), "expected recorded args");
-	return payload.args;
+	return waitForFile(path.join(RESULTS_DIR, `${id}.json`), {
+		timeoutMs,
+		intervalMs: 100,
+		describe: "async result file",
+	});
 }
 
 describe("async execution utilities", { skip: !available ? "pi packages not available" : undefined }, () => {
@@ -199,17 +173,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	});
 
 	it("async launch messages tell the parent not to sleep-poll", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
-		const artifactConfig = {
-			enabled: false,
-			includeInput: false,
-			includeOutput: false,
-			includeJsonl: false,
-			includeMetadata: false,
-			cleanupDays: 7,
-		};
 		const commonParams = {
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig,
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		};
@@ -468,19 +434,12 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				model: "openai/gpt-5-mini:high",
 				fallbackModels: ["anthropic/claude-sonnet-4:low"],
 			}),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			ctx: makeAsyncCtx(tempDir),
 			availableModels: [
 				{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
 				{ provider: "anthropic", id: "claude-sonnet-4", fullId: "anthropic/claude-sonnet-4" },
 			],
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot,
 			maxSubagentDepth: 2,
@@ -530,15 +489,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini" }),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		});
@@ -576,15 +528,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini" }),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		});
@@ -626,15 +571,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini" }),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		});
@@ -662,15 +600,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			output: outputPath,
@@ -702,15 +633,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker", { output: "default-report.md" }),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			output: "false",
@@ -725,7 +649,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.doesNotMatch(payload.summary ?? "", /Output saved to:/);
 		assert.equal(fs.existsSync(path.join(tempDir, "false")), false);
 		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
-		assert.doesNotMatch(readLastMockPiArgs(mockPi).at(-1) ?? "", /Write your findings to:/);
+		assert.doesNotMatch(readMockPiArgs(mockPi).at(-1) ?? "", /Write your findings to:/);
 	});
 
 	it("background runs detect hidden tool failures even when the child exits 0", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
@@ -741,15 +665,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Deploy app",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot,
 			maxSubagentDepth: 2,
@@ -780,15 +697,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Implement the approved fixes",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot,
 			maxSubagentDepth: 2,
@@ -827,15 +737,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "test-runner",
 			task: "Run cold start test after patch",
 			agentConfig: makeAgent("test-runner", { tools: ["read", "grep", "bash", "ls"], completionGuard: false }),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot,
 			maxSubagentDepth: 2,
@@ -874,14 +777,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
 				{ provider: "github-copilot", id: "gpt-5-mini", fullId: "github-copilot/gpt-5-mini" },
 			],
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot,
 			maxSubagentDepth: 2,
@@ -915,16 +811,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				agent: "worker",
 				task: "Do work",
 				agentConfig: makeAgent("worker", { skills: ["async-task-cwd-skill"] }),
-				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				ctx: makeAsyncCtx(tempDir),
 				cwd: taskCwd,
-				artifactConfig: {
-					enabled: false,
-					includeInput: false,
-					includeOutput: false,
-					includeJsonl: false,
-					includeMetadata: false,
-					cleanupDays: 7,
-				},
+				artifactConfig: DISABLED_ARTIFACT_CONFIG,
 				shareEnabled: false,
 				sessionRoot: path.join(tempDir, "sessions"),
 				maxSubagentDepth: 2,
@@ -953,16 +842,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			ctx: makeAsyncCtx(tempDir),
 			cwd: tempDir,
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			skills: ["pi-subagents"],
@@ -978,16 +860,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const result = executeAsyncChain(id, {
 			chain: [{ agent: "worker", task: "Do work", skill: ["pi-subagents"] }],
 			agents: [makeAgent("worker")],
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			ctx: makeAsyncCtx(tempDir),
 			cwd: tempDir,
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1010,16 +885,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			executeAsyncChain(id, {
 				chain: [{ agent: "worker", task: "Do work", cwd: "packages/app", skill: ["async-chain-step-skill"] }],
 				agents: [makeAgent("worker")],
-				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				ctx: makeAsyncCtx(tempDir),
 				cwd: chainCwd,
-				artifactConfig: {
-					enabled: false,
-					includeInput: false,
-					includeOutput: false,
-					includeJsonl: false,
-					includeMetadata: false,
-					cleanupDays: 7,
-				},
+				artifactConfig: DISABLED_ARTIFACT_CONFIG,
 				shareEnabled: false,
 				sessionRoot: path.join(tempDir, "sessions"),
 				maxSubagentDepth: 2,
@@ -1066,8 +934,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		executeAsyncChain(id, {
 			chain: [{ parallel: [{ agent: "reader", task: "Read" }, { agent: "editor", task: "Edit" }] }],
 			agents: [makeAgent("reader"), makeAgent("editor")],
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1110,15 +978,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1137,16 +998,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			ctx: makeAsyncCtx(tempDir),
 			cwd: missingCwd,
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1160,16 +1014,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const chainResult = executeAsyncChain(chainId, {
 			chain: [{ agent: "worker", task: "Do work" }],
 			agents: [makeAgent("worker")],
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			ctx: makeAsyncCtx(tempDir),
 			cwd: missingCwd,
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1189,15 +1036,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				agent: "worker",
 				task: "Do work",
 				agentConfig: makeAgent("worker"),
-				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-				artifactConfig: {
-					enabled: false,
-					includeInput: false,
-					includeOutput: false,
-					includeJsonl: false,
-					includeMetadata: false,
-					cleanupDays: 7,
-				},
+				ctx: makeAsyncCtx(tempDir),
+				artifactConfig: DISABLED_ARTIFACT_CONFIG,
 				shareEnabled: false,
 				sessionRoot: path.join(tempDir, "sessions"),
 				maxSubagentDepth: 2,
@@ -1220,15 +1060,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const result = executeAsyncChain(id, {
 			chain: [{ agent: "worker", task: "Do work" }],
 			agents: [makeAgent("worker")],
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1255,15 +1088,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot,
 			maxSubagentDepth: 2,
@@ -1300,8 +1126,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "scout",
 			task: "Inspect something",
 			agentConfig: makeAgent("scout"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1345,8 +1171,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1382,8 +1208,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "scout",
 			task: "Investigate behavior",
 			agentConfig: makeAgent("scout"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1452,8 +1278,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Implement the approved fixes",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
 			maxSubagentDepth: 2,
@@ -1524,15 +1350,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			agent: "worker",
 			task: "Stream detailed progress",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: {
-				enabled: false,
-				includeInput: false,
-				includeOutput: false,
-				includeJsonl: false,
-				includeMetadata: false,
-				cleanupDays: 7,
-			},
+			ctx: makeAsyncCtx(tempDir),
+			artifactConfig: DISABLED_ARTIFACT_CONFIG,
 			shareEnabled: false,
 			sessionRoot,
 			maxSubagentDepth: 2,

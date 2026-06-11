@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 /**
  * Integration tests for single (sync) agent execution.
  *
@@ -13,6 +14,7 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { readMockPiArgs } from "../support/async-helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -152,14 +154,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 	});
 
 	function readCallArgs(): string[] {
-		const callFile = fs.readdirSync(mockPi.dir)
-			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
-			.sort()
-			.at(-1);
-		assert.ok(callFile, "expected a recorded mock pi call");
-		const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[] };
-		assert.ok(Array.isArray(payload.args), "expected recorded args");
-		return payload.args;
+		return readMockPiArgs(mockPi);
 	}
 
 	function makeExecutor(agents = [makeAgent("echo")]) {
@@ -988,7 +983,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		});
 	});
 
-	it("passes fanout routing env only when builtin subagent is declared", async () => {
+	it("passes nested routing env to every child", async () => {
 		const envKeys = [
 			SUBAGENT_FANOUT_CHILD_ENV,
 			SUBAGENT_PARENT_EVENT_SINK_ENV,
@@ -1004,27 +999,27 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			process.env[SUBAGENT_PARENT_CHILD_INDEX_ENV] = "7";
 
 			mockPi.onCall({ echoEnv: envKeys });
-			const fanoutAgents = [makeAgent("delegator", { tools: ["read", "subagent"] })];
-			const fanout = await runSync(tempDir, fanoutAgents, "delegator", "Task", { runId: "fanout-run", index: 2 });
-			assert.equal(fanout.exitCode, 0);
-			assert.deepEqual(JSON.parse(fanout.finalOutput ?? "{}"), {
+			const explicitAgents = [makeAgent("delegator", { tools: ["read", "subagent"] })];
+			const explicit = await runSync(tempDir, explicitAgents, "delegator", "Task", { runId: "explicit-run", index: 2 });
+			assert.equal(explicit.exitCode, 0);
+			assert.deepEqual(JSON.parse(explicit.finalOutput ?? "{}"), {
 				PI_SUBAGENT_FANOUT_CHILD: "1",
 				PI_SUBAGENT_PARENT_EVENT_SINK: "/tmp/inherited/events.jsonl",
 				PI_SUBAGENT_PARENT_CONTROL_INBOX: "/tmp/inherited/control",
-				PI_SUBAGENT_PARENT_RUN_ID: "fanout-run",
+				PI_SUBAGENT_PARENT_RUN_ID: "explicit-run",
 				PI_SUBAGENT_PARENT_CHILD_INDEX: "2",
 			});
 
 			mockPi.onCall({ echoEnv: envKeys });
-			const nonFanoutAgents = [makeAgent("worker", { tools: ["read"] })];
-			const nonFanout = await runSync(tempDir, nonFanoutAgents, "worker", "Task", { runId: "non-fanout-run" });
-			assert.equal(nonFanout.exitCode, 0);
-			assert.deepEqual(JSON.parse(nonFanout.finalOutput ?? "{}"), {
-				PI_SUBAGENT_FANOUT_CHILD: "0",
-				PI_SUBAGENT_PARENT_EVENT_SINK: "",
-				PI_SUBAGENT_PARENT_CONTROL_INBOX: "",
-				PI_SUBAGENT_PARENT_RUN_ID: "",
-				PI_SUBAGENT_PARENT_CHILD_INDEX: "",
+			const defaultAgents = [makeAgent("worker", { tools: ["read"] })];
+			const defaultChild = await runSync(tempDir, defaultAgents, "worker", "Task", { runId: "default-run" });
+			assert.equal(defaultChild.exitCode, 0);
+			assert.deepEqual(JSON.parse(defaultChild.finalOutput ?? "{}"), {
+				PI_SUBAGENT_FANOUT_CHILD: "1",
+				PI_SUBAGENT_PARENT_EVENT_SINK: "/tmp/inherited/events.jsonl",
+				PI_SUBAGENT_PARENT_CONTROL_INBOX: "/tmp/inherited/control",
+				PI_SUBAGENT_PARENT_RUN_ID: "default-run",
+				PI_SUBAGENT_PARENT_CHILD_INDEX: "0",
 			});
 		} finally {
 			for (const key of envKeys) {

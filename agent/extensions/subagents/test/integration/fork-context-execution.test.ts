@@ -1,7 +1,10 @@
+// fallow-ignore-file code-duplication
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createSubagentState } from "../../src/shared/subagent-state.ts";
+import { readMockPiArgs } from "../support/async-helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import { createEventBus, createMockPi, createTempDir, events, removeTempDir, tryImport } from "../support/helpers.ts";
 import { discoverAgents } from "../../src/agents/agents.ts";
@@ -71,21 +74,7 @@ function makeSessionManagerRecorder(options: SessionStubOptions = {}) {
 }
 
 function makeState(cwd: string) {
-	return {
-		baseCwd: cwd,
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
+	return createSubagentState({ baseCwd: cwd });
 }
 
 describe("fork context execution wiring", { skip: !available ? "subagent executor not importable" : undefined }, () => {
@@ -152,12 +141,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 	}
 
 	function readCallArgs(): string[] {
-		const callFile = fs.readdirSync(mockPi.dir)
-			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
-			.sort()
-			.at(-1);
-		assert.ok(callFile, "expected a recorded mock pi call");
-		return readRecordedArgs(callFile);
+		return readMockPiArgs(mockPi);
 	}
 
 	function readAllCallArgs(): string[][] {

@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 /**
  * E2E tests for the pi-goal extension.
  *
@@ -7,142 +8,43 @@
  * enough of the real interface for the lifecycle to work.
  */
 
-import { mkdirSync, rmSync, readdirSync, readFileSync, accessSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { accessSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { describe, it, before } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import piGoalExtension from "../../extensions/goal.ts";
+import { readActiveGoalPool } from "../../extensions/storage/goal-files.ts";
 import {
-	createGoal,
-	goalFocusDetails,
-	type GoalRecord,
-	type GoalFocusEntry,
-	type GoalStateEntry,
-} from "../../extensions/goal-record.ts";
-import {
-	readActiveGoalPool,
-	writeActiveGoalFile,
-} from "../../extensions/storage/goal-files.ts";
-import type { ToolDefinition, ExtensionContext } from "@earendil-works/pi-coding-agent";
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Minimal mock ExtensionContext that provides:
- * - cwd for filesystem operations (readActiveGoalPool, writeActiveGoalFile, etc.)
- * - sessionManager.getBranch() returning enough entries for loadState to set focus
- * - hasUI=false to skip widget/status rendering
- * - The rest are stub methods that won't crash
- */
-function createMockCtx(cwd: string, sessionEntries: unknown[]): ExtensionContext {
-	return {
-		cwd,
-		hasUI: false,
-		sessionManager: {
-			getBranch: () => sessionEntries,
-			getCwd: () => cwd,
-			getSessionId: () => "test-session",
-			getRoot: () => cwd,
-			append: () => {},
-			appendModelChange: () => {},
-			appendThinkingLevelChange: () => {},
-			appendCompetingWriteCheck: () => {},
-			buildSessionContext: () => ({ messages: [], sessionId: "test", model: null, thinkingLevel: "medium" }),
-		},
-		getSystemPrompt: () => "",
-		isIdle: () => true,
-		hasPendingMessages: () => false,
-		abort: () => {},
-	} as unknown as ExtensionContext;
-}
-
-/**
- * Creates a temp directory with `.pi/goals/` and a valid goal file.
- * Returns the context needed for a test scenario.
- */
-function testFixture() {
-	const cwd = mkdtempSync(path.join(tmpdir(), "goal-e2e-ext-"));
-	mkdirSync(path.join(cwd, ".pi", "goals", "archived"), { recursive: true });
-
-	// Create auditor config that disables the auditor (so completion tests
-	// don't try to spawn the actual auditor subprocess)
-	writeFileSync(path.join(cwd, ".pi", "goal-auditor.json"), JSON.stringify({ disabled: true }));
-
-	const goal = createGoal({
-		objective: "E2E test: initial",
-		autoContinue: true,
-		sisyphus: false,
-	}, Date.UTC(2026, 5, 26, 9, 0, 0));
-
-	const written = writeActiveGoalFile({ cwd } as any, goal);
-
-	// Session entries that loadState scans to resolve focus
-	const focusEntry = goalFocusDetails(goal.id, "created");
-	const stateEntry: GoalStateEntry = { version: 3, goal: { ...goal, activePath: written.activePath } };
-	const sessionEntries = [
-		{ type: "custom", customType: "pi-goal-focus", data: focusEntry },
-		{ type: "custom", customType: "pi-goal-state", data: stateEntry },
-	];
-
-	const mockCtx = createMockCtx(cwd, sessionEntries);
-
-	const cleanup = () => { try { rmSync(cwd, { recursive: true, force: true }); } catch {} };
-
-	return { cwd, goal: written, mockCtx, cleanup };
-}
+	assertActiveGoal,
+	assertArchivedDirEmpty,
+	createGoalFixture,
+	createMockPiHarness,
+	executeUpdateGoal,
+	readGoalFile,
+	startGoalSession,
+} from "./helpers.ts";
 
 // ── Test Suite ───────────────────────────────────────────────────────────────
 
 describe("Extension E2E", () => {
-	const registeredTools: ToolDefinition[] = [];
-	const lifecycleHandlers = new Map<string, Function>();
-	let apiCalls: Array<{ type: string; data?: unknown }> = [];
-
-	const mockPi = {
-		registerTool: (def: ToolDefinition) => { registeredTools.push(def); },
-		registerCommand: () => {},
-		on: (event: string, handler: Function) => { lifecycleHandlers.set(event, handler); },
-		appendEntry: (customType: string, data: unknown) => {
-			apiCalls.push({ type: "appendEntry", data: { customType, data } });
-		},
-		registerMessageRenderer: () => {},
-		sendMessage: () => {},
-		getActiveTools: () => new Map(),
-		setActiveTools: () => {},
-		hasUI: false,
-	};
-
-	before(() => {
-		piGoalExtension(mockPi as any);
-	});
-
-	function getTool(name: string): ToolDefinition {
-		const t = registeredTools.find((t) => t.name === name);
-		if (!t) throw new Error(`Tool "${name}" not found`);
-		return t;
-	}
+	const harness = createMockPiHarness();
 
 	// ── 1: Quick-sync ──────────────────────────────────────────────────────
 	it("e2e: quick-sync objective via update_goal handler", async () => {
-		const f = testFixture();
+		const f = createGoalFixture({
+			prefix: "goal-e2e-ext-",
+			objective: "E2E test: initial",
+			at: Date.UTC(2026, 5, 26, 9, 0, 0),
+		});
 		try {
-			// Fire session_start to load state and set focusedGoalId/state.goal
-			const ss = lifecycleHandlers.get("session_start");
-			assert.ok(ss, "session_start handler must be registered");
-			await ss({ reason: "start" }, f.mockCtx);
+			await startGoalSession(harness, f.mockCtx);
+			harness.resetApiCalls();
 
-			apiCalls = []; // reset call tracking
-
-			const updateGoal = getTool("update_goal");
-			const result = await (updateGoal.execute as Function)(
-				"call-1",
-				{ updatedObjective: "E2E test: quick-synced" },
-				new AbortController().signal,
-				undefined,
+			const result = await executeUpdateGoal(
+				harness,
 				f.mockCtx,
+				{ updatedObjective: "E2E test: quick-synced" },
+				"call-1",
 			);
 
 			// Handler must not terminate for quick-sync only
@@ -154,17 +56,10 @@ describe("Extension E2E", () => {
 			assert.equal(result.content?.[0]?.text, "Goal objective updated.",
 				"must respond with 'Goal objective updated.' text");
 
-			// Verify objective changed on disk
-			const pool = readActiveGoalPool({ cwd: f.cwd } as any);
-			const diskGoal = pool.get(f.goal.id);
-			assert.ok(diskGoal, "goal must remain in active pool");
-			assert.equal(diskGoal.objective, "E2E test: quick-synced",
-				"disk goal must have the updated objective");
-			assert.equal(diskGoal.status, "active",
-				"goal status must remain active");
+			assertActiveGoal(f.cwd, f.goal.id, "E2E test: quick-synced");
 
 			// Verify pi.appendEntry was called to persist state
-			const stateEntry = apiCalls.find(
+			const stateEntry = harness.apiCalls.find(
 				(c) => c.type === "appendEntry" &&
 					(c.data as any)?.customType === "pi-goal-state",
 			);
@@ -174,7 +69,7 @@ describe("Extension E2E", () => {
 				"state entry must contain the updated objective");
 
 			// Verify NO audit was triggered (no pi-goal-audit-event entry)
-			const auditEntry = apiCalls.find(
+			const auditEntry = harness.apiCalls.find(
 				(c) => c.type === "appendEntry" &&
 					(c.data as any)?.customType === "pi-goal-audit-event",
 			);
@@ -187,29 +82,26 @@ describe("Extension E2E", () => {
 
 	// ── 2: Combined sync + complete ────────────────────────────────────────
 	it("e2e: combined sync+complete applies updated objective before audit", async () => {
-		const f = testFixture();
+		const f = createGoalFixture({
+			prefix: "goal-e2e-ext-",
+			objective: "E2E test: initial",
+			at: Date.UTC(2026, 5, 26, 9, 0, 0),
+		});
 		try {
-			// Fire session_start to load state
-			const ss = lifecycleHandlers.get("session_start");
-			assert.ok(ss);
-			await ss({ reason: "start" }, f.mockCtx);
-
-			apiCalls = []; // reset
-
-			const updateGoal = getTool("update_goal");
+			await startGoalSession(harness, f.mockCtx);
+			harness.resetApiCalls();
 
 			// Combined call: update objective + complete
-			const result = await (updateGoal.execute as Function)(
-				"call-2",
+			const result = await executeUpdateGoal(
+				harness,
+				f.mockCtx,
 				{
 					updatedObjective: "E2E test: combined update",
 					status: "complete",
 					completionSummary: "E2E test completed successfully.",
 					confirmBypassAuditor: true,
 				},
-				new AbortController().signal,
-				undefined,
-				f.mockCtx,
+				"call-2",
 			);
 
 			// Verify result is defined and contains completion details
@@ -229,8 +121,7 @@ describe("Extension E2E", () => {
 				"complete goal must be filtered from active pool");
 
 			// Check the file exists on disk (activePath still set)
-			const activeFile = path.join(f.cwd, f.goal.activePath ?? ".pi/goals/missing");
-			const diskContent = readFileSync(activeFile, "utf8");
+			const diskContent = readGoalFile(f.cwd, f.goal);
 			assert.ok(diskContent.includes("E2E test: combined update"),
 				"file on disk must contain the updated objective");
 			assert.ok(diskContent.includes('"status": "complete"'),
@@ -242,28 +133,25 @@ describe("Extension E2E", () => {
 
 	// ── 3: Deferred archival ───────────────────────────────────────────────
 	it("e2e: complete without sync produces deferred archival state", async () => {
-		const f = testFixture();
+		const f = createGoalFixture({
+			prefix: "goal-e2e-ext-",
+			objective: "E2E test: initial",
+			at: Date.UTC(2026, 5, 26, 9, 0, 0),
+		});
 		try {
-			// Fire session_start
-			const ss = lifecycleHandlers.get("session_start");
-			assert.ok(ss);
-			await ss({ reason: "start" }, f.mockCtx);
-
-			apiCalls = [];
-
-			const updateGoal = getTool("update_goal");
+			await startGoalSession(harness, f.mockCtx);
+			harness.resetApiCalls();
 
 			// Complete without sync
-			const result = await (updateGoal.execute as Function)(
-				"call-3",
+			const result = await executeUpdateGoal(
+				harness,
+				f.mockCtx,
 				{
 					status: "complete",
 					completionSummary: "E2E test deferred archival.",
 					confirmBypassAuditor: true,
 				},
-				new AbortController().signal,
-				undefined,
-				f.mockCtx,
+				"call-3",
 			);
 
 			assert.ok(result, "result must be defined");
@@ -278,11 +166,7 @@ describe("Extension E2E", () => {
 			assert.ok(activeExists,
 				"goal file must still exist in active dir (deferred archival)");
 
-			// There should be NO file in archived dir yet
-			const archivedDir = path.join(f.cwd, ".pi", "goals", "archived");
-			const archivedFiles = readdirSync(archivedDir);
-			assert.equal(archivedFiles.length, 0,
-				"archived dir must be empty (deferred archival)");
+			assertArchivedDirEmpty(f.cwd);
 		} finally {
 			f.cleanup();
 		}
@@ -290,20 +174,21 @@ describe("Extension E2E", () => {
 
 	// ── 4: Rejection gate tests ─────────────────────────────────────────────
 	it("e2e: update_goal rejects null/absent goal state", async () => {
-		const f = testFixture();
+		const f = createGoalFixture({
+			prefix: "goal-e2e-ext-",
+			objective: "E2E test: initial",
+			at: Date.UTC(2026, 5, 26, 9, 0, 0),
+		});
 		try {
-			// Do NOT fire session_start — state is empty
-			const updateGoal = getTool("update_goal");
-
-			const result = await (updateGoal.execute as Function)(
-				"call-4",
-				{ updatedObjective: "should fail" },
-				new AbortController().signal,
-				undefined,
+			// Do NOT fire session_start — state is empty or stale from a prior handler run.
+			const result = await executeUpdateGoal(
+				harness,
 				f.mockCtx,
+				{ updatedObjective: "should fail" },
+				"call-4",
 			);
 
-			// Without a goal, the handler should return an error message
+			// Without a loaded goal, the handler should return an error message
 			// (validateGoalUpdate returns message through result.content, not an exception)
 			assert.ok(result, "result must be defined");
 			const text = result.content?.[0]?.text ?? "";

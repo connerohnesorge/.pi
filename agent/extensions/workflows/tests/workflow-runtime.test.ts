@@ -1,7 +1,10 @@
+// fallow-ignore-file code-duplication
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.js";
+import { DEFAULT_TOKEN_BUDGET } from "../src/config.js";
 import { type JournalEntry, runWorkflow } from "../src/workflow.js";
+import { fakeAgent } from "./helpers/workflow-test-helpers.js";
 
 /** Agent runner that counts real invocations and echoes a per-call result. */
 function countingAgent() {
@@ -17,28 +20,59 @@ function countingAgent() {
   };
 }
 
-/** Minimal fake agent runner that reports a fixed usage via onUsage. */
-function fakeAgent(usage: Partial<AgentUsage>, result: unknown = "ok") {
-  return {
-    async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }) {
-      options.onUsage?.({
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        total: 0,
-        cost: 0,
-        ...usage,
-      });
-      return result;
-    },
-  };
-}
-
 const twoAgentScript = `export const meta = { name: 'usage_demo', description: 'two agents' }
 const a = await agent('first', { label: 'a' })
 const b = await agent('second', { label: 'b' })
 return { a, b }`;
+
+const okAgent = {
+  async run() {
+    return "ok";
+  },
+};
+
+function journalMap(journal: JournalEntry[]): Map<number, JournalEntry> {
+  return new Map(journal.map((entry) => [entry.index, entry]));
+}
+
+async function collectAgentPhases(script: string): Promise<Array<string | undefined>> {
+  const phases: Array<string | undefined> = [];
+  await runWorkflow(script, {
+    agent: okAgent,
+    persistLogs: false,
+    onAgentStart: (event) => phases.push(event.phase),
+  });
+  return phases;
+}
+
+async function replayEditedScript(script: string, journal: JournalEntry[]) {
+  const second = countingAgent();
+  await runWorkflow(script, {
+    agent: second.runner,
+    persistLogs: false,
+    resumeJournal: journalMap(journal),
+  });
+  return second;
+}
+
+async function assertAgentLimitRejects(script: string): Promise<void> {
+  await assert.rejects(
+    () =>
+      runWorkflow(script, {
+        agent: fakeAgent({ input: 1, output: 0, total: 1, cost: 0 }),
+        maxAgents: 2,
+        persistLogs: false,
+      }),
+    /limit/i,
+  );
+}
+
+function runForLogs(script: string) {
+  return runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+  });
+}
 
 test("runWorkflow accumulates real per-agent usage (incl. cost + cache tokens)", async () => {
   const result = await runWorkflow(twoAgentScript, {
@@ -86,51 +120,26 @@ test("agents default to the first declared phase when the script omits phase()",
   // Regression for the "(no phase) has agents, declared phase 0/0" bug: a script
   // that declares meta.phases but never calls phase() should still group its
   // agents under the first declared phase, not an orphan "(no phase)" bucket.
-  const phases: Array<string | undefined> = [];
-  const noop = {
-    async run() {
-      return "ok";
-    },
-  };
-  await runWorkflow(
-    `export const meta = { name: 'p', description: 'd', phases: [{ title: 'Research' }, { title: 'Synthesize' }] }
+  const phases =
+    await collectAgentPhases(`export const meta = { name: 'p', description: 'd', phases: [{ title: 'Research' }, { title: 'Synthesize' }] }
      await agent('a', { label: 'x' })
-     return {}`,
-    { agent: noop, persistLogs: false, onAgentStart: (e) => phases.push(e.phase) },
-  );
+     return {}`);
   assert.deepEqual(phases, ["Research"]);
 });
 
 test("explicit phase() overrides the default first phase", async () => {
-  const phases: Array<string | undefined> = [];
-  const noop = {
-    async run() {
-      return "ok";
-    },
-  };
-  await runWorkflow(
-    `export const meta = { name: 'p', description: 'd', phases: [{ title: 'A' }, { title: 'B' }] }
+  const phases =
+    await collectAgentPhases(`export const meta = { name: 'p', description: 'd', phases: [{ title: 'A' }, { title: 'B' }] }
      phase('B')
      await agent('a', { label: 'x' })
-     return {}`,
-    { agent: noop, persistLogs: false, onAgentStart: (e) => phases.push(e.phase) },
-  );
+     return {}`);
   assert.deepEqual(phases, ["B"]);
 });
 
 test("no declared phases => agent phase stays undefined (no synthetic phase)", async () => {
-  const phases: Array<string | undefined> = [];
-  const noop = {
-    async run() {
-      return "ok";
-    },
-  };
-  await runWorkflow(
-    `export const meta = { name: 'p', description: 'd' }
+  const phases = await collectAgentPhases(`export const meta = { name: 'p', description: 'd' }
      await agent('a', { label: 'x' })
-     return {}`,
-    { agent: noop, persistLogs: false, onAgentStart: (e) => phases.push(e.phase) },
-  );
+     return {}`);
   assert.deepEqual(phases, [undefined]);
 });
 
@@ -212,7 +221,7 @@ test("resume replays cached results without re-running agents", async () => {
   const r2 = await runWorkflow(resumeScript, {
     agent: second.runner,
     persistLogs: false,
-    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+    resumeJournal: journalMap(journal),
   });
   assert.equal(second.state.calls, 0, "no live runs on a full cache hit");
   assert.equal(JSON.stringify(r2.result), JSON.stringify(r1.result));
@@ -228,12 +237,7 @@ test("resume re-runs only the changed call (hash mismatch)", async () => {
   });
 
   const editedScript = resumeScript.replace("'second'", "'second-edited'");
-  const second = countingAgent();
-  await runWorkflow(editedScript, {
-    agent: second.runner,
-    persistLogs: false,
-    resumeJournal: new Map(journal.map((e) => [e.index, e])),
-  });
+  const second = await replayEditedScript(editedScript, journal);
   assert.equal(second.state.calls, 1, "only the edited call re-runs");
 });
 
@@ -257,12 +261,7 @@ test("resume re-runs the changed call AND everything after it (longest-unchanged
   // Index 1 changed → re-run; index 2 is unchanged but AFTER the first miss, so
   // it must re-run too (the bug was serving it stale from the journal).
   const editedScript = threeCallScript.replace("'B'", "'B-edited'");
-  const second = countingAgent();
-  await runWorkflow(editedScript, {
-    agent: second.runner,
-    persistLogs: false,
-    resumeJournal: new Map(journal.map((e) => [e.index, e])),
-  });
+  const second = await replayEditedScript(editedScript, journal);
   assert.equal(second.state.calls, 2, "edited call (1) + its suffix (2) re-run; only the prefix (0) is cached");
 });
 
@@ -285,12 +284,7 @@ test("resume in parallel(): editing one thunk re-runs that index and every later
   });
   assert.equal(first.state.calls, 3);
 
-  const second = countingAgent();
-  await runWorkflow(script("x-edited"), {
-    agent: second.runner,
-    persistLogs: false,
-    resumeJournal: new Map(journal.map((e) => [e.index, e])),
-  });
+  const second = await replayEditedScript(script("x-edited"), journal);
   assert.equal(second.state.calls, 2, "changed thunk (index 1) + later index (2) re-run; index 0 cached");
 });
 
@@ -391,15 +385,7 @@ test("non-recoverable agent-limit propagates out of pipeline() too", async () =>
   const script = `export const meta = { name: 'mp', description: 'agent limit pipeline' }
 const xs = await pipeline([0, 1, 2, 3], (n) => agent('x' + n, { label: 'p' + n }))
 return xs`;
-  await assert.rejects(
-    () =>
-      runWorkflow(script, {
-        agent: fakeAgent({ input: 1, output: 0, total: 1, cost: 0 }),
-        maxAgents: 2,
-        persistLogs: false,
-      }),
-    /limit/i,
-  );
+  await assertAgentLimitRejects(script);
 });
 
 test("phase sub-budget throws when a phase exceeds its ceiling (run total untouched)", async () => {
@@ -427,15 +413,7 @@ test("maxAgents is enforced under a parallel() fan-out (atomic slot reservation)
   const script = `export const meta = { name: 'ma', description: 'agent limit' }
 const xs = await parallel([0, 1, 2, 3].map((i) => () => agent('x' + i, { label: 'a' + i })))
 return xs`;
-  await assert.rejects(
-    () =>
-      runWorkflow(script, {
-        agent: fakeAgent({ input: 1, output: 0, total: 1, cost: 0 }),
-        maxAgents: 2,
-        persistLogs: false,
-      }),
-    /limit/i,
-  );
+  await assertAgentLimitRejects(script);
 });
 
 // ─── Additional edge case tests ─────────────────────────────────────────────────
@@ -564,10 +542,7 @@ test("runWorkflow log function works inside script", async () => {
 log('hello from script')
 return true`;
 
-  const result = await runWorkflow(script, {
-    agent: countingAgent().runner,
-    persistLogs: false,
-  });
+  const result = await runForLogs(script);
 
   assert.ok(
     result.logs.some((l) => l.includes("hello from script")),
@@ -581,10 +556,7 @@ console.log('console log')
 console.warn('console warn')
 return true`;
 
-  const result = await runWorkflow(script, {
-    agent: countingAgent().runner,
-    persistLogs: false,
-  });
+  const result = await runForLogs(script);
 
   assert.ok(
     result.logs.some((l) => l.includes("console log")),
@@ -620,7 +592,7 @@ catch(e) { return { error: String(e) } }`;
   });
 
   assert.equal(result.result.spent, 0); // before first agent
-  assert.equal(result.result.remaining, 272_000);
+  assert.equal(result.result.remaining, DEFAULT_TOKEN_BUDGET);
 });
 
 test("runWorkflow returns empty logs array when nothing logged", async () => {
@@ -638,19 +610,13 @@ return 1`;
 
 // ─── Runtime determinism hardening (P0-5) ───────────────────────────────────────
 
-const noopAgent = {
-  async run() {
-    return "ok";
-  },
-};
-
 function probe(expr: string): Promise<{ result: { err: string | null; val: unknown } }> {
   const script = `export const meta = { name: 'det', description: 'determinism' }
 let err = null, val = null
 try { val = ${expr} } catch (e) { err = String((e && e.message) || e) }
 await agent('noop', { label: 'x' })
 return { err, val }`;
-  return runWorkflow(script, { agent: noopAgent, persistLogs: false });
+  return runWorkflow(script, { agent: okAgent, persistLogs: false });
 }
 
 test("parse-time guard rejects literal Date.now / Math.random / new Date()", async () => {
@@ -659,7 +625,7 @@ test("parse-time guard rejects literal Date.now / Math.random / new Date()", asy
       () =>
         runWorkflow(
           `export const meta = { name: 'lit', description: 'd' }\nconst v = ${expr}\nawait agent('x', { label: 'x' })\nreturn v`,
-          { agent: noopAgent, persistLogs: false },
+          { agent: okAgent, persistLogs: false },
         ),
       /deterministic|unavailable/i,
       `${expr} literal should be rejected at parse time`,
@@ -697,7 +663,7 @@ const s = [...new Set([1, 1, 2])]
 await agent('noop', { label: 'x' })
 return { escaped, arr, j, s }`;
   const r = await runWorkflow<{ escaped: string; arr: number[]; j: string; s: number[] }>(script, {
-    agent: noopAgent,
+    agent: okAgent,
     persistLogs: false,
   });
   // Spread to a host array: vm-realm arrays don't deepStrictEqual host literals.

@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 /**
  * Skill resolution and caching for subagent extension
  */

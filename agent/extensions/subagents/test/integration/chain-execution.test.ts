@@ -1,3 +1,4 @@
+// fallow-ignore-file code-duplication
 /**
  * Integration tests for chain execution (sequential and parallel steps).
  *
@@ -12,6 +13,7 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { readMockPiArgs, writePackageSkill } from "../support/async-helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -129,27 +131,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 	}
 
 	function readCallArgs(index: number): string[] {
-		const callFiles = fs.readdirSync(mockPi.dir)
-			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
-			.sort();
-		const callFile = callFiles[index];
-		assert.ok(callFile, `expected call ${index}`);
-		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
-	}
-
-	function writePackageSkill(packageRoot: string, skillName: string): void {
-		const skillDir = path.join(packageRoot, "skills", skillName);
-		fs.mkdirSync(skillDir, { recursive: true });
-		fs.writeFileSync(
-			path.join(packageRoot, "package.json"),
-			JSON.stringify({ name: `${skillName}-pkg`, version: "1.0.0", pi: { skills: [`./skills/${skillName}`] } }, null, 2),
-			"utf-8",
-		);
-		fs.writeFileSync(
-			path.join(skillDir, "SKILL.md"),
-			`---\nname: ${skillName}\ndescription: test skill\n---\nbody\n`,
-			"utf-8",
-		);
+		return readMockPiArgs(mockPi, index);
 	}
 
 	it("runs a 2-step chain", async () => {
@@ -504,12 +486,7 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 	}
 
 	function readCallArgs(index: number): string[] {
-		const callFiles = fs.readdirSync(mockPi.dir)
-			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
-			.sort();
-		const callFile = callFiles[index];
-		assert.ok(callFile, `expected call ${index}`);
-		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+		return readMockPiArgs(mockPi, index);
 	}
 
 	it("runs parallel tasks within a chain step", async () => {

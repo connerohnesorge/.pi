@@ -22,18 +22,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import piGoalExtension from "../../extensions/goal.ts";
 import {
-	createGoal,
-	goalFocusDetails,
-	type GoalRecord,
-	type GoalStateEntry,
-} from "../../extensions/goal-record.ts";
-import {
-	readActiveGoalPool,
-	writeActiveGoalFile,
-} from "../../extensions/storage/goal-files.ts";
-import type { ToolDefinition, ExtensionContext } from "@earendil-works/pi-coding-agent";
+	assertActiveGoal,
+	assertArchivedDirEmpty,
+	createGoalFixture,
+	createMockPiHarness,
+	executeUpdateGoal,
+	startGoalSession,
+} from "./helpers.ts";
 
 const DIR = import.meta.dirname!;
 const EXT_PATH = path.resolve(DIR, "..", "..", "extensions", "goal.ts");
@@ -81,51 +77,6 @@ function findToolEvents(stdout: string): Array<{ start: ToolExecStart; end: Tool
 function isPiAvailable(): boolean {
 	try { return spawnSync("which", ["pi"], { encoding: "utf8", stdio: "pipe" }).status === 0; }
 	catch { return false; }
-}
-
-function createMockPiSetup() {
-	const tools: ToolDefinition[] = [];
-	const handlerMap = new Map<string, Function>();
-	const mockPi = {
-		registerTool: (d: ToolDefinition) => tools.push(d),
-		registerCommand: () => {},
-		on: (e: string, h: Function) => handlerMap.set(e, h),
-		appendEntry: () => {},
-		registerMessageRenderer: () => {},
-		sendMessage: () => {},
-		getActiveTools: () => new Map(),
-		setActiveTools: () => {},
-		hasUI: false,
-	};
-	piGoalExtension(mockPi as any);
-	return { tools, handlerMap };
-}
-
-function createMockCtx(cwd: string, goal: GoalRecord, written: GoalRecord): ExtensionContext {
-	const focusEntry = goalFocusDetails(goal.id, "created");
-	const stateEntry: GoalStateEntry = { version: 3, goal: { ...goal, activePath: written.activePath } };
-	return {
-		cwd, hasUI: false,
-		sessionManager: {
-			getBranch: () => [
-				{ type: "custom", customType: "pi-goal-focus", data: focusEntry },
-				{ type: "custom", customType: "pi-goal-state", data: stateEntry },
-			],
-			getCwd: () => cwd, getSessionId: () => "test", getRoot: () => cwd, append: () => {},
-			appendModelChange: () => {}, appendThinkingLevelChange: () => {}, appendCompetingWriteCheck: () => {},
-			buildSessionContext: () => ({ messages: [], sessionId: "test", model: null, thinkingLevel: "medium" }),
-		},
-		getSystemPrompt: () => "", isIdle: () => true, hasPendingMessages: () => false, abort: () => {},
-	} as unknown as ExtensionContext;
-}
-
-function testFixture() {
-	const cwd = mkdtempSync(path.join(tmpdir(), "goal-subagent-e2e-"));
-	mkdirSync(path.join(cwd, ".pi", "goals", "archived"), { recursive: true });
-	writeFileSync(path.join(cwd, ".pi", "goal-auditor.json"), JSON.stringify({ disabled: true }));
-	const goal = createGoal({ objective: "Subagent e2e: initial", autoContinue: true, sisyphus: false });
-	const written = writeActiveGoalFile({ cwd } as any, goal as GoalRecord);
-	return { cwd, goal: goal as GoalRecord, written, cleanup: () => rmSync(cwd, { recursive: true, force: true }) };
 }
 
 /** Create a workspace, session JSONL, and force-tool prompt for a deterministic fork test. */
@@ -215,76 +166,64 @@ describe("Subagent E2E", () => {
 	});
 
 	// ── 2. Mock-pi handler tests (deterministic, no AI model dependency) ─────
+	function mockFixture() {
+		return createGoalFixture({ prefix: "goal-subagent-e2e-", objective: "Subagent e2e: initial" });
+	}
+
 	it("update_goal tool registered with lifecycle hooks", () => {
-		const { tools, handlerMap } = createMockPiSetup();
-		assert.ok(tools.find((t) => t.name === "update_goal"), "update_goal tool must be registered");
-		assert.ok(handlerMap.has("session_start"), "session_start hook");
-		assert.ok(handlerMap.has("before_agent_start"), "before_agent_start hook");
-		assert.ok(handlerMap.has("turn_end"), "turn_end hook");
+		const harness = createMockPiHarness();
+		assert.ok(harness.tools.find((t) => t.name === "update_goal"), "update_goal tool must be registered");
+		assert.ok(harness.lifecycleHandlers.has("session_start"), "session_start hook");
+		assert.ok(harness.lifecycleHandlers.has("before_agent_start"), "before_agent_start hook");
+		assert.ok(harness.lifecycleHandlers.has("turn_end"), "turn_end hook");
 	});
 
 	it("quick-sync: update_goal with updatedObjective alone does not terminate", async () => {
-		const { tools, handlerMap } = createMockPiSetup();
-		const f = testFixture();
+		const harness = createMockPiHarness();
+		const f = mockFixture();
 		try {
-			const mockCtx = createMockCtx(f.cwd, f.goal, f.written);
-			const ss = handlerMap.get("session_start")!;
-			await ss({ reason: "start" }, mockCtx);
-			const updateGoal = tools.find((t) => t.name === "update_goal")!;
-			const result = await (updateGoal.execute as Function)(
-				"call-1",
-				{ updatedObjective: "Subagent e2e: quick-synced" },
-				new AbortController().signal, undefined, mockCtx,
-			);
+			await startGoalSession(harness, f.mockCtx);
+			const result = await executeUpdateGoal(harness, f.mockCtx, { updatedObjective: "Subagent e2e: quick-synced" }, "call-1");
 			assert.equal(result.content?.[0]?.text, "Goal objective updated.");
 			assert.equal(result.terminate, undefined, "quick-sync must NOT set terminate");
 			assert.equal(result.turnStoppedFor, undefined, "quick-sync must NOT set turnStoppedFor");
-			const pool = readActiveGoalPool({ cwd: f.cwd } as any);
-			const diskGoal = pool.get(f.goal.id);
-			assert.ok(diskGoal, "goal must remain in active pool");
-			assert.equal(diskGoal.objective, "Subagent e2e: quick-synced");
-			assert.equal(diskGoal.status, "active");
+			assertActiveGoal(f.cwd, f.goal.id, "Subagent e2e: quick-synced");
 		} finally { f.cleanup(); }
 	});
 
 	it("combined: updatedObjective + status=complete applies update before audit", async () => {
-		const { tools, handlerMap } = createMockPiSetup();
-		const f = testFixture();
+		const harness = createMockPiHarness();
+		const f = mockFixture();
 		try {
-			const mockCtx = createMockCtx(f.cwd, f.goal, f.written);
-			const ss = handlerMap.get("session_start")!;
-			await ss({ reason: "start" }, mockCtx);
-			const updateGoal = tools.find((t) => t.name === "update_goal")!;
-			const result = await (updateGoal.execute as Function)(
-				"call-2",
+			await startGoalSession(harness, f.mockCtx);
+			const result = await executeUpdateGoal(
+				harness,
+				f.mockCtx,
 				{ updatedObjective: "Subagent e2e: combined update", status: "complete", completionSummary: "Subagent e2e completed.", confirmBypassAuditor: true },
-				new AbortController().signal, undefined, mockCtx,
+				"call-2",
 			);
 			const text = result.content?.[0]?.text ?? "";
 			assert.ok(text.includes("Subagent e2e: combined update"), `completion must reference updated objective. Got: ${text.slice(0, 200)}`);
-			const diskContent = readFileSync(path.join(f.cwd, f.written.activePath!), "utf8");
+			const diskContent = readFileSync(path.join(f.cwd, f.goal.activePath!), "utf8");
 			assert.ok(diskContent.includes("Subagent e2e: combined update"), "disk has updated objective");
 			assert.ok(diskContent.includes('"status": "complete"'), "disk has complete status");
 		} finally { f.cleanup(); }
 	});
 
 	it("deferred archival: complete without sync keeps file in active dir", async () => {
-		const { tools, handlerMap } = createMockPiSetup();
-		const f = testFixture();
+		const harness = createMockPiHarness();
+		const f = mockFixture();
 		try {
-			const mockCtx = createMockCtx(f.cwd, f.goal, f.written);
-			const ss = handlerMap.get("session_start")!;
-			await ss({ reason: "start" }, mockCtx);
-			const updateGoal = tools.find((t) => t.name === "update_goal")!;
-			await (updateGoal.execute as Function)(
-				"call-3",
+			await startGoalSession(harness, f.mockCtx);
+			await executeUpdateGoal(
+				harness,
+				f.mockCtx,
 				{ status: "complete", completionSummary: "Subagent e2e archival.", confirmBypassAuditor: true },
-				new AbortController().signal, undefined, mockCtx,
+				"call-3",
 			);
-			assert.ok(readFileSync(path.join(f.cwd, f.written.activePath!), "utf8"),
+			assert.ok(readFileSync(path.join(f.cwd, f.goal.activePath!), "utf8"),
 				"goal file must still exist in active dir (deferred archival)");
-			assert.equal(readdirSync(path.join(f.cwd, ".pi", "goals", "archived")).length, 0,
-				"archived dir must be empty");
+			assertArchivedDirEmpty(f.cwd);
 		} finally { f.cleanup(); }
 	});
 

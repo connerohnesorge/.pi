@@ -1,80 +1,57 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import test from "node:test";
 
-import { buildCompletionReport, validateGoalUpdate } from "../extensions/goal-policy.ts";
-import { createGoal } from "../extensions/goal-record.ts";
+import { buildCompletionReport } from "../extensions/goal-policy.ts";
 import {
 	archiveGoalFile,
 	readActiveGoalPool,
 	writeActiveGoalFile,
 } from "../extensions/storage/goal-files.ts";
 import type { GoalRecord } from "../extensions/goal-record.ts";
+import {
+	assertAllowsGoalUpdate,
+	assertRejectsCompleteGoalUpdate,
+	assertRejectsMissingGoalUpdate,
+	cleanupGoalContext,
+	completeGoalOnDisk,
+	createTempGoalContext,
+	createTestGoal,
+	readActiveGoalText,
+	readArchivedGoalText,
+} from "./helpers/goal-test-helpers.ts";
 
-interface TestContext {
-	cwd: string;
-}
-
-function tempCtx(): TestContext {
-	return { cwd: mkdtempSync(path.join(tmpdir(), "goal-update-objective-test-")) };
-}
-
-function cleanup(ctx: TestContext): void {
-	try {
-		rmSync(ctx.cwd, { recursive: true, force: true });
-	} catch {
-		// ignore
-	}
-}
+const TEST_PREFIX = "goal-update-objective-test-";
 
 function makeGoal(overrides: Partial<GoalRecord> = {}): GoalRecord {
-	return {
-		...createGoal({
-			objective: "Original objective: build feature X",
-			autoContinue: true,
-			sisyphus: false,
-		}, Date.UTC(2026, 5, 2, 10, 0, 0)),
-		...overrides,
-	};
+	return createTestGoal({
+		objective: "Original objective: build feature X",
+		at: Date.UTC(2026, 5, 2, 10, 0, 0),
+		overrides,
+	});
 }
 
 // ─── validateGoalUpdate (handler gate) ───────────────────────────────────────
 
 test("validateGoalUpdate rejects null goal (no goal exists)", () => {
-	const result = validateGoalUpdate({ goal: null });
-	assert.equal(result.ok, false);
-	if (!result.ok) {
-		assert.match(result.message, /cannot update objective/);
-		assert.match(result.message, /No goal is set/);
-	}
+	assertRejectsMissingGoalUpdate();
 });
 
 test("validateGoalUpdate rejects complete goal", () => {
-	const goal = makeGoal({ status: "complete" } as GoalRecord);
-	const result = validateGoalUpdate({ goal });
-	assert.equal(result.ok, false);
-	if (!result.ok) {
-		assert.match(result.message, /cannot update objective/);
-		assert.match(result.message, /already complete/);
-	}
+	assertRejectsCompleteGoalUpdate(makeGoal({ status: "complete" } as GoalRecord));
 });
 
 test("validateGoalUpdate accepts active goal", () => {
-	const result = validateGoalUpdate({ goal: makeGoal() });
-	assert.equal(result.ok, true);
+	assertAllowsGoalUpdate(makeGoal());
 });
 
 test("validateGoalUpdate accepts paused goal", () => {
-	const result = validateGoalUpdate({ goal: makeGoal({ status: "paused" }) });
-	assert.equal(result.ok, true);
+	assertAllowsGoalUpdate(makeGoal({ status: "paused" }));
 });
 
 // ─── update_goal({updatedObjective}) quick-sync path ─────────────────────────
 
 test("update_goal with updatedObjective updates objective in memory and on disk", () => {
-	const ctx = tempCtx();
+	const ctx = createTempGoalContext(TEST_PREFIX);
 	try {
 		const originalObj = "Original objective: build feature X";
 		const newObj = "Updated objective: build feature Y after requirements change";
@@ -83,12 +60,8 @@ test("update_goal with updatedObjective updates objective in memory and on disk"
 		const active = writeActiveGoalFile(ctx, goal);
 		assert.equal(active.status, "active");
 		assert.equal(active.objective, originalObj);
-
-		const activeFilePath = path.join(ctx.cwd, active.activePath ?? "missing");
-		assert.ok(readFileSync(activeFilePath, "utf8").includes(originalObj));
-
-		const pool1 = readActiveGoalPool(ctx);
-		assert.ok(pool1.has(goal.id));
+		assert.ok(readActiveGoalText(ctx, active).includes(originalObj));
+		assert.ok(readActiveGoalPool(ctx).has(goal.id));
 
 		const updated = writeActiveGoalFile(ctx, { ...active, objective: newObj });
 		assert.equal(updated.status, "active");
@@ -96,7 +69,7 @@ test("update_goal with updatedObjective updates objective in memory and on disk"
 		assert.match(updated.activePath ?? "", /^\.pi\/goals\/active_goal_/);
 		assert.equal(updated.archivedPath, undefined);
 
-		const disk2 = readFileSync(activeFilePath, "utf8");
+		const disk2 = readActiveGoalText(ctx, updated);
 		assert.ok(disk2.includes(newObj));
 		assert.ok(!disk2.includes(originalObj));
 		assert.ok(disk2.includes('"status": "active"'));
@@ -104,14 +77,14 @@ test("update_goal with updatedObjective updates objective in memory and on disk"
 		assert.ok(readActiveGoalPool(ctx).has(goal.id));
 		assert.equal(updated.activePath, active.activePath);
 	} finally {
-		cleanup(ctx);
+		cleanupGoalContext(ctx);
 	}
 });
 
 // ─── combined updatedObjective + status=complete path ────────────────────────
 
 test("combined updatedObjective + status=complete applies update before completion", () => {
-	const ctx = tempCtx();
+	const ctx = createTempGoalContext(TEST_PREFIX);
 	try {
 		const originalObj = "Original objective for combined test";
 		const newObj = "Updated before complete: final requirement";
@@ -120,30 +93,24 @@ test("combined updatedObjective + status=complete applies update before completi
 		const active = writeActiveGoalFile(ctx, goal);
 		assert.equal(active.objective, originalObj);
 
-		const combined = writeActiveGoalFile(ctx, {
-			...active,
-			objective: newObj,
-			status: "complete" as const,
-			stopReason: "agent" as const,
-			updatedAt: new Date().toISOString(),
-		});
+		const combined = completeGoalOnDisk(ctx, active, { objective: newObj });
 		assert.equal(combined.objective, newObj);
 		assert.equal(combined.status, "complete");
 		assert.match(combined.activePath ?? "", /^\.pi\/goals\/active_goal_/);
 		assert.equal(combined.archivedPath, undefined);
 
-		const diskContent = readFileSync(path.join(ctx.cwd, combined.activePath ?? "missing"), "utf8");
+		const diskContent = readActiveGoalText(ctx, combined);
 		assert.ok(diskContent.includes(newObj));
 		assert.ok(diskContent.includes('"status": "complete"'));
 
 		const archived = archiveGoalFile(ctx, combined);
 		assert.equal(archived.activePath, undefined);
 		assert.match(archived.archivedPath ?? "", /^\.pi\/goals\/archived\/goal_/);
-		const archivedContent = readFileSync(path.join(ctx.cwd, archived.archivedPath ?? "missing"), "utf8");
+		const archivedContent = readArchivedGoalText(ctx, archived);
 		assert.ok(archivedContent.includes(newObj));
 		assert.ok(archivedContent.includes('"status": "complete"'));
 	} finally {
-		cleanup(ctx);
+		cleanupGoalContext(ctx);
 	}
 });
 
@@ -166,7 +133,7 @@ test("buildCompletionReport handles updated objective display", () => {
 // the goal is updated on disk.
 
 test("apply_goal_tweak path: writeActiveGoalFile with new objective (simulated handler execution)", () => {
-	const ctx = tempCtx();
+	const ctx = createTempGoalContext(TEST_PREFIX);
 	try {
 		const originalObj = "Original objective";
 		const newObj = "Tweaked objective after /goal-tweak interview";
@@ -189,7 +156,7 @@ test("apply_goal_tweak path: writeActiveGoalFile with new objective (simulated h
 			"active file path should not change on tweak");
 
 		// Verify disk has the updated objective
-		const diskContent = readFileSync(path.join(ctx.cwd, tweaked.activePath ?? "missing"), "utf8");
+		const diskContent = readActiveGoalText(ctx, tweaked);
 		assert.ok(diskContent.includes(newObj), "disk must have the tweaked objective");
 		assert.ok(diskContent.includes('"status": "active"'), "disk must show active status");
 
@@ -197,7 +164,7 @@ test("apply_goal_tweak path: writeActiveGoalFile with new objective (simulated h
 		const pool = readActiveGoalPool(ctx);
 		assert.ok(pool.has(goal.id), "tweaked goal must still be in active pool");
 	} finally {
-		cleanup(ctx);
+		cleanupGoalContext(ctx);
 	}
 });
 

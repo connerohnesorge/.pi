@@ -31,6 +31,8 @@ export type BtwTranscriptState = {
   toolCalls: Map<string, { turnId: number; callEntryId: number; resultEntryId?: number }>;
 };
 
+type TranscriptBoundaryMessage = Extract<AgentSessionEvent, { type: "message_start" | "message_end" }>["message"];
+
 function formatToolPreview(value: unknown): string {
   if (value === undefined) {
     return "";
@@ -344,6 +346,19 @@ function applyAssistantMessageToTranscript(
   }
 }
 
+function applyMessageBoundaryToTranscript(state: BtwTranscriptState, message: TranscriptBoundaryMessage, streaming: boolean): void {
+  if (message.role === "user") {
+    const turnId = ensureTranscriptTurnForUserMessage(state);
+    upsertUserMessageEntry(state, turnId, extractMessageText(message));
+    return;
+  }
+
+  if (message.role === "assistant") {
+    const turnId = ensureTranscriptTurn(state);
+    applyAssistantMessageToTranscript(state, turnId, message, streaming);
+  }
+}
+
 export function applyTranscriptEvent(state: BtwTranscriptState, event: AgentSessionEvent): void {
   switch (event.type) {
     case "turn_start": {
@@ -351,16 +366,7 @@ export function applyTranscriptEvent(state: BtwTranscriptState, event: AgentSess
       return;
     }
     case "message_start": {
-      if (event.message.role === "user") {
-        const turnId = ensureTranscriptTurnForUserMessage(state);
-        upsertUserMessageEntry(state, turnId, extractMessageText(event.message));
-        return;
-      }
-
-      if (event.message.role === "assistant") {
-        const turnId = ensureTranscriptTurn(state);
-        applyAssistantMessageToTranscript(state, turnId, event.message, true);
-      }
+      applyMessageBoundaryToTranscript(state, event.message, true);
       return;
     }
     case "message_update": {
@@ -373,16 +379,7 @@ export function applyTranscriptEvent(state: BtwTranscriptState, event: AgentSess
       return;
     }
     case "message_end": {
-      if (event.message.role === "user") {
-        const turnId = ensureTranscriptTurnForUserMessage(state);
-        upsertUserMessageEntry(state, turnId, extractMessageText(event.message));
-        return;
-      }
-
-      if (event.message.role === "assistant") {
-        const turnId = ensureTranscriptTurn(state);
-        applyAssistantMessageToTranscript(state, turnId, event.message, false);
-      }
+      applyMessageBoundaryToTranscript(state, event.message, false);
       return;
     }
     case "tool_execution_start": {

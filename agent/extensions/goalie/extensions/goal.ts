@@ -217,6 +217,10 @@ function renderGoalResult(result: { details?: unknown; content: Array<{ type: st
 	return new Text(theme.fg("accent", "Goal ") + theme.fg("muted", oneLineSummary(details.goal)), 0, 0);
 }
 
+function renderStoppingGoalCall(toolName: string, reason: unknown, theme: Theme): Text {
+	return new Text(theme.fg("toolTitle", `${toolName} `) + theme.fg("warning", truncateText(String(reason ?? ""), 80)), 0, 0);
+}
+
 function normalizeGoalEventDetails(value: unknown): GoalEventDetails {
 	const raw = asRecord(value);
 	const kind: GoalEventKind = raw?.kind === "stale" ? "stale" : raw?.kind === "drafting" ? "drafting" : "checkpoint";
@@ -754,43 +758,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		goalWidgetComponent = null;
 	}
 
-	function updateUI(ctx: ExtensionContext): void {
-		if (!ctx.hasUI) return;
-		const totalOpen = openGoals().length;
-		if (!state.goal && totalOpen === 0) {
-			clearGoalWidget(ctx);
-			stopStatusRefresh();
-			return;
-		}
-		if (!state.goal) {
-			ctx.ui.setStatus("goal", `goal: unfocused [${totalOpen} open] - /goal-focus`);
-			if (!widgetRegistered) {
-				ctx.ui.setWidget(
-					GOAL_WIDGET_KEY,
-					(tui, theme) => {
-						goalWidgetComponent = new GoalWidgetComponent({
-							tui,
-							theme,
-							getGoal: () => goalForDisplay() ?? state.goal,
-							getOpenGoalCount: () => openGoals().length,
-							getAuditorProgress: () => auditProgress,
-						});
-						return goalWidgetComponent;
-					},
-					{ placement: "aboveEditor" },
-				);
-				widgetRegistered = true;
-			} else {
-				goalWidgetComponent?.update();
-			}
-			stopStatusRefresh();
-			return;
-		}
-
-		const displayGoal = goalForDisplay() ?? state.goal;
-		const otherCount = otherOpenGoalCount(goalsById, focusedGoalId);
-		ctx.ui.setStatus("goal", `${footerStatus(displayGoal)}${otherCount > 0 ? ` (+${otherCount} open)` : ""}`);
-
+	function ensureGoalWidget(ctx: ExtensionContext): void {
 		if (!widgetRegistered) {
 			ctx.ui.setWidget(
 				GOAL_WIDGET_KEY,
@@ -810,6 +778,28 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		} else {
 			goalWidgetComponent?.update();
 		}
+	}
+
+	function updateUI(ctx: ExtensionContext): void {
+		if (!ctx.hasUI) return;
+		const totalOpen = openGoals().length;
+		if (!state.goal && totalOpen === 0) {
+			clearGoalWidget(ctx);
+			stopStatusRefresh();
+			return;
+		}
+		if (!state.goal) {
+			ctx.ui.setStatus("goal", `goal: unfocused [${totalOpen} open] - /goal-focus`);
+			ensureGoalWidget(ctx);
+			stopStatusRefresh();
+			return;
+		}
+
+		const displayGoal = goalForDisplay() ?? state.goal;
+		const otherCount = otherOpenGoalCount(goalsById, focusedGoalId);
+		ctx.ui.setStatus("goal", `${footerStatus(displayGoal)}${otherCount > 0 ? ` (+${otherCount} open)` : ""}`);
+
+		ensureGoalWidget(ctx);
 
 		if (state.goal.status === "complete") {
 			stopStatusRefresh();
@@ -1111,6 +1101,18 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	async function selectOpenGoalId(ctx: ExtensionContext, title: string, open: GoalRecord[]): Promise<string | null> {
+		const labels = open.map((item) => goalSelectorLabel(item, focusedGoalId));
+		const byLabel = new Map(labels.map((label, index) => [label, open[index]?.id]));
+		const selected = await ctx.ui.select(title, labels);
+		const selectedId = selected ? byLabel.get(selected) : undefined;
+		if (!selectedId) {
+			ctx.ui.notify("Goal focus unchanged.", "info");
+			return null;
+		}
+		return selectedId;
+	}
+
 	async function chooseOpenGoal(ctx: ExtensionContext, title: string): Promise<GoalRecord | null> {
 		reconcileFocusedGoalFromDisk(ctx);
 		if (state.goal && state.goal.status !== "complete") return state.goal;
@@ -1126,14 +1128,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify(buildUnfocusedOpenGoalsSummary(open.length), "warning");
 			return null;
 		}
-		const labels = open.map((item) => goalSelectorLabel(item, focusedGoalId));
-		const byLabel = new Map(labels.map((label, index) => [label, open[index]?.id]));
-		const selected = await ctx.ui.select(title, labels);
-		const selectedId = selected ? byLabel.get(selected) : undefined;
-		if (!selectedId) {
-			ctx.ui.notify("Goal focus unchanged.", "info");
-			return null;
-		}
+		const selectedId = await selectOpenGoalId(ctx, title, open);
+		if (!selectedId) return null;
 		setFocusedGoalId(selectedId, ctx, "selected");
 		return state.goal;
 	}
@@ -1156,14 +1152,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify(buildGoalListText(goalsById, focusedGoalId), "info");
 			return;
 		}
-		const labels = open.map((item) => goalSelectorLabel(item, focusedGoalId));
-		const byLabel = new Map(labels.map((label, index) => [label, open[index]?.id]));
-		const selected = await ctx.ui.select("Focus open goal", labels);
-		const selectedId = selected ? byLabel.get(selected) : undefined;
-		if (!selectedId) {
-			ctx.ui.notify("Goal focus unchanged.", "info");
-			return;
-		}
+		const selectedId = await selectOpenGoalId(ctx, "Focus open goal", open);
+		if (!selectedId) return;
 		setFocusedGoalId(selectedId, ctx, "selected");
 		armFocusedContinuation(ctx);
 		ctx.ui.notify(`Focused goal: ${oneLineSummary(state.goal)}`, "info");
@@ -2101,7 +2091,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			};
 		},
 		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", "pause_goal ") + theme.fg("warning", truncateText(args?.reason ?? "", 80)), 0, 0);
+			return renderStoppingGoalCall("pause_goal", args?.reason, theme);
 		},
 		renderResult(result, _options, theme) {
 			return renderGoalResult(result, theme);
@@ -2173,7 +2163,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			};
 		},
 		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", "abort_goal ") + theme.fg("warning", truncateText(args?.reason ?? "", 80)), 0, 0);
+			return renderStoppingGoalCall("abort_goal", args?.reason, theme);
 		},
 		renderResult(result, _options, theme) {
 			return renderGoalResult(result, theme);

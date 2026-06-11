@@ -13,6 +13,7 @@ import {
 	SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
 	SUBAGENT_RESULT_INTERCOM_EVENT,
 } from "../shared/types.ts";
+import { publicNestedStepSummary } from "../shared/nested-public.ts";
 
 export function resolveSubagentResultStatus(input: {
 	exitCode?: number;
@@ -100,22 +101,10 @@ function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth 
 		...(run.endedAt !== undefined ? { endedAt: run.endedAt } : {}),
 		...(run.lastUpdate !== undefined ? { lastUpdate: run.lastUpdate } : {}),
 		...(run.error ? { error: run.error } : {}),
-		...(run.steps?.length ? { steps: run.steps.slice(0, 12).map((step) => ({
-			agent: step.agent,
-			status: step.status,
-			...(step.sessionFile ? { sessionFile: step.sessionFile } : {}),
-			...(step.activityState ? { activityState: step.activityState } : {}),
-			...(step.lastActivityAt !== undefined ? { lastActivityAt: step.lastActivityAt } : {}),
-			...(step.currentTool ? { currentTool: step.currentTool } : {}),
-			...(step.currentToolStartedAt !== undefined ? { currentToolStartedAt: step.currentToolStartedAt } : {}),
-			...(step.currentPath ? { currentPath: step.currentPath } : {}),
-			...(step.turnCount !== undefined ? { turnCount: step.turnCount } : {}),
-			...(step.toolCount !== undefined ? { toolCount: step.toolCount } : {}),
-			...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
-			...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
-			...(step.error ? { error: step.error } : {}),
-			...(depth < 2 && step.children?.length ? { children: step.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) } : {}),
-		})) } : {}),
+		...(run.steps?.length ? { steps: run.steps.slice(0, 12).map((step) => publicNestedStepSummary(
+			step,
+			depth < 2 && step.children?.length ? step.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) : undefined,
+		)) } : {}),
 		...(depth < 2 && run.children?.length ? { children: run.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) } : {}),
 	};
 }

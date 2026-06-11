@@ -368,22 +368,26 @@ export function resolveOtlpEndpoint(endpoint: string, signal: OtlpSignal, protoc
 	return resolveOtlpHttpEndpoint(endpoint, signal);
 }
 
-export function parseOtlpHeaders(value: string | undefined): Record<string, string> {
-	const headers: Record<string, string> = {};
-	if (!value) return headers;
+function parseCommaSeparatedKeyValues(value: string | undefined, decode: (part: string) => string = (part) => part): Record<string, string> {
+	const entries: Record<string, string> = {};
+	if (!value) return entries;
 
 	for (const rawPair of value.split(",")) {
 		const pair = rawPair.trim();
 		if (!pair) continue;
 		const equalsIndex = pair.indexOf("=");
 		if (equalsIndex <= 0) continue;
-		const key = decodeHeaderPart(pair.slice(0, equalsIndex).trim());
-		const headerValue = decodeHeaderPart(pair.slice(equalsIndex + 1).trim());
+		const key = decode(pair.slice(0, equalsIndex).trim());
+		const entryValue = decode(pair.slice(equalsIndex + 1).trim());
 		if (!key) continue;
-		headers[key] = headerValue;
+		entries[key] = entryValue;
 	}
 
-	return headers;
+	return entries;
+}
+
+export function parseOtlpHeaders(value: string | undefined): Record<string, string> {
+	return parseCommaSeparatedKeyValues(value, decodeHeaderPart);
 }
 
 export function resolveOtlpHeaders(env: NodeJS.ProcessEnv, endpoint: string, signal: OtlpSignal, resolvers: OtlpHeaderResolvers = {}): Record<string, string> {
@@ -413,21 +417,7 @@ export function shouldUseCnbAuthFallback(env: NodeJS.ProcessEnv, endpoint: strin
 }
 
 export function parseOtelResourceAttributes(value: string | undefined): Attributes {
-	const attributes: Attributes = {};
-	if (!value) return attributes;
-
-	for (const rawPair of value.split(",")) {
-		const pair = rawPair.trim();
-		if (!pair) continue;
-		const equalsIndex = pair.indexOf("=");
-		if (equalsIndex <= 0) continue;
-		const key = pair.slice(0, equalsIndex).trim();
-		const rawValue = pair.slice(equalsIndex + 1).trim();
-		if (!key) continue;
-		attributes[key] = rawValue;
-	}
-
-	return attributes;
+	return parseCommaSeparatedKeyValues(value);
 }
 
 export function buildResourceAttributes(serviceName: string, account: AccountIdentity, envResourceAttributes?: string): Attributes {

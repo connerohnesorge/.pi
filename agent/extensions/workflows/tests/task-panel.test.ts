@@ -74,22 +74,23 @@ describe("installResultDelivery", () => {
     };
   }
 
+  function deliverComplete(run = makeRun()) {
+    const pi = createMockPi();
+    const manager = createMockManager(run);
+    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
+    manager.emit("complete", { runId: "test-run-1" });
+    return pi._calls;
+  }
+
   // ── deliverText: verdict path ──
 
   it("delivers verdict when result.result has verdict", () => {
-    const pi = createMockPi();
-    const manager = createMockManager(makeRun());
-
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = deliverComplete();
     assert.equal(calls.length, 1);
     assert.equal(calls[0].customType, "workflow-result");
     assert.ok(calls[0].content.includes("All tests passed"), "should contain All tests passed");
     assert.ok(calls[0].content.includes("test-workflow"), "should contain test-workflow");
     assert.ok(calls[0].content.includes("3 agents"), "should contain 3 agents");
-    // locale may format the group separator as ',' / '.' / ' ' / none
     assert.ok(/50[\s,.]?000/.test(calls[0].content), "should contain 50000 tokens formatted");
     assert.ok(calls[0].content.includes("1.5s"), "should contain 1.5s");
   });
@@ -97,64 +98,28 @@ describe("installResultDelivery", () => {
   // ── deliverText: fallback chain ──
 
   it("falls back to report when verdict is absent", () => {
-    const pi = createMockPi();
-    const run = makeRun({ result: { result: { report: "Report body", verdict: "" } } });
-    const manager = createMockManager(run);
-
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = deliverComplete(makeRun({ result: { result: { report: "Report body", verdict: "" } } }));
     assert.ok(calls[0].content.includes("Report body"), "should contain Report body");
   });
 
   it("falls back to summary when verdict and report are absent", () => {
-    const pi = createMockPi();
-    const run = makeRun({ result: { result: { summary: "Short summary" } } });
-    const manager = createMockManager(run);
-
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = deliverComplete(makeRun({ result: { result: { summary: "Short summary" } } }));
     assert.ok(calls[0].content.includes("Short summary"), "should contain Short summary");
   });
 
   it("falls back to string result when result is a plain string", () => {
-    const pi = createMockPi();
-    const run = makeRun({ result: { result: "Plain string result" } });
-    const manager = createMockManager(run);
-
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = deliverComplete(makeRun({ result: { result: "Plain string result" } }));
     assert.ok(calls[0].content.includes("Plain string result"), "should contain Plain string result");
   });
 
   it("falls back to truncated JSON when result is an object with no known key", () => {
-    const pi = createMockPi();
-    const run = makeRun({ result: { result: { foo: "x".repeat(500), bar: "y".repeat(500) } } });
-    const manager = createMockManager(run);
-
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = deliverComplete(makeRun({ result: { result: { foo: "x".repeat(500), bar: "y".repeat(500) } } }));
     assert.ok(calls[0].content.includes("foo"), "should contain foo");
     assert.ok(calls[0].content.includes("…(truncated)"), "should contain …(truncated)");
   });
 
   it("falls back gracefully when result is nullish", () => {
-    const pi = createMockPi();
-    const run = makeRun({ result: { result: undefined } });
-    const manager = createMockManager(run);
-
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    // Should not crash; should still deliver a message
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = deliverComplete(makeRun({ result: { result: undefined } }));
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("null"), "should contain null for undefined result");
   });
@@ -196,14 +161,7 @@ describe("installResultDelivery", () => {
   // ── Only background runs are delivered ──
 
   it("skips delivery for foreground runs (background=false)", () => {
-    const pi = createMockPi();
-    const run = makeRun({ background: false });
-    const manager = createMockManager(run);
-
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = deliverComplete(makeRun({ background: false }));
     assert.equal(calls.length, 0);
   });
 
@@ -224,14 +182,12 @@ describe("installResultDelivery", () => {
 
   it("skips error delivery for foreground runs", () => {
     const pi = createMockPi();
-    const run = makeRun({ background: false });
-    const manager = createMockManager(run);
+    const manager = createMockManager(makeRun({ background: false }));
 
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("error", { runId: "test-run-1", error: { message: "fail" } });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
-    assert.equal(calls.length, 0);
+    assert.equal(pi._calls.length, 0);
   });
 
   // ── Holder refresh on re-call ──

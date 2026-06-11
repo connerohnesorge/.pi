@@ -5,22 +5,9 @@
 
 import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
+import { formatWorkflowResult, isCommandRegistered } from "./workflow-command-utils.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
-
-function isRegistered(pi: ExtensionAPI, name: string): boolean {
-  try {
-    return (pi.getCommands?.() ?? []).some((c: { name: string }) => c.name === name);
-  } catch {
-    return false;
-  }
-}
-
-function reportText(result: WorkflowRunResult): string {
-  const r = result.result as { report?: unknown } | undefined;
-  if (r && typeof r.report === "string" && r.report.trim()) return r.report;
-  return JSON.stringify(result.result, null, 2);
-}
 
 /**
  * Parse a command argument string into an `args` object for the script.
@@ -60,7 +47,7 @@ export function registerSavedWorkflow(
   manager?: WorkflowManager,
   exists?: () => boolean,
 ): void {
-  if (isRegistered(pi, wf.name)) return;
+  if (isCommandRegistered(pi, wf.name)) return;
   pi.registerCommand(wf.name, {
     description: wf.description || `Saved workflow: ${wf.name}`,
     async handler(args: string, ctx: ExtensionCommandContext) {
@@ -89,7 +76,11 @@ export function registerSavedWorkflow(
         }
 
         ctx.ui.setStatus(`wf:${wf.name}`, undefined);
-        await pi.sendMessage({ customType: `workflow:${wf.name}`, content: reportText(result), display: true });
+        await pi.sendMessage({
+          customType: `workflow:${wf.name}`,
+          content: formatWorkflowResult(result),
+          display: true,
+        });
       } catch (error) {
         ctx.ui.setStatus(`wf:${wf.name}`, undefined);
         ctx.ui.notify(`/${wf.name} failed: ${error instanceof Error ? error.message : error}`, "error");
