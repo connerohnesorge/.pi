@@ -253,7 +253,6 @@ export class GoalWidgetComponent implements Component {
 	}
 
 	// TUI Component lifecycle method invoked through the Component interface.
-	// fallow-ignore-next-line unused-class-member
 	update(): void {
 		this.tui.requestRender();
 	}
@@ -266,7 +265,6 @@ export class GoalWidgetComponent implements Component {
 	}
 
 	// TUI Component lifecycle method invoked through the Component interface.
-	// fallow-ignore-next-line unused-class-member
 	invalidate(): void {
 		this.tui.requestRender();
 	}

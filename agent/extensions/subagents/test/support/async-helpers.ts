@@ -21,7 +21,7 @@ export function makeAsyncCtx(cwd: string, overrides: Record<string, unknown> = {
 	};
 }
 
-export function makeAsyncSingleParams(tempDir: string, overrides: Record<string, unknown> = {}) {
+function makeAsyncSingleParams(tempDir: string, overrides: Record<string, unknown> = {}) {
 	return {
 		agent: "worker",
 		task: "Do work",
@@ -49,11 +49,11 @@ export async function waitForFile(
 	return filePath;
 }
 
-export function readJsonFile<T>(filePath: string): T {
+function readJsonFile<T>(filePath: string): T {
 	return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
 }
 
-export async function waitForJsonFile<T>(filePath: string, options?: { timeoutMs?: number; intervalMs?: number; describe?: string }): Promise<T> {
+async function waitForJsonFile<T>(filePath: string, options?: { timeoutMs?: number; intervalMs?: number; describe?: string }): Promise<T> {
 	await waitForFile(filePath, options);
 	return readJsonFile<T>(filePath);
 }

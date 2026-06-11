@@ -425,7 +425,6 @@ export class ChainClarifyComponent implements Component {
 	}
 
 	// TUI Component lifecycle method invoked through the Component interface.
-	// fallow-ignore-next-line unused-class-member
 	readonly handleInput = (data: string): void => {
 		if (this.editingStep !== null) {
 			if (this.editMode === "model") {
@@ -1329,10 +1328,8 @@ export class ChainClarifyComponent implements Component {
 	}
 
 	// TUI Component lifecycle method invoked through the Component interface.
-	// fallow-ignore-next-line unused-class-member
 	readonly invalidate = (): void => {};
 	// TUI Component lifecycle method invoked through the Component interface.
-	// fallow-ignore-next-line unused-class-member
 	readonly dispose = (): void => {
 		if (this.noticeMessageTimer) clearTimeout(this.noticeMessageTimer);
 		this.noticeMessageTimer = null;

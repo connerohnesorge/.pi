@@ -58,7 +58,7 @@ export function createMockPiHarness(): MockPiHarness {
 	};
 }
 
-export function createMockGoalContext(cwd: string, goal: GoalRecord): ExtensionContext {
+function createMockGoalContext(cwd: string, goal: GoalRecord): ExtensionContext {
 	const focusEntry = goalFocusDetails(goal.id, "created");
 	const stateEntry: GoalStateEntry = { version: 3, goal };
 	return {
