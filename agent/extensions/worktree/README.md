@@ -1,4 +1,4 @@
-# @season179/pi-worktree
+# worktree
 
 Add a `--worktree` flag to Pi.
 
@@ -17,7 +17,7 @@ It is intentionally narrow. No task runner, no dashboard, no multi-agent framewo
 ## Installation
 
 ```bash
-pi install npm:@season179/pi-worktree
+pi install npm:worktree
 ```
 
 ## Usage
@@ -69,14 +69,14 @@ For multi-agent orchestration, task dashboards, or automated merge workflows, us
 
 ```bash
 npm install
-cd packages/pi-worktree
+cd packages/worktree
 npm run build
 ```
 
 Test without publishing:
 
 ```bash
-pi -e ./packages/pi-worktree --worktree
+pi -e ./packages/worktree --worktree
 ```
 
 The package points Pi at the TypeScript source extension for local use. `npm run build` still verifies the source and refreshes `dist/` for consumers that inspect the compiled output.
@@ -85,8 +85,8 @@ The package points Pi at the TypeScript source extension for local use. `npm run
 
 ```bash
 npm pack
-tar -tf season179-pi-worktree-26.5.5.tgz
-pi install ./season179-pi-worktree-26.5.5.tgz
+tar -tf worktree-26.5.5.tgz
+pi install ./worktree-26.5.5.tgz
 ```
 
 The tarball should include:
@@ -104,10 +104,8 @@ package/src/extensions/lib/worktree-shared.ts
 
 ```bash
 npm login
-npm publish --access public
+npm publish
 ```
-
-Scoped public packages require `--access public`.
 
 ## Compatibility
 

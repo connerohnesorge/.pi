@@ -1,0 +1,54 @@
+{
+  "name": "promptall",
+  "version": "0.1.0",
+  "description": "Pi extension for Ctrl+R prompt history search across saved sessions",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "prompt-history",
+    "history",
+    "search",
+    "tui"
+  ],
+  "author": "Conner Ohnesorge",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/connerohnesorge/.pi.git",
+    "directory": "agent/extensions/promptall"
+  },
+  "homepage": "https://github.com/connerohnesorge/.pi/tree/main/agent/extensions/promptall#readme",
+  "bugs": {
+    "url": "https://github.com/connerohnesorge/.pi/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "prompt-history.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
+    "@types/node": "latest",
+    "typescript": "latest"
+  }
+}

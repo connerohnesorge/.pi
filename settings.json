@@ -2,5 +2,6 @@
   "skills": [
     "~/.claude/skills/",
     "~/.claude/skills"
-  ]
+  ],
+  "shellPath": "/Users/cohnesor/.nix-profile/bin/bash"
 }
