@@ -100,8 +100,8 @@ export function buildAbortedByAgentGoal<T extends GoalPolicyRecordLike>(goal: T,
 }
 
 export function validateResumeGoal(goal: GoalPolicyRecordLike | null): PolicyValidation {
-	if (!goal) return { ok: false, message: "No goal is set. Use /goals or /sisyphus to discuss, or /goals-set / /sisyphus-set to start immediately." };
-	if (goal.status === "complete") return { ok: false, message: "Goal is complete. Use /goals to discuss a new one or /goals-set to start immediately." };
+	if (!goal) return { ok: false, message: "No goal is set. Use /goalie to discuss, or /goalie-set to start immediately." };
+	if (goal.status === "complete") return { ok: false, message: "Goal is complete. Use /goalie to discuss a new one or /goalie-set to start immediately." };
 	if (goal.status === "active" && goal.autoContinue) return { ok: false, message: "Goal is already running." };
 	return { ok: true };
 }

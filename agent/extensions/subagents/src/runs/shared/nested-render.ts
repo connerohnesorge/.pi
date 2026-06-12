@@ -133,7 +133,7 @@ function formatNestedRunLines(children: NestedRunSummary[] | undefined, options:
 			return `${prefix}${stepIndex + 1}. ${step.agent} ${step.status}${stepActivity ? ` | ${stepActivity}` : ""}${step.error ? ` | error: ${step.error}` : ""}`;
 		},
 		renderAggregate: (text, prefix) => `${prefix}↳ ${text}`,
-		afterRun: options.commandHints ? (child, prefix) => `${prefix}  Status: subagent({ action: "status", id: "${child.id}" })` : undefined,
+		afterRun: options.commandHints ? (child, prefix) => `${prefix}  Status: subagent_control({ action: "status", id: "${child.id}" })` : undefined,
 	});
 }
 

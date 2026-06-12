@@ -202,7 +202,7 @@ export function renderGoalWidgetLines(goal: GoalWidgetRecord | null, theme: Them
 		const safeWidth = Math.max(1, width);
 		return [
 			heading(theme, safeWidth, `${theme.fg("warning", "◇")} ${theme.fg("warning", theme.bold("Goal"))} ${theme.fg("muted", "unfocused")}`, theme.fg("muted", `${openGoalCount} open`)),
-			branchLine(theme, safeWidth, true, `${theme.fg("muted", "Run /goal-focus to choose this session's goal")}`),
+			branchLine(theme, safeWidth, true, `${theme.fg("muted", "Run /goalie-focus to choose this session's goalie")}`),
 		];
 	}
 	const safeWidth = Math.max(1, width);

@@ -2,6 +2,8 @@
   "usedClassMembers": [
     { "implements": "Component", "members": ["handleInput", "invalidate", "dispose", "update"] },
     { "extends": "CustomEditor", "members": ["handleInput"] },
-    "run"
+    "run",
+    "getOverlayOptions",
+    "updateValue"
   ]
 }

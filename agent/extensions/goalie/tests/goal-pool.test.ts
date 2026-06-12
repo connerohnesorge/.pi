@@ -76,6 +76,6 @@ test("goal list and selector labels expose focus without storing it in goals", (
 	const list = buildGoalListText(pool, "g2");
 	assert.match(list, /^Open goals: 2/);
 	assert.match(list, /^\* g2/m);
-	assert.match(buildUnfocusedOpenGoalsSummary(2), /No goal is focused/);
-	assert.match(buildUnfocusedOpenGoalsSummary(2), /\/goal-focus/);
+	assert.match(buildUnfocusedOpenGoalsSummary(2), /No goalie is focused/);
+	assert.match(buildUnfocusedOpenGoalsSummary(2), /\/goalie-focus/);
 });

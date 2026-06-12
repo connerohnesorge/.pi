@@ -56,7 +56,7 @@ test("validateGoalDraftProposal rejects missing confirmation intent but allows m
 		sisyphus: false,
 	});
 	assert.equal(noIntent.ok, false);
-	if (!noIntent.ok) assert.match(noIntent.message, /no \/goals or \/sisyphus intent discussion/);
+	if (!noIntent.ok) assert.match(noIntent.message, /no \/goalie intent discussion/);
 
 	const unfinished = validateGoalDraftProposal({
 		intent: intent({ focus: "goal" }),
@@ -146,7 +146,7 @@ test("goalDraftingPrompt describes lightweight confirmation for normal and Sisyp
 
 	const sisyphus = goalDraftingPrompt("1. A\n2. B", "sisyphus");
 	assert.match(sisyphus, /\[GOAL CONFIRMATION focus=sisyphus\]/);
-	assert.match(sisyphus, /\/sisyphus/);
+	assert.match(sisyphus, /Sisyphus-mode goalie drafts/);
 	assert.match(sisyphus, /sisyphus=true/);
 	assert.match(sisyphus, /prompt\/criteria style/);
 	assert.match(sisyphus, /preserve the user's requested steps and ordering/);

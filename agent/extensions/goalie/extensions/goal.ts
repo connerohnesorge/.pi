@@ -37,7 +37,6 @@ import {
 	PROPOSE_DRAFT_TOOL_NAME,
 	QUESTIONNAIRE_TOOL_NAME,
 	QUESTION_TOOL_NAME,
-	SISYPHUS_STEP_TOOL_NAME,
 	GOAL_PROGRESS_TOOL_NAMES,
 	lifecycleToolNamesForGoalStatus,
 	TWEAK_APPLY_TOOL_NAME,
@@ -136,7 +135,7 @@ const GOAL_PROGRESS_TOOL_SET = new Set<string>(GOAL_PROGRESS_TOOL_NAMES);
 const POST_STOP_ALLOWED_TOOL_SET = new Set<string>(POST_STOP_ALLOWED_TOOLS);
 
 /**
- * When non-null, /goal-tweak drafting is in progress for this goal id and the
+ * When non-null, goalie tweak drafting is in progress for this goal id and the
  * agent is allowed to call apply_goal_tweak. Cleared after the tweak is applied
  * or when a user-driven turn arrives without a tweak follow-through. This is
  * the schema-level affordance gate that prevents the agent from "tweaking" via
@@ -145,7 +144,7 @@ const POST_STOP_ALLOWED_TOOL_SET = new Set<string>(POST_STOP_ALLOWED_TOOLS);
 let tweakDraftingFor: string | null = null;
 
 /**
- * Thin session-local confirmation intent for /goals and /sisyphus.
+ * Thin session-local confirmation intent for /goalie drafting.
  * It protects mode consistency and user confirmation without turning drafting
  * into a separate long-running runtime state machine.
  */
@@ -167,7 +166,7 @@ function usageLines(goal: GoalRecord): string[] {
 }
 
 function detailedSummary(goal: GoalRecord | null): string {
-	if (!goal) return "No goal is set. Use /goals <topic> or /sisyphus <topic> to discuss, or /goals-set <objective> / /sisyphus-set <objective> to start immediately.";
+	if (!goal) return "No goal is set. Use /goalie <topic> to discuss, or /goalie-set <objective> to start immediately.";
 	const lines = [
 		`Goal: ${goal.objective}`,
 		`Status: ${statusLabel(goal)}`,
@@ -399,18 +398,6 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		lastAccountedAt: null as number | null,
 	};
 
-	const draftingHiddenWorkTools = [
-		"bash",
-		"read",
-		"write",
-		"edit",
-		"grep",
-		"find",
-		"ls",
-		SISYPHUS_STEP_TOOL_NAME,
-		TWEAK_APPLY_TOOL_NAME,
-		CREATE_GOAL_TOOL_NAME,
-	] as const;
 	const goalExecutionWorkTools = ["read", "bash", "edit", "write"] as const;
 
 	function syncGoalTools(): void {
@@ -423,11 +410,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const phase = confirmationIntent !== null ? "drafting" : tweakDraftingFor !== null ? "tweakDrafting" : "normal";
 			const lifecycleTools = lifecycleToolNamesForGoalStatus(state.goal?.status, phase);
 			for (const name of lifecycleTools) active.add(name);
-			// Sisyphus is now a prompt/criteria style, not a separate step-counter
-			// mechanism. Keep step_complete registered for legacy transcripts, but do
-			// not expose it as an active work tool.
-			active.delete(SISYPHUS_STEP_TOOL_NAME);
-			// apply_goal_tweak is only available during a /goal-tweak drafting flow.
+			// apply_goal_tweak is only available during an active goalie tweak-drafting flow.
 			// Note: tweak drafting can run against active OR paused goals.
 			if (state.goal && tweakDraftingFor === state.goal.id) {
 				active.add(TWEAK_APPLY_TOOL_NAME);
@@ -789,7 +772,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (!state.goal) {
-			ctx.ui.setStatus("goal", `goal: unfocused [${totalOpen} open] - /goal-focus`);
+			ctx.ui.setStatus("goal", `goal: unfocused [${totalOpen} open] - /goalie-focus`);
 			ensureGoalWidget(ctx);
 			stopStatusRefresh();
 			return;
@@ -1027,14 +1010,14 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				const selected = await chooseOpenGoal(ctx, "Tweak which open goal?");
 				if (!selected) return;
 			} else {
-				ctx.ui.notify("No goal is set. Use /goals or /sisyphus to discuss, or /goals-set / /sisyphus-set to start immediately.", "warning");
+				ctx.ui.notify("No goal is set. Use /goalie to discuss, or /goalie-set to start immediately.", "warning");
 				return;
 			}
 		}
 		const currentGoal = state.goal;
 		if (!currentGoal) return;
 		if (currentGoal.status === "complete") {
-			ctx.ui.notify("Goal is complete. Use /goals to discuss a new one or /goals-set to start immediately.", "warning");
+			ctx.ui.notify("Goal is complete. Use /goalie to discuss a new one or /goalie-set to start immediately.", "warning");
 			return;
 		}
 		syncGoalPromptFromDisk(ctx);
@@ -1137,7 +1120,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	async function focusGoalCommand(ctx: ExtensionContext): Promise<void> {
 		const open = openGoals();
 		if (open.length === 0) {
-			ctx.ui.notify("No open goals. Use /goals or /sisyphus to discuss, or /goals-set / /sisyphus-set to start immediately.", "warning");
+			ctx.ui.notify("No open goals. Use /goalie to discuss, or /goalie-set to start immediately.", "warning");
 			return;
 		}
 		if (open.length === 1) {
@@ -1173,8 +1156,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	function handleDirectGoalSet(rawObjective: string, ctx: ExtensionContext, focus: DraftingFocus): void {
 		const objective = rawObjective.trim();
 		if (!objective) {
-			const command = focus === "sisyphus" ? "/sisyphus-set" : "/goals-set";
-			ctx.ui.notify(`No objective provided. Use ${command} <objective>.`, "warning");
+			ctx.ui.notify("No objective provided. Use /goalie-set <objective>.", "warning");
 			return;
 		}
 		clearContinuationState();
@@ -1189,7 +1171,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		if (state.goal) syncGoalPromptFromDisk(ctx);
 		const view = goalForDisplay() ?? state.goal;
 		const otherCount = otherOpenGoalCount(goalsById, focusedGoalId);
-		const extra = view && otherCount > 0 ? `\nOther open goals: ${otherCount} (run /goal-list or /goal-focus)` : "";
+		const extra = view && otherCount > 0 ? `\nOther open goalies: ${otherCount} (run /goalie-list or /goalie-focus)` : "";
 		const text = view ? `${detailedSummary(view)}${extra}` : openGoals().length > 0 ? buildUnfocusedOpenGoalsSummary(openGoals().length) : detailedSummary(null);
 		ctx.ui.notify(text, "info");
 		updateUI(ctx);
@@ -1213,7 +1195,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (currentGoal.status === "paused") {
-			ctx.ui.notify("Goal is already paused. Use /goal-resume to continue.", "info");
+			ctx.ui.notify("Goal is already paused. Use /goalie-resume to continue.", "info");
 			return;
 		}
 		pauseActiveGoal(ctx);
@@ -1524,7 +1506,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				? "\nLifecycle tools: if evidence proves the objective is satisfied, call update_goal({status: \"complete\"}); if blocked, call pause_goal({reason, suggestedAction?}); if abandoned/obsolete/unsafe, call abort_goal({reason}). For file or shell work, use the normal work tools directly (write/read/bash/edit); do not call get_goal repeatedly just to look for tools."
 				: "";
 			const text = view
-				? `${detailedSummary(view)}${lifecycleHint}${nudge}${otherCount > 0 ? `\nOther open goals: ${otherCount} (human can run /goal-list or /goal-focus)` : ""}`
+				? `${detailedSummary(view)}${lifecycleHint}${nudge}${otherCount > 0 ? `\nOther open goalies: ${otherCount} (human can run /goalie-list or /goalie-focus)` : ""}`
 				: openGoals().length > 0
 					? buildUnfocusedOpenGoalsSummary(openGoals().length)
 					: detailedSummary(null);
@@ -1547,9 +1529,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		description: "Create a new active pi goal and focus it. Hidden outside drafting flows; propose_goal_draft is the normal commit path.",
 		promptSnippet: "Create a persistent pi goal when the user explicitly asks for one or when a goal-drafting interview has converged.",
 		promptGuidelines: [
-			"Use create_goal only when the user explicitly asks to start a long-running goal, OR when a /goals or /sisyphus intent discussion has produced a concrete objective.",
+			"Use create_goal only when a /goalie drafting flow has produced a concrete objective. Direct agent creation remains hidden/rejected in normal operation.",
 			"Creating a new goal focuses it and leaves other open goals untouched. Do not archive or replace existing goals unless the user explicitly asks through a user command.",
-			"Pass sisyphus=true only when the goal came out of /sisyphus intent discussion or /sisyphus-set, or when the user explicitly invoked Sisyphus mode.",
+			"Pass sisyphus=true only when the active drafting focus is Sisyphus mode, or when the user explicitly invoked Sisyphus mode.",
 		],
 		parameters: Type.Object({
 			objective: Type.String({ description: "Concrete objective to pursue. For Sisyphus goals this MUST be the full plan including numbered steps and per-step done criteria." }),
@@ -1559,7 +1541,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return {
-				content: [{ type: "text", text: "create_goal REJECTED: direct agent creation is disabled. Use /goals or /sisyphus with propose_goal_draft for confirmation, or have the user invoke /goals-set or /sisyphus-set for immediate creation." }],
+				content: [{ type: "text", text: "create_goal REJECTED: direct agent creation is disabled. Use /goalie with propose_goal_draft for confirmation, or have the user invoke /goalie-set for immediate creation." }],
 				details: goalDetails(state.goal),
 			};
 		},
@@ -1581,21 +1563,21 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	pi.registerTool(defineTool({
 		name: PROPOSE_DRAFT_TOOL_NAME,
 		label: "Propose Goal Draft",
-		description: "During /goals or /sisyphus intent discussion, propose the goal draft to the user. The user sees a full plain-text confirmation report and chooses Confirm (creates the goal) or Continue Chatting (returns control to you to refine). REPLACES create_goal during discussion-based creation.",
+		description: "During /goalie intent discussion, propose the goal draft to the user. The user sees a full plain-text confirmation report and chooses Confirm (creates the goal) or Continue Chatting (returns control to you to refine). REPLACES create_goal during discussion-based creation.",
 		promptSnippet: "Propose the drafted goal to the user with a full plain-text Confirm / Continue Chatting dialog.",
 		promptGuidelines: [
-			"Call propose_goal_draft when a /goals or /sisyphus intent discussion has enough information to write a concrete goal. Ask a focused question only when the request is still ambiguous.",
+			"Call propose_goal_draft when a /goalie intent discussion has enough information to write a concrete goal. Ask a focused question only when the request is still ambiguous.",
 			"If an answer exposes ambiguity, keep interviewing the user — do not propose prematurely.",
 			"The user will see a full plain-text draft report plus a [Confirm] / [Continue Chatting] choice. Confirm creates the goal; Continue Chatting returns control to you to ask follow-up questions.",
 			"If the tool returns 'continue chatting', ask the user what they want changed. Do NOT propose again immediately with the same content; iterate based on their feedback first.",
-			"The sisyphus field must match the user's confirmation focus: /sisyphus -> sisyphus=true, /goals -> sisyphus=false. The schema enforces this; mismatched proposals are REJECTED.",
+			"The sisyphus field must match the active drafting focus: Sisyphus focus -> sisyphus=true, normal goalie focus -> sisyphus=false. The schema enforces this; mismatched proposals are REJECTED.",
 			"For sisyphus goals, preserve the user's requested ordered style and completion standard. Do not add reconnaissance/preflight steps, merge steps, reorder steps, or change the mode without explicit user confirmation.",
 			"create_goal is rejected; propose_goal_draft is the confirmation path. This is intentional — the user wants explicit say in goal creation.",
 		],
 		parameters: Type.Object({
 			objective: Type.String({ description: "Full goal text. For Sisyphus goals this MUST include the user's numbered steps + per-step done criteria, taken faithfully from the user's input." }),
 			autoContinue: Type.Optional(Type.Boolean({ description: "Whether pi should keep sending continuation prompts until complete. Default true." })),
-			sisyphus: Type.Optional(Type.Boolean({ description: "Must equal true for /sisyphus discussion, false for /goals discussion. Schema-enforced via B1 gate." })),
+			sisyphus: Type.Optional(Type.Boolean({ description: "Must equal true for Sisyphus-focus drafting, false for normal goalie drafting. Schema-enforced via B1 gate." })),
 			draftId: Type.Optional(Type.String({ description: "Deprecated compatibility field. It is accepted but ignored; current goal confirmation no longer depends on hidden draft ids." })),
 		}),
 		executionMode: "sequential",
@@ -2037,19 +2019,19 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	pi.registerTool(defineTool({
 		name: "pause_goal",
 		label: "Pause Goal",
-		description: "Pause the active pi goal and report a blocker to the user. The user must /goal-resume, /goal-tweak, or /goal-clear before work continues.",
+		description: "Pause the active pi goal and report a blocker to the user. The user must /goalie-resume, edit the goalie, or /goalie-clear before work continues.",
 		promptSnippet: "Pause the active pi goal and report a concrete blocker so the user can intervene.",
 		promptGuidelines: [
 			"Use pause_goal when you have hit a real blocker that you cannot resolve with one more reasonable next step: missing credentials, ambiguous or contradictory spec, a file or permission you cannot access, a sisyphus step whose precondition is not in the plan, or any irreversible / dangerous operation that requires explicit user approval.",
 			"Do NOT use pause_goal to escape a merely hard problem; first try one concrete next step. Do not use pause_goal as a softer substitute for update_goal=complete \u2014 if the objective is achieved, complete it; if it is not, do not complete it.",
 			"Never silently invent a workaround, fake completion, or quietly redefine the objective. Pause and report instead.",
-			"Always pass a concrete one-sentence reason. When you know how the user can unblock you, pass suggestedAction (e.g. 'Set FOO_API_KEY env var and /goal-resume', or 'Use /goal-tweak to insert a precondition step before step 3').",
+			"Always pass a concrete one-sentence reason. When you know how the user can unblock you, pass suggestedAction (e.g. 'Set FOO_API_KEY env var and /goalie-resume', or 'Use /goalie-edit to insert a precondition step before step 3').",
 			"After pause_goal returns, stop. Do not call other tools in the same turn.",
 			"For sisyphus goals: if any step is unclear, blocked, fails, or seems wrong, pause_goal is the correct action \u2014 do not skip the step or invent a workaround.",
 		],
 		parameters: Type.Object({
 			reason: Type.String({ description: "One-sentence concrete blocker description. Plain language, not an apology." }),
-			suggestedAction: Type.Optional(Type.String({ description: "Optional concrete suggestion for how the user can unblock (e.g. command to run, value to provide, /goal-tweak hint)." })),
+			suggestedAction: Type.Optional(Type.String({ description: "Optional concrete suggestion for how the user can unblock (e.g. command to run, value to provide, /goalie-edit hint)." })),
 		}),
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2171,41 +2153,12 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	}));
 
 	pi.registerTool(defineTool({
-		name: SISYPHUS_STEP_TOOL_NAME,
-		label: "Sisyphus Step Complete (Legacy)",
-		description: "Legacy compatibility tool. Current Sisyphus mode is a prompt/criteria style and no longer uses schema-tracked step completion.",
-		promptSnippet: "Legacy no-op: Sisyphus no longer requires step_complete.",
-		promptGuidelines: [
-			"Do not call this in normal operation. Sisyphus mode shares the normal goal lifecycle and completion gate.",
-			"Complete the goal with update_goal(status=complete) only when the full objective is actually satisfied.",
-		],
-		parameters: Type.Object({
-			stepIndex: Type.Integer({ minimum: 1, description: "Legacy step index. Ignored." }),
-			evidence: Type.String({ description: "Legacy evidence text. Ignored by the schema." }),
-			verifyCommand: Type.Optional(Type.String({ description: "Legacy field. Not executed." })),
-		}),
-		executionMode: "sequential",
-		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-			return {
-				content: [{ type: "text", text: "step_complete is no longer required. Sisyphus is now a prompt/criteria style that uses the normal goal lifecycle. Continue working from the objective, or call update_goal(status=complete) only when the full objective is satisfied." }],
-				details: goalDetails(state.goal),
-			};
-		},
-		renderCall(args, theme) {
-			return new Text(theme.fg("toolTitle", "step_complete legacy ") + theme.fg("muted", `#${args?.stepIndex ?? "?"}`), 0, 0);
-		},
-		renderResult(result, _options, theme) {
-			return renderGoalResult(result, theme);
-		},
-	}));
-
-	pi.registerTool(defineTool({
 		name: TWEAK_APPLY_TOOL_NAME,
 		label: "Apply Goal Tweak",
-		description: "Atomically apply a /goal-tweak revision to the active goal. The ONLY way to modify an active goal's objective. Only available during a /goal-tweak drafting flow.",
-		promptSnippet: "Apply the revised goal objective produced by a /goal-tweak drafting interview.",
+		description: "Atomically apply a goalie revision to the active goal. The ONLY way to modify an active goal's objective. Only available during an active goalie tweak-drafting flow.",
+		promptSnippet: "Apply the revised goal objective produced by a goalie tweak-drafting interview.",
 		promptGuidelines: [
-			"Only call apply_goal_tweak inside a /goal-tweak drafting flow (the prompt makes that explicit). It is rejected at any other time.",
+			"Only call apply_goal_tweak inside a goalie tweak-drafting flow (the prompt makes that explicit). It is rejected at any other time.",
 			"newObjective must be the FULL revised objective text, formatted the same way as the original (=== Goal === or === Sisyphus Goal === block). Do NOT pass a diff or partial patch; pass the whole new objective.",
 			"For Sisyphus goals: preserve the Sisyphus style and ordered-plan wording unless the user explicitly asks to remove it.",
 			"changeSummary is a one-sentence description of WHAT changed (for the activity log and pause messages).",
@@ -2229,9 +2182,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				return {
 					content: [{
 						type: "text",
-						text: "apply_goal_tweak REJECTED: no /goal-tweak drafting flow is active for this goal. " +
-							"This tool can only be called during a /goal-tweak drafting interview that the user initiated. " +
-							"If you want to change the goal, ask the user to run /goal-tweak.",
+						text: "apply_goal_tweak REJECTED: no goalie tweak-drafting flow is active for this goal. " +
+							"This tool can only be called during a goalie tweak-drafting interview that the user initiated. " +
+							"If you want to change the goal, ask the user to run /goalie-edit or start a new /goalie discussion.",
 					}],
 					details: goalDetails(state.goal),
 				};
@@ -2563,7 +2516,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				// Ledger read failure should not break the prompt
 			}
 			return {
-				systemPrompt: `${currentSystemPrompt()}\n\n[PI GOAL PAUSED goalId=${current.id}]\n${untrustedObjectiveBlock(current)}${pauseExtras.join("\n")}${auditorExtra}\n\nThe goal is paused. Do not autonomously continue substantive work unless the user resumes it with /goal-resume. If the user explicitly asks to finish or abandon the paused goal, or the objective is already satisfied based on available evidence, you may call update_goal(status=complete) or abort_goal without resuming. Do not call pause_goal again.`,
+				systemPrompt: `${currentSystemPrompt()}\n\n[PI GOAL PAUSED goalId=${current.id}]\n${untrustedObjectiveBlock(current)}${pauseExtras.join("\n")}${auditorExtra}\n\nThe goal is paused. Do not autonomously continue substantive work unless the user resumes it with /goalie-resume. If the user explicitly asks to finish or abandon the paused goal, or the objective is already satisfied based on available evidence, you may call update_goal(status=complete) or abort_goal without resuming. Do not call pause_goal again.`,
 			};
 		}
 		const activeGoal = state.goal;

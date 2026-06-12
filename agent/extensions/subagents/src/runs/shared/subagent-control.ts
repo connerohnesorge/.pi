@@ -187,8 +187,8 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 			childIntercomTarget
 				? `Nudge: ${nudgeCommand}`
 				: "Nudge: no child message route registered",
-			`Status: subagent({ action: "status", id: "${runTarget}" })`,
-			`Interrupt: subagent({ action: "interrupt", id: "${runTarget}" })`,
+			`Status: subagent_control({ action: "status", id: "${runTarget}" })`,
+			`Interrupt: subagent_control({ action: "interrupt", id: "${runTarget}" })`,
 		].filter((line): line is string => Boolean(line)).join("\n");
 	}
 
@@ -201,8 +201,8 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 		childIntercomTarget
 			? `Nudge: ${nudgeCommand}`
 			: "Nudge: no child message route registered",
-		`Status: subagent({ action: "status", id: "${runTarget}" })`,
-		`Interrupt: subagent({ action: "interrupt", id: "${runTarget}" })`,
+		`Status: subagent_control({ action: "status", id: "${runTarget}" })`,
+		`Interrupt: subagent_control({ action: "interrupt", id: "${runTarget}" })`,
 	].filter((line): line is string => Boolean(line)).join("\n");
 }
 

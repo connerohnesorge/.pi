@@ -136,7 +136,7 @@ test("apply_goal_tweak path: writeActiveGoalFile with new objective (simulated h
 	const ctx = createTempGoalContext(TEST_PREFIX);
 	try {
 		const originalObj = "Original objective";
-		const newObj = "Tweaked objective after /goal-tweak interview";
+		const newObj = "Tweaked objective after goalie tweak interview";
 
 		// Write the original active goal
 		const goal = makeGoal({ objective: originalObj });

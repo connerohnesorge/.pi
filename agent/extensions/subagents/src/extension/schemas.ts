@@ -98,6 +98,77 @@ const ControlOverrides = Type.Object({
 	})),
 });
 
+export const SubagentExecutionParams = Type.Object({
+	agent: Type.Optional(Type.String({ description: "Agent name (single mode)" })),
+	task: Type.Optional(Type.String({ description: "Task (single mode, optional for self-contained agents)" })),
+	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]" })),
+	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
+	worktree: Type.Optional(Type.Boolean({
+		description: "Create isolated git worktrees for each parallel task. " +
+			"Prevents filesystem conflicts. Requires clean git state. " +
+			"Per-worktree diffs included in output."
+	})),
+	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential pipeline where each step's response becomes {previous} for the next. Use {task}, {previous}, {chain_dir} in task templates." })),
+	context: Type.Optional(Type.String({
+		enum: ["fresh", "fork"],
+		description: "'fresh' or 'fork' to branch from parent session. If omitted, any requested agent with defaultContext: 'fork' makes the whole invocation use fork; otherwise fresh.",
+	})),
+	chainDir: Type.Optional(Type.String({ description: "Persistent directory for chain artifacts. Default: a user-scoped temp directory under <tmpdir>/ (auto-cleaned after 24h)" })),
+	async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
+	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default: 'both'; project wins on name collisions)" })),
+	cwd: Type.Optional(Type.String()),
+	artifacts: Type.Optional(Type.Boolean({ description: "Write debug artifacts (default: true)" })),
+	includeProgress: Type.Optional(Type.Boolean({ description: "Include full progress in result (default: false)" })),
+	share: Type.Optional(Type.Boolean({ description: "Upload session to GitHub Gist for sharing (default: false)" })),
+	sessionDir: Type.Optional(Type.String({ description: "Directory to store session logs (default: temp; enables sessions even if share=false)" })),
+	clarify: Type.Optional(Type.Boolean({ description: "Show TUI to preview/edit before execution. Explicit clarify: true keeps the run foreground for the clarify UI; omitted clarify can still run in the background when async: true is set." })),
+	control: Type.Optional(ControlOverrides),
+	output: Type.Optional(Type.Unsafe({
+		anyOf: [
+			{ type: "string" },
+			{ type: "boolean" },
+		],
+		description: "Output file for single agent (string), or false to disable. Relative paths resolve against cwd.",
+	})),
+	outputMode: Type.Optional(OutputModeOverride),
+	skill: Type.Optional(SkillOverride),
+	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
+});
+
+export const SubagentManagementParams = Type.Object({
+	action: Type.String({
+		enum: ["list", "get", "create", "update", "delete", "doctor"],
+		description: "Management/diagnostic action.",
+	}),
+	agent: Type.Optional(Type.String({ description: "Agent name for get/update/delete" })),
+	chainName: Type.Optional(Type.String({ description: "Chain name for get/update/delete" })),
+	config: Type.Optional(Type.Unsafe({
+		anyOf: [
+			{ type: "object", additionalProperties: true },
+			{ type: "string" },
+		],
+		description: "Agent or chain config for create/update. String values must be valid JSON.",
+	})),
+	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default: 'both')" })),
+	cwd: Type.Optional(Type.String()),
+	context: Type.Optional(Type.String({ enum: ["fresh", "fork"], description: "Context mode to include in diagnostics when relevant." })),
+	sessionDir: Type.Optional(Type.String({ description: "Directory to store/read session logs when relevant." })),
+});
+
+export const SubagentControlParams = Type.Object({
+	action: Type.String({
+		enum: ["status", "interrupt", "resume"],
+		description: "Control action for existing foreground/background runs.",
+	}),
+	id: Type.Optional(Type.String({ description: "Run id or prefix for status, interrupt, or resume." })),
+	runId: Type.Optional(Type.String({ description: "Target run ID for interrupt or resume. Defaults to most recent foreground run for interrupt." })),
+	dir: Type.Optional(Type.String({ description: "Async run directory for status or resume." })),
+	index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based child index for actions that target a specific child." })),
+	message: Type.Optional(Type.String({ description: "Follow-up message for resume. Use index to choose a child from multi-child runs." })),
+	cwd: Type.Optional(Type.String()),
+	sessionDir: Type.Optional(Type.String({ description: "Directory to store/read session logs when relevant." })),
+});
+
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
 	task: Type.Optional(Type.String({ description: "Task (SINGLE mode, optional for self-contained agents)" })),

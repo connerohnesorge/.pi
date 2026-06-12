@@ -23,7 +23,7 @@ import { createSubagentState } from "../shared/subagent-state.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
-import { SubagentParams } from "./schemas.ts";
+import { SubagentControlParams, SubagentExecutionParams, SubagentManagementParams } from "./schemas.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
@@ -346,54 +346,28 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
-	const tool: ToolDefinition<typeof SubagentParams, Details> = {
+	const executionTool: ToolDefinition<typeof SubagentExecutionParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate to subagents or manage agent definitions.
+		description: `Execute subagents. Management/status moved to focused tools: use subagent_manage for list/get/create/update/delete/doctor, and subagent_control for status/interrupt/resume.
 
 EXECUTION (use exactly ONE mode):
-• Before executing, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled.
-• SINGLE: { agent, task? } - one task; omit task for self-contained agents
-• CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
-• PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - concurrent execution (worktree: isolate each task in a git worktree)
-• Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })
+• SINGLE: { agent, task? } - one task; omit task for self-contained agents.
+• CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out.
+• PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true }.
+• Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext:"fork", the run uses fork; otherwise fresh).
 
-CHAIN TEMPLATE VARIABLES (use in task strings):
-• {task} - The original task/request from the user
-• {previous} - Text response from the previous step (empty for first step)
-• {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/pi-subagents-<scope>/chain-runs/abc123/)
-
-Example: { chain: [{agent:"agent-a", task:"Analyze {task}"}, {agent:"agent-b", task:"Plan based on {previous}"}] }
-
-MANAGEMENT (use action field, omit agent/task/chain/tasks):
-• { action: "list" } - discover executable agents/chains
-• { action: "get", agent: "name" } - full detail; packaged agents use dotted runtime names like "package.agent"
-• { action: "create", config: { name: "custom-agent", package: "code-analysis", systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext, ... } }
-• { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", ... } } - merge
-• { action: "delete", agent: "code-analysis.custom-agent" }
-• Use chainName for chain operations; packaged chains also use dotted runtime names
-
-CONTROL:
-• { action: "status", id: "..." } - inspect an async/background run by id or prefix
-• { action: "interrupt", id?: "..." } - soft-interrupt the current child turn and leave the run paused
-• { action: "resume", id: "...", message: "...", index?: 0 } - follow up with a live async child or revive a completed async/foreground child from its session
-
-DIAGNOSTICS:
-• { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
-		parameters: SubagentParams,
+CHAIN TEMPLATE VARIABLES:
+• {task} - Original task/request from the user.
+• {previous} - Text response from the previous step.
+• {chain_dir} - Shared directory for chain files.`,
+		parameters: SubagentExecutionParams,
 
 		execute(id, params, signal, onUpdate, ctx) {
 			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);
 		},
 
 		renderCall(args, theme) {
-			if (args.action) {
-				const target = args.agent || args.chainName || "";
-				return new Text(
-					`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg("accent", target)}` : ""}`,
-					0, 0,
-				);
-			}
 			const isParallel = (args.tasks?.length ?? 0) > 0;
 			const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
 			const asyncLabel = args.async === true && args.clarify !== true && !isParallel ? theme.fg("warning", " [async]") : "";
@@ -420,10 +394,71 @@ DIAGNOSTICS:
 			clearLegacyResultAnimationTimer(context);
 			return renderSubagentResult(result, options, theme);
 		},
-
 	};
 
-	pi.registerTool(tool);
+	const managementTool: ToolDefinition<typeof SubagentManagementParams, Details> = {
+		name: "subagent_manage",
+		label: "Subagent Manage",
+		description: `Manage and inspect configured subagent definitions.
+
+Actions:
+• list - discover executable agents/chains. Call this before subagent execution when you need available names.
+• get - show one agent or chain definition.
+• create/update/delete - mutate user/project agent or chain definitions.
+• doctor - read-only diagnostics for runtime paths, discovery, sessions, and intercom.
+
+Use subagent for execution and subagent_control for run status/interrupt/resume.`,
+		parameters: SubagentManagementParams,
+		execute(id, params, signal, onUpdate, ctx) {
+			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);
+		},
+		renderCall(args, theme) {
+			const target = args.agent || args.chainName || "";
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("subagent_manage "))}${args.action}${target ? ` ${theme.fg("accent", target)}` : ""}`,
+				0,
+				0,
+			);
+		},
+		renderResult(result, options, theme, context) {
+			clearLegacyResultAnimationTimer(context);
+			return renderSubagentResult(result, options, theme);
+		},
+	};
+
+	const controlTool: ToolDefinition<typeof SubagentControlParams, Details> = {
+		name: "subagent_control",
+		label: "Subagent Control",
+		description: `Inspect or control existing subagent runs.
+
+Actions:
+• status - inspect a foreground/background run by id/prefix, or list active async runs when id is omitted.
+• interrupt - soft-interrupt a controllable foreground/background child turn.
+• resume - follow up with a live async child or revive a completed child from its session.
+
+Use subagent for execution and subagent_manage for agent/chain definition management.`,
+		parameters: SubagentControlParams,
+		execute(id, params, signal, onUpdate, ctx) {
+			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);
+		},
+		renderCall(args, theme) {
+			const target = args.id || args.runId || args.dir || "";
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("subagent_control "))}${args.action}${target ? ` ${theme.fg("accent", target)}` : ""}`,
+				0,
+				0,
+			);
+		},
+		renderResult(result, options, theme, context) {
+			clearLegacyResultAnimationTimer(context);
+			return renderSubagentResult(result, options, theme);
+		},
+	};
+
+	pi.registerTool(executionTool);
+	pi.registerTool(managementTool);
+	pi.registerTool(controlTool);
+
 	registerSlashCommands(pi, state);
 
 	const eventUnsubscribeStoreKey = "__piSubagentEventUnsubscribes";

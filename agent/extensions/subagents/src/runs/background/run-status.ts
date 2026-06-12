@@ -40,11 +40,11 @@ function formatResumeGuidance(runId: string | undefined, children: Array<{ agent
 	if (!runId || knownChildren.length === 0) return "Resume: unavailable; no child session file was persisted.";
 	const singleSessionFile = knownChildren[0]?.child.sessionFile ?? fallbackSessionFile;
 	if (children.length === 1 && knownChildren.length === 1 && hasExistingSessionFile(singleSessionFile)) {
-		return `Revive: subagent({ action: "resume", id: "${runId}", message: "..." })`;
+		return `Revive: subagent_control({ action: "resume", id: "${runId}", message: "..." })`;
 	}
 	const childWithSession = knownChildren.find(({ child }) => hasExistingSessionFile(child.sessionFile));
 	if (childWithSession) {
-		return `Revive child: subagent({ action: "resume", id: "${runId}", index: ${childWithSession.index}, message: "..." })`;
+		return `Revive child: subagent_control({ action: "resume", id: "${runId}", index: ${childWithSession.index}, message: "..." })`;
 	}
 	return "Resume: unavailable; no child session file was persisted.";
 }
@@ -94,7 +94,7 @@ function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): stri
 		}
 	}
 	lines.push(...formatNestedRunStatusLines(run.children, { indent: "  ", commandHints: true }));
-	lines.push("Commands:", `  Status: subagent({ action: "status", id: "${run.id}" })`, `  Interrupt: subagent({ action: "interrupt", id: "${run.id}" })`, `  Resume: subagent({ action: "resume", id: "${run.id}", message: "..." })`, `  Root status: subagent({ action: "status", id: "${rootRunId}" })`);
+	lines.push("Commands:", `  Status: subagent_control({ action: "status", id: "${run.id}" })`, `  Interrupt: subagent_control({ action: "interrupt", id: "${run.id}" })`, `  Resume: subagent_control({ action: "resume", id: "${run.id}", message: "..." })`, `  Root status: subagent_control({ action: "status", id: "${rootRunId}" })`);
 	return lines.join("\n");
 }
 

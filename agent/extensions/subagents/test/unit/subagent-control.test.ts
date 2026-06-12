@@ -164,8 +164,8 @@ describe("subagent control attention state", () => {
 		assert.match(message, /Subagent needs attention: worker/);
 		assert.match(message, /Hint: Inspect status first unless the run is clearly blocked/);
 		assert.match(message, /Nudge: intercom\(\{ action: "send", to: "subagent-worker-78f659a3"/);
-		assert.match(message, /Status: subagent\(\{ action: "status", id: "78f659a3" \}\)/);
-		assert.match(message, /Interrupt: subagent\(\{ action: "interrupt", id: "78f659a3" \}\)/);
+		assert.match(message, /Status: subagent_control\(\{ action: "status", id: "78f659a3" \}\)/);
+		assert.match(message, /Interrupt: subagent_control\(\{ action: "interrupt", id: "78f659a3" \}\)/);
 		assert.doesNotMatch(message, /Wait:/);
 	});
 

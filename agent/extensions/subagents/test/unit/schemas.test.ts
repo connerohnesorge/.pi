@@ -89,10 +89,16 @@ function hasAnyOfArrayWithStringItems(schema: JsonSchemaNode | undefined): boole
 
 let schemas: Record<string, JsonSchemaNode> = {};
 let SubagentParams: SubagentParamsSchema | undefined;
+let SubagentExecutionParams: SubagentParamsSchema | undefined;
+let SubagentManagementParams: SubagentParamsSchema | undefined;
+let SubagentControlParams: SubagentParamsSchema | undefined;
 let schemasAvailable = true;
 try {
 	schemas = await import("../../src/extension/schemas.ts") as Record<string, JsonSchemaNode>;
 	SubagentParams = schemas.SubagentParams as SubagentParamsSchema;
+	SubagentExecutionParams = schemas.SubagentExecutionParams as SubagentParamsSchema;
+	SubagentManagementParams = schemas.SubagentManagementParams as SubagentParamsSchema;
+	SubagentControlParams = schemas.SubagentControlParams as SubagentParamsSchema;
 } catch (error) {
 	if (missingPackageName(error) !== "typebox") throw error;
 	schemasAvailable = false;
@@ -107,6 +113,15 @@ try {
 }
 
 describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not available" : undefined }, () => {
+	it("splits execution, management, and control schemas for focused tools", () => {
+		assert.ok(SubagentExecutionParams, "execution schema should exist");
+		assert.ok(SubagentManagementParams, "management schema should exist");
+		assert.ok(SubagentControlParams, "control schema should exist");
+		assert.equal(SubagentExecutionParams.properties?.action, undefined);
+		assert.deepEqual(SubagentManagementParams.properties?.action?.enum, ["list", "get", "create", "update", "delete", "doctor"]);
+		assert.deepEqual(SubagentControlParams.properties?.action?.enum, ["status", "interrupt", "resume"]);
+	});
+
 	it("includes context field for fresh/fork execution mode", () => {
 		const contextSchema = SubagentParams?.properties?.context;
 		assert.ok(contextSchema, "context schema should exist");

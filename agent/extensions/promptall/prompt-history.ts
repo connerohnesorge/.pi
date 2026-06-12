@@ -83,7 +83,7 @@ function sourceKey(source: PromptSourceInfo): string {
 	return source.sessionPath ?? source.cwd ?? source.sessionName ?? source.source;
 }
 
-export function promptFromSessionEntry(entry: unknown, source: PromptSourceInfo, ordinal = 0): PromptHistoryItem | null {
+function promptFromSessionEntry(entry: unknown, source: PromptSourceInfo, ordinal = 0): PromptHistoryItem | null {
 	if (!entry || typeof entry !== "object") return null;
 	const candidate = entry as LooseEntry;
 	if (candidate.type !== "message" || candidate.message?.role !== "user") return null;
@@ -138,7 +138,7 @@ export function extractPromptsFromSessionJsonl(content: string, source: PromptSo
 	return prompts;
 }
 
-export function rankPromptHistory(prompts: PromptHistoryItem[], limit = DEFAULT_HISTORY_LIMIT): PromptHistoryItem[] {
+function rankPromptHistory(prompts: PromptHistoryItem[], limit = DEFAULT_HISTORY_LIMIT): PromptHistoryItem[] {
 	const newestFirst = [...prompts].sort((a, b) => b.timestampMs - a.timestampMs);
 	const seen = new Set<string>();
 	const result: PromptHistoryItem[] = [];

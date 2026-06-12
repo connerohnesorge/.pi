@@ -127,7 +127,6 @@ export function goalTweakDraftingPrompt(current: GoalRecord, hint: string): stri
 		"- Do NOT call create_goal (a goal already exists).",
 		"- Do NOT call update_goal.",
 		"- Do NOT call pause_goal during this drafting interview (it pauses execution — you are not executing, you are revising).",
-		"- Do NOT call step_complete during this drafting interview. It is a legacy compatibility tool, not part of the current Sisyphus design.",
 		"- Do NOT use bash, write, edit, or read to modify the goal file directly. The goal file is managed by the extension.",
 		"- You MAY clarify via plain chat, the built-in goal_question/goal_questionnaire tools, or any question-like user-dialogue tool. They all return user intent into the conversation; treat them the same. Do NOT use workhorse/reconnaissance tools for clarification.",
 		"- Do NOT start new task work in this turn.",
@@ -165,6 +164,6 @@ export function unfocusedOpenGoalsPrompt(openGoalCount: number): string {
 		"[PI GOAL UNFOCUSED]",
 		`${openGoalCount} open pi goal${openGoalCount === 1 ? "" : "s"} exist, but this session has no focused goal.`,
 		"Do not choose or switch focus autonomously. Focus is human-owned intent.",
-		"Ask the user to run /goal-focus, /goal-list, or /goal-resume before doing goal work.",
+		"Ask the user to run /goalie-focus, /goalie-list, or /goalie-resume before doing goal work.",
 	].join("\n");
 }

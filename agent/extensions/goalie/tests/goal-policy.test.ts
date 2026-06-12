@@ -67,14 +67,14 @@ test("pause, resume, and clear policy preserve human-owned lifecycle affordances
 
 	const paused = buildPausedByAgentGoal(goal(), {
 		reason: "Need credentials",
-		suggestedAction: "Set TOKEN and /goal-resume",
+		suggestedAction: "Set TOKEN and /goalie-resume",
 		updatedAt: "2026-05-12T01:00:00.000Z",
 	});
 	assert.equal(paused.status, "paused");
 	assert.equal(paused.autoContinue, false);
 	assert.equal(paused.stopReason, "agent");
 	assert.equal(paused.pauseReason, "Need credentials");
-	assert.equal(paused.pauseSuggestedAction, "Set TOKEN and /goal-resume");
+	assert.equal(paused.pauseSuggestedAction, "Set TOKEN and /goalie-resume");
 
 	assert.match(rejectedMessage(validateResumeGoal(null)), /No goal is set/);
 	assert.match(rejectedMessage(validateResumeGoal(goal({ status: "complete" }))), /Goal is complete/);

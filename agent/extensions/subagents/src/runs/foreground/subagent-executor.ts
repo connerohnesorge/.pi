@@ -682,7 +682,7 @@ async function resumeAsyncRun(input: {
 		`Session: ${target.sessionFile}`,
 		result.details.asyncDir ? `Async dir: ${result.details.asyncDir}` : undefined,
 		revivedTarget ? `Intercom target: ${revivedTarget} (if registered)` : undefined,
-		`Status if needed: subagent({ action: "status", id: "${revivedId}" })`,
+		`Status if needed: subagent_control({ action: "status", id: "${revivedId}" })`,
 	].filter((line): line is string => Boolean(line));
 	return { content: [{ type: "text", text: formatAsyncStartedMessage(lines.join("\n")) }], details: result.details };
 }

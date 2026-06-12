@@ -461,7 +461,7 @@ export function registerQuestionnaireTools(pi: ExtensionAPI): void {
 		promptSnippet: "Ask the user one or more structured questions with choices and optional free-text answers.",
 		promptGuidelines: [
 			"Use goal_questionnaire when a user decision or missing requirement blocks a concrete draft.",
-			"During /goals or /sisyphus intent discussion, goal_questionnaire is allowed when structured Q&A helps produce a concrete draft.",
+			"During /goalie intent discussion, goal_questionnaire is allowed when structured Q&A helps produce a concrete draft.",
 			"Prefer 1-3 focused questions. Batch related choices in one questionnaire call instead of repeatedly interrupting the user.",
 			"Use recommended to mark the best default choice when there is one. Set allowCustom=false only for strict binary/choice prompts such as confirmation.",
 		],

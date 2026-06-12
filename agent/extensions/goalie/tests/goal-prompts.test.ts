@@ -63,5 +63,5 @@ test("tweak and stale prompts point the agent at the right lifecycle path", () =
 
 test("unfocused prompt keeps multi-goal focus human-owned", () => {
 	const prompt = unfocusedOpenGoalsPrompt(3);
-	assertMatchesAll(prompt, [/^\[PI GOAL UNFOCUSED\]/, /3 open pi goals/, /Do not choose or switch focus autonomously/, /\/goal-focus/]);
+	assertMatchesAll(prompt, [/^\[PI GOAL UNFOCUSED\]/, /3 open pi goals/, /Do not choose or switch focus autonomously/, /\/goalie-focus/]);
 });

@@ -62,11 +62,11 @@ test("renderGoalWidgetLines highlights agent blockers and suggested action", () 
 		autoContinue: false,
 		stopReason: "agent",
 		pauseReason: "Missing API token",
-		pauseSuggestedAction: "Set TOKEN and run /goal-resume",
+		pauseSuggestedAction: "Set TOKEN and run /goalie-resume",
 	}), theme, 100);
 	assert.match(lines[0], /⊘ Sisyphus blocked/);
 	assert.match(lines.join("\n"), /^├─ blocker Missing API token/m);
-	assert.match(lines.join("\n"), /^├─ next Set TOKEN and run \/goal-resume/m);
+	assert.match(lines.join("\n"), /^├─ next Set TOKEN and run \/goalie-resume/m);
 });
 
 test("renderGoalWidgetLines shows other open goals and unfocused multi-goal guidance", () => {
@@ -76,7 +76,7 @@ test("renderGoalWidgetLines shows other open goals and unfocused multi-goal guid
 	const unfocused = renderGoalWidgetLines(null, theme, 100, { openGoalCount: 2 });
 	assert.match(unfocused[0], /^◇ Goal unfocused/);
 	assert.match(unfocused[0], /2 open/);
-	assert.match(unfocused.join("\n"), /\/goal-focus/);
+	assert.match(unfocused.join("\n"), /\/goalie-focus/);
 });
 
 test("renderAuditorWidgetLines shows auditor progress with current tool", () => {

@@ -19,10 +19,10 @@ describe("subagent extension child mode", () => {
 		const script = String.raw`
 			import registerSubagentExtension from "./src/extension/index.ts";
 			const events = { on() { return () => {}; }, emit() {} };
-			let registeredTool;
+			const registeredTools = new Map();
 			const fakePi = new Proxy({
 				events,
-				registerTool(tool) { registeredTool = tool; },
+				registerTool(tool) { registeredTools.set(tool.name, tool); },
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
@@ -35,7 +35,8 @@ describe("subagent extension child mode", () => {
 				},
 			});
 			registerSubagentExtension(fakePi);
-			if (!registeredTool) throw new Error("tool not registered");
+			const registeredTool = registeredTools.get("subagent_manage");
+			if (!registeredTool) throw new Error("management tool not registered");
 			const calls = [];
 			const ctx = {
 				cwd: process.cwd(),
@@ -71,10 +72,10 @@ describe("subagent extension child mode", () => {
 		const script = String.raw`
 			import registerSubagentExtension from "./src/extension/index.ts";
 			const events = { on() { return () => {}; }, emit() {} };
-			let registeredTool;
+			const registeredTools = new Map();
 			const fakePi = new Proxy({
 				events,
-				registerTool(tool) { registeredTool = tool; },
+				registerTool(tool) { registeredTools.set(tool.name, tool); },
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
@@ -87,7 +88,8 @@ describe("subagent extension child mode", () => {
 				},
 			});
 			registerSubagentExtension(fakePi);
-			if (!registeredTool) throw new Error("tool not registered");
+			const registeredTool = registeredTools.get("subagent");
+			if (!registeredTool) throw new Error("execution tool not registered");
 			const theme = { fg(_name, text) { return text; }, bold(text) { return text; } };
 			const asyncChain = registeredTool.renderCall({ chain: [{ agent: "worker" }, { agent: "reviewer" }], async: true }, theme).text;
 			const clarifyChain = registeredTool.renderCall({ chain: [{ agent: "worker" }, { agent: "reviewer" }], async: true, clarify: true }, theme).text;

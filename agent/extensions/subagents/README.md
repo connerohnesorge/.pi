@@ -147,7 +147,7 @@ Use `~/.pi/agent/settings.json` for a user override or `.pi/settings.json` for a
 
 Foreground runs stream progress in the conversation while they run.
 
-Background runs keep working after control returns to you. Inspect active runs with `subagent({ action: "status" })`, or a specific run with `subagent({ action: "status", id: "..." })`.
+Background runs keep working after control returns to you. Inspect active runs with `subagent_control({ action: "status" })`, or a specific run with `subagent_control({ action: "status", id: "..." })`.
 
 They also show a compact async widget and send completion notifications. Parallel background runs show per-agent progress instead of fake chain steps. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. When a child is explicitly allowed to fan out with `tools: subagent`, its nested runs appear under that parent child in the main status tree instead of being hidden inside the child process.
 
@@ -225,7 +225,7 @@ The child can use one dedicated coordination tool:
 
 Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
 
-If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
+If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent_control({ action: "status" })`, interrupting the run, or nudging the child.
 
 If messages do not show up, run:
 
@@ -394,7 +394,7 @@ Example:
 
 Supported override fields are `model`, `fallbackModels`, `thinking`, `systemPromptMode`, `inheritProjectContext`, `inheritSkills`, `defaultContext`, `disabled`, `skills`, `tools`, and `systemPrompt`. Use `defaultContext: false` in builtin overrides to clear an inherited context default. Project overrides beat user overrides.
 
-Set `disabled: true` to hide a builtin from runtime discovery and agent-facing `subagent({ action: "list" })` output. For bulk control, set `subagents.disableBuiltins: true` in settings.
+Set `disabled: true` to hide a builtin from runtime discovery and agent-facing `subagent_manage({ action: "list" })` output. For bulk control, set `subagents.disableBuiltins: true` in settings.
 
 ### Prompt assembly
 
@@ -526,7 +526,7 @@ Each `## agent-name` section is a step. Config lines such as `output`, `outputMo
 
 For `output`, `reads`, `skills`, and `progress`, chain behavior is three-state: omitted inherits from the agent, a value overrides, and `false` disables.
 
-Create chains by writing `.chain.md` files directly or with the `subagent({ action: "create", config: ... })` management action. Run them with natural language or:
+Create chains by writing `.chain.md` files directly or with the `subagent_manage({ action: "create", config: ... })` management action. Run them with natural language or:
 
 ```text
 /run-chain scout-planner -- refactor authentication
@@ -702,9 +702,9 @@ Agent definitions are not loaded into context by default. Management actions let
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `agent` | string | - | Agent name for single mode, or target for management actions. |
+| `agent` | string | - | Agent name for single mode. For management, use `subagent_manage`. |
 | `task` | string | - | Task string for single mode. |
-| `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `resume`, or `doctor`. |
+| `action` | string | - | Only on `subagent_manage` (`list/get/create/update/delete/doctor`) or `subagent_control` (`status/interrupt/resume`). |
 | `chainName` | string | - | Chain name for management actions. |
 | `config` | object/string | - | Agent or chain config for create/update. |
 | `output` | `string \| false` | agent default | Override single-agent output file. |
@@ -736,15 +736,15 @@ Sequential and parallel chain tasks accept `agent`, `task`, `cwd`, `output`, `ou
 Status and control actions:
 
 ```ts
-subagent({ action: "status" })
-subagent({ action: "status", id: "<run-id>" })
-subagent({ action: "status", id: "<nested-run-id>" })
-subagent({ action: "interrupt", id: "<run-id>" })
-subagent({ action: "interrupt", id: "<nested-run-id>" })
-subagent({ action: "resume", id: "<run-id>", message: "follow-up question" })
-subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" })
-subagent({ action: "resume", id: "<nested-run-id>", message: "follow-up for a nested child" })
-subagent({ action: "doctor" })
+subagent_control({ action: "status" })
+subagent_control({ action: "status", id: "<run-id>" })
+subagent_control({ action: "status", id: "<nested-run-id>" })
+subagent_control({ action: "interrupt", id: "<run-id>" })
+subagent_control({ action: "interrupt", id: "<nested-run-id>" })
+subagent_control({ action: "resume", id: "<run-id>", message: "follow-up question" })
+subagent_control({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" })
+subagent_control({ action: "resume", id: "<nested-run-id>", message: "follow-up for a nested child" })
+subagent_manage({ action: "doctor" })
 ```
 
 `status` resolves exact foreground ids, top-level async ids, and nested run ids before falling back to prefix matching. Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands. Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated top-level async runs. Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
@@ -904,7 +904,7 @@ Async runs write:
   subagent-log-<id>.md
 ```
 
-`status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata. Nested fanout status is stored as compact sidecar event/registry metadata and merged into parent status views and result/intercom payloads; full recursive status snapshots are not embedded in parent result files. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
+`status.json` powers the widget and `subagent_control({ action: "status" })` output. `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata. Nested fanout status is stored as compact sidecar event/registry metadata and merged into parent status views and result/intercom payloads; full recursive status snapshots are not embedded in parent result files. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
 
 ## Live progress
 

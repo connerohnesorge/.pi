@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
-import type { ExtensionAPI, ExtensionContext, KeybindingsManager, SessionInfo } from "@earendil-works/pi-coding-agent";
-import { CustomEditor, SessionManager } from "@earendil-works/pi-coding-agent";
-import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext, SessionInfo } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	DEFAULT_HISTORY_LIMIT,
@@ -207,188 +206,6 @@ export async function selectPromptWithTui(
 	});
 }
 
-type PromptallEditorBase = EditorComponent & {
-	focused?: boolean;
-	actionHandlers?: Map<string, () => void>;
-	onEscape?: () => void;
-	onCtrlD?: () => void;
-	onPasteImage?: () => void;
-	onExtensionShortcut?: (data: string) => boolean;
-	dispose?: () => void;
-};
-
-class ForwardingActionMap extends Map<string, () => void> {
-	private readonly base: PromptallEditorBase;
-
-	constructor(base: PromptallEditorBase) {
-		super();
-		this.base = base;
-	}
-
-	override set(key: string, value: () => void): this {
-		super.set(key, value);
-		if (this.base.actionHandlers instanceof Map) {
-			this.base.actionHandlers.set(key, value);
-		}
-		return this;
-	}
-}
-
-class PromptallEditorWrapper implements EditorComponent {
-	readonly actionHandlers: Map<string, () => void>;
-	private opening = false;
-	private _onEscape?: () => void;
-	private _onCtrlD?: () => void;
-	private _onPasteImage?: () => void;
-	private _onExtensionShortcut?: (data: string) => boolean;
-	private readonly base: PromptallEditorBase;
-	private readonly ctx: ExtensionContext;
-	private readonly deps: PromptallExtensionDeps;
-
-	constructor(base: PromptallEditorBase, ctx: ExtensionContext, deps: PromptallExtensionDeps) {
-		this.base = base;
-		this.ctx = ctx;
-		this.deps = deps;
-		this.actionHandlers = new ForwardingActionMap(base);
-	}
-
-	get focused(): boolean {
-		return Boolean(this.base.focused);
-	}
-
-	set focused(value: boolean) {
-		this.base.focused = value;
-	}
-
-	get borderColor(): ((str: string) => string) | undefined {
-		return this.base.borderColor;
-	}
-
-	set borderColor(value: ((str: string) => string) | undefined) {
-		this.base.borderColor = value;
-	}
-
-	get onSubmit(): ((text: string) => void) | undefined {
-		return this.base.onSubmit;
-	}
-
-	set onSubmit(value: ((text: string) => void) | undefined) {
-		this.base.onSubmit = value;
-	}
-
-	get onChange(): ((text: string) => void) | undefined {
-		return this.base.onChange;
-	}
-
-	set onChange(value: ((text: string) => void) | undefined) {
-		this.base.onChange = value;
-	}
-
-	get onEscape(): (() => void) | undefined {
-		return this._onEscape;
-	}
-
-	set onEscape(value: (() => void) | undefined) {
-		this._onEscape = value;
-		this.base.onEscape = value;
-	}
-
-	get onCtrlD(): (() => void) | undefined {
-		return this._onCtrlD;
-	}
-
-	set onCtrlD(value: (() => void) | undefined) {
-		this._onCtrlD = value;
-		this.base.onCtrlD = value;
-	}
-
-	get onPasteImage(): (() => void) | undefined {
-		return this._onPasteImage;
-	}
-
-	set onPasteImage(value: (() => void) | undefined) {
-		this._onPasteImage = value;
-		this.base.onPasteImage = value;
-	}
-
-	get onExtensionShortcut(): ((data: string) => boolean) | undefined {
-		return this._onExtensionShortcut;
-	}
-
-	set onExtensionShortcut(value: ((data: string) => boolean) | undefined) {
-		this._onExtensionShortcut = value;
-		this.base.onExtensionShortcut = value;
-	}
-
-	render(width: number): string[] {
-		return this.base.render(width);
-	}
-
-	invalidate(): void {
-		this.base.invalidate();
-	}
-
-	handleInput(data: string): void {
-		if (matchesKey(data, Key.ctrl("r"))) {
-			if (!this.opening) {
-				this.opening = true;
-				void openPromptallHistory(this.ctx, this.deps).finally(() => {
-					this.opening = false;
-				});
-			}
-			return;
-		}
-
-		this.base.handleInput(data);
-	}
-
-	getText(): string {
-		return this.base.getText();
-	}
-
-	setText(text: string): void {
-		this.base.setText(text);
-	}
-
-	addToHistory(text: string): void {
-		this.base.addToHistory?.(text);
-	}
-
-	insertTextAtCursor(text: string): void {
-		this.base.insertTextAtCursor?.(text);
-	}
-
-	getExpandedText(): string {
-		return this.base.getExpandedText?.() ?? this.base.getText();
-	}
-
-	setAutocompleteProvider(provider: Parameters<NonNullable<EditorComponent["setAutocompleteProvider"]>>[0]): void {
-		this.base.setAutocompleteProvider?.(provider);
-	}
-
-	setPaddingX(padding: number): void {
-		this.base.setPaddingX?.(padding);
-	}
-
-	setAutocompleteMaxVisible(maxVisible: number): void {
-		this.base.setAutocompleteMaxVisible?.(maxVisible);
-	}
-
-	dispose(): void {
-		this.base.dispose?.();
-	}
-}
-
-function installPromptallEditorShortcut(ctx: ExtensionContext, deps: PromptallExtensionDeps): void {
-	if (!ctx.hasUI) return;
-	const previousFactory = ctx.ui.getEditorComponent();
-
-	ctx.ui.setEditorComponent((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => {
-		const base = previousFactory?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
-		return new PromptallEditorWrapper(base as PromptallEditorBase, ctx, deps);
-	});
-}
-
 function isInteractiveTui(ctx: ExtensionContext): boolean {
 	const mode = (ctx as { mode?: unknown }).mode;
 	if (typeof mode === "string") return mode === "tui";
@@ -422,8 +239,11 @@ export async function openPromptallHistory(ctx: ExtensionContext, deps: Promptal
 }
 
 export function registerPromptallExtension(pi: ExtensionAPI, deps: PromptallExtensionDeps = {}): void {
-	pi.on("session_start", (_event, ctx) => {
-		installPromptallEditorShortcut(ctx, deps);
+	pi.registerShortcut("ctrl+r", {
+		description: "Search previous prompts across saved sessions",
+		handler: async (ctx) => {
+			await openPromptallHistory(ctx, deps);
+		},
 	});
 
 	pi.registerCommand("promptall", {

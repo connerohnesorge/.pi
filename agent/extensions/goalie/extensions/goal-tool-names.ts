@@ -1,4 +1,3 @@
-export const SISYPHUS_STEP_TOOL_NAME = "step_complete";
 export const TWEAK_APPLY_TOOL_NAME = "apply_goal_tweak";
 export const PROPOSE_DRAFT_TOOL_NAME = "propose_goal_draft";
 export const CREATE_GOAL_TOOL_NAME = "create_goal";

@@ -14,33 +14,10 @@ function prompt(id: string, text: string, timestampMs: number): PromptHistoryIte
 	};
 }
 
-function createFakeEditor() {
-	let text = "";
-	let lastInput: string | undefined;
-	return {
-		focused: false,
-		render: () => [],
-		invalidate() {},
-		handleInput(data: string) {
-			lastInput = data;
-		},
-		getText: () => text,
-		setText(next: string) {
-			text = next;
-		},
-		getExpandedText: () => text,
-		get lastInput() {
-			return lastInput;
-		},
-	};
-}
-
 function createHarness(options: { mode?: string; prompts?: PromptHistoryItem[]; selected?: PromptHistoryItem | null } = {}) {
 	const commands = new Map<string, any>();
 	const shortcuts = new Map<string, any>();
 	const events = new Map<string, any[]>();
-	const baseEditor = createFakeEditor();
-	let editorFactory: any = () => baseEditor;
 	let loadCalls = 0;
 	let selectCalls = 0;
 	let editorText = "existing editor text";
@@ -76,12 +53,6 @@ function createHarness(options: { mode?: string; prompts?: PromptHistoryItem[]; 
 			setEditorText(text: string) {
 				editorText = text;
 			},
-			getEditorComponent() {
-				return editorFactory;
-			},
-			setEditorComponent(factory: any) {
-				editorFactory = factory;
-			},
 		},
 	};
 
@@ -108,23 +79,7 @@ function createHarness(options: { mode?: string; prompts?: PromptHistoryItem[]; 
 		events,
 		ctx,
 		notifications,
-		baseEditor,
 		emit,
-		createEditor: () =>
-			editorFactory(
-				{ requestRender() {} },
-				{
-					borderColor: (text: string) => text,
-					selectList: {
-						selectedPrefix: (text: string) => text,
-						selectedText: (text: string) => text,
-						description: (text: string) => text,
-						scrollInfo: (text: string) => text,
-						noMatch: (text: string) => text,
-					},
-				},
-				{ matches: () => false },
-			),
 		get editorText() {
 			return editorText;
 		},
@@ -137,11 +92,10 @@ function createHarness(options: { mode?: string; prompts?: PromptHistoryItem[]; 
 	};
 }
 
-test("runtime registers /promptall command and avoids global Ctrl+R shortcut conflict", () => {
+test("runtime registers /promptall command and Ctrl+R shortcut", () => {
 	const h = createHarness();
-	assert.equal(h.shortcuts.has("ctrl+r"), false);
+	assert.ok(h.shortcuts.has("ctrl+r"));
 	assert.ok(h.commands.has("promptall"));
-	assert.ok(h.events.has("session_start"));
 });
 
 test("/promptall inserts the selected prompt without submitting it", async () => {
@@ -156,14 +110,11 @@ test("/promptall inserts the selected prompt without submitting it", async () =>
 	assert.match(h.notifications.at(-1)?.message ?? "", /Prompt inserted/);
 });
 
-test("Ctrl+R editor binding uses the same prompt insertion flow", async () => {
+test("Ctrl+R shortcut uses the same prompt insertion flow", async () => {
 	const selected = prompt("p1", "from editor shortcut", 2000);
 	const h = createHarness({ prompts: [selected] });
 
-	await h.emit("session_start");
-	const editor = h.createEditor();
-	editor.handleInput("\x12");
-	await new Promise((resolve) => setImmediate(resolve));
+	await h.shortcuts.get("ctrl+r").handler(h.ctx);
 
 	assert.equal(h.editorText, "from editor shortcut");
 	assert.equal(h.loadCalls, 1);
