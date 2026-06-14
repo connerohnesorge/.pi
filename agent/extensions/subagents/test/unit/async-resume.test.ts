@@ -36,7 +36,6 @@ describe("async resume lookup", () => {
 			assert.equal(target.agent, "worker");
 			assert.equal(target.sessionFile, sessionFile);
 			assert.equal(target.cwd, root);
-			assert.equal(target.intercomTarget, "subagent-worker-run-abc-1");
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -155,82 +154,6 @@ describe("async resume lookup", () => {
 		}
 	});
 
-	it("returns a live intercom target for a running child", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-live-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			writeJson(path.join(asyncRoot, "run-live", "status.json"), {
-				runId: "run-live",
-				mode: "single",
-				state: "running",
-				startedAt: 100,
-				lastUpdate: 100,
-				steps: [{ agent: "scout", status: "running" }],
-			});
-
-			const target = resolveAsyncResumeTarget({ id: "run-live" }, { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") });
-
-			assert.equal(target.kind, "live");
-			assert.equal(target.intercomTarget, "subagent-scout-run-live-1");
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("revives a completed child by index while a sibling async child is still running", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-partial-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const sessionFile = path.join(root, "done.jsonl");
-			fs.writeFileSync(sessionFile, "", "utf-8");
-			writeJson(path.join(asyncRoot, "run-partial", "status.json"), {
-				runId: "run-partial",
-				mode: "parallel",
-				state: "running",
-				startedAt: 100,
-				lastUpdate: 200,
-				steps: [
-					{ agent: "done", status: "complete", sessionFile },
-					{ agent: "active", status: "running" },
-				],
-			});
-
-			const target = resolveAsyncResumeTarget({ id: "run-partial", index: 0 }, { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") });
-			assert.equal(target.kind, "revive");
-			assert.equal(target.agent, "done");
-			assert.equal(target.sessionFile, sessionFile);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("rejects pending indexed children in still-running async runs", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-pending-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const sessionFile = path.join(root, "pending.jsonl");
-			fs.writeFileSync(sessionFile, "", "utf-8");
-			writeJson(path.join(asyncRoot, "run-pending", "status.json"), {
-				runId: "run-pending",
-				mode: "chain",
-				state: "running",
-				startedAt: 100,
-				lastUpdate: 200,
-				steps: [
-					{ agent: "active", status: "running" },
-					{ agent: "later", status: "pending", sessionFile },
-				],
-			});
-
-			assert.throws(
-				() => resolveAsyncResumeTarget({ id: "run-pending", index: 1 }, { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") }),
-				/pending and has not started yet/,
-			);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
-
 	it("resolves a completed multi-child run when an index and per-child session file are available", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-multi-"));
 		try {
@@ -272,7 +195,6 @@ describe("async resume lookup", () => {
 			state: "complete",
 			agent: "worker",
 			index: 0,
-			intercomTarget: "subagent-worker-run-old-1",
 			sessionFile: "/tmp/session.jsonl",
 		}, "What changed?");
 

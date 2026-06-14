@@ -20,8 +20,6 @@ import {
 	type SingleResult,
 	type Usage,
 	DEFAULT_MAX_OUTPUT,
-	INTERCOM_DETACH_REQUEST_EVENT,
-	INTERCOM_DETACH_RESPONSE_EVENT,
 	truncateOutput,
 } from "../../shared/types.ts";
 import {
@@ -150,8 +148,6 @@ async function runSingleAttempt(
 		mcpDirectTools: agent.mcpDirectTools,
 		cwd: options.cwd ?? runtimeCwd,
 		promptFileStem: agent.name,
-		intercomSessionName: options.intercomSessionName,
-		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
 		runId: options.runId,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
@@ -211,41 +207,12 @@ async function runSingleAttempt(
 		async close() {},
 	};
 	let processClosed = false;
-	let detached = false;
-	let intercomStarted = false;
 	let removeAbortListener: (() => void) | undefined;
 	let removeInterruptListener: (() => void) | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
 	let driverInterrupt: (() => void) | undefined;
 	let driverDetach: (() => void) | undefined;
 	const killController = new AbortController();
-
-	const detachForIntercom = () => {
-		if (detached || processClosed) return;
-		detached = true;
-		processClosed = true;
-		result.detached = true;
-		result.detachedReason = "intercom coordination";
-		progress.status = "detached";
-		progress.durationMs = Date.now() - startTime;
-		result.progressSummary = {
-			toolCount: progress.toolCount,
-			tokens: progress.tokens,
-			durationMs: progress.durationMs,
-		};
-		// Resolve the driver early without killing the child (it keeps running,
-		// handed off to intercom coordination).
-		driverDetach?.();
-	};
-
-	const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-		if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
-		if (!payload || typeof payload !== "object") return;
-		const requestId = (payload as { requestId?: unknown }).requestId;
-		if (typeof requestId !== "string" || requestId.length === 0) return;
-		options.intercomEvents?.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId, accepted: true });
-		detachForIntercom();
-	});
 
 	const drainPendingControlEvents = (): ControlEvent[] | undefined => {
 		if (pendingControlEvents.length === 0) return undefined;
@@ -363,9 +330,7 @@ async function runSingleAttempt(
 			const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
 				? evt.args as Record<string, unknown>
 				: {};
-			if (options.allowIntercomDetach && (evt.toolName === "intercom" || evt.toolName === "contact_supervisor")) {
-				intercomStarted = true;
-			}
+			// (removed intercom checks)
 			progress.toolCount++;
 			progress.currentTool = evt.toolName;
 			progress.currentToolArgs = extractToolArgsPreview(toolArgs);
@@ -439,7 +404,7 @@ async function runSingleAttempt(
 
 	if (controlConfig.enabled) {
 		activityTimer = setInterval(() => {
-			if (processClosed || detached) return;
+			if (processClosed) return;
 			const now = Date.now();
 			if (updateActivityState(now)) {
 				progress.durationMs = now - startTime;
@@ -475,13 +440,9 @@ async function runSingleAttempt(
 
 	if (options.signal) {
 		const onAbort = () => {
-			if (processClosed || detached) return;
+			if (processClosed) return;
 			// While intercom is active, an abort detaches (hands the child to intercom)
 			// instead of killing; otherwise escalate the driver's kill.
-			if (options.allowIntercomDetach && intercomStarted && !detached) {
-				detachForIntercom();
-				return;
-			}
 			killController.abort();
 		};
 		if (options.signal.aborted) onAbort();
@@ -494,7 +455,7 @@ async function runSingleAttempt(
 
 	if (options.interruptSignal) {
 		const interrupt = () => {
-			if (processClosed || detached) return;
+			if (processClosed) return;
 			interruptedByControl = true;
 			progress.status = "running";
 			progress.durationMs = Date.now() - startTime;
@@ -518,7 +479,7 @@ async function runSingleAttempt(
 		clearInterval(activityTimer);
 		activityTimer = undefined;
 	}
-	unsubscribeIntercomDetach?.();
+	// (removed intercom unsubscribe)
 	removeAbortListener?.();
 	removeInterruptListener?.();
 	void jsonlWriter.close().catch(() => {
@@ -547,11 +508,7 @@ async function runSingleAttempt(
 		};
 		return result;
 	}
-	if (result.detached) {
-		result.exitCode = 0;
-		result.finalOutput = "Detached for intercom coordination.";
-		return result;
-	}
+	// (removed result.detached path)
 
 	// Normal path: derive the error from the driver's signals, layering the
 	// foreground-only stderr fallback (background does not do this).

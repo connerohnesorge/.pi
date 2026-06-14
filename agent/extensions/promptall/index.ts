@@ -12,6 +12,8 @@ import {
 	type PromptHistoryItem,
 } from "./prompt-history.ts";
 
+export const PROMPTALL_SHORTCUT = "ctrl+alt+r";
+
 export interface PromptallHistoryDeps {
 	listSessions?: () => Promise<SessionInfo[]>;
 	readSessionFile?: (path: string) => Promise<string>;
@@ -239,7 +241,7 @@ export async function openPromptallHistory(ctx: ExtensionContext, deps: Promptal
 }
 
 export function registerPromptallExtension(pi: ExtensionAPI, deps: PromptallExtensionDeps = {}): void {
-	pi.registerShortcut("ctrl+r", {
+	pi.registerShortcut(PROMPTALL_SHORTCUT, {
 		description: "Search previous prompts across saved sessions",
 		handler: async (ctx) => {
 			await openPromptallHistory(ctx, deps);

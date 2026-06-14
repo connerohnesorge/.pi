@@ -250,22 +250,18 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.equal(env.PI_SUBAGENT_INHERIT_SKILLS, "1");
 	});
 
-	it("passes child intercom and orchestrator metadata through env", () => {
+	it("passes child metadata through env", () => {
 		const { env } = buildPiArgs({
 			baseArgs: ["-p"],
 			task: "hello",
 			sessionEnabled: false,
 			inheritProjectContext: true,
 			inheritSkills: true,
-			intercomSessionName: "subagent-worker-78f659a3",
-			orchestratorIntercomTarget: "subagent-chat-parent",
 			runId: "78f659a3",
 			childAgentName: "worker",
 			childIndex: 2,
 		});
 
-		assert.equal(env.PI_SUBAGENT_INTERCOM_SESSION_NAME, "subagent-worker-78f659a3");
-		assert.equal(env.PI_SUBAGENT_ORCHESTRATOR_TARGET, "subagent-chat-parent");
 		assert.equal(env.PI_SUBAGENT_RUN_ID, "78f659a3");
 		assert.equal(env.PI_SUBAGENT_CHILD_AGENT, "worker");
 		assert.equal(env.PI_SUBAGENT_CHILD_INDEX, "2");

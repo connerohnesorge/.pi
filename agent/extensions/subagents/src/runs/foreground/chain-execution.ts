@@ -30,7 +30,6 @@ import {
 	type ResolvedTemplates,
 } from "../../shared/settings.ts";
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
-import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import { runSync } from "./execution.ts";
 import {
 	applyProgressToForegroundControl,
@@ -57,7 +56,6 @@ import {
 	type ArtifactPaths,
 	type ControlEvent,
 	type Details,
-	type IntercomEventBus,
 	type NestedRouteInfo,
 	type ResolvedControlConfig,
 	type SingleResult,
@@ -89,7 +87,6 @@ interface ParallelChainRunInput {
 	prev: string;
 	originalTask: string;
 	ctx: ExtensionContext;
-	intercomEvents?: IntercomEventBus;
 	cwd?: string;
 	runId: string;
 	globalTaskIndex: number;
@@ -102,8 +99,6 @@ interface ParallelChainRunInput {
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
-	orchestratorIntercomTarget?: string;
 	foregroundControl?: ForegroundControl;
 	results: SingleResult[];
 	allProgress: AgentProgress[];
@@ -219,8 +214,6 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				cwd: taskCwd,
 				signal: input.signal,
 				interruptSignal: interruptController.signal,
-				allowIntercomDetach: taskAgentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-				intercomEvents: input.intercomEvents,
 				runId: input.runId,
 				index: input.globalTaskIndex + taskIndex,
 				sessionDir: input.sessionDirForIndex(input.globalTaskIndex + taskIndex),
@@ -233,8 +226,6 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				maxSubagentDepth,
 				controlConfig: input.controlConfig,
 				onControlEvent: input.onControlEvent,
-				intercomSessionName: input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex),
-				orchestratorIntercomTarget: input.orchestratorIntercomTarget,
 				nestedRoute: input.nestedRoute,
 				modelOverride: effectiveModel,
 				availableModels: input.availableModels,
@@ -285,7 +276,6 @@ interface ChainExecutionParams {
 	task?: string;
 	agents: AgentConfig[];
 	ctx: ExtensionContext;
-	intercomEvents?: IntercomEventBus;
 	signal?: AbortSignal;
 	runId: string;
 	cwd?: string;
@@ -299,8 +289,6 @@ interface ChainExecutionParams {
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
-	orchestratorIntercomTarget?: string;
 	foregroundControl?: ForegroundControl;
 	chainSkills?: string[];
 	chainDir?: string;
@@ -342,10 +330,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		onUpdate,
 		onControlEvent,
 		controlConfig,
-		childIntercomTarget,
-		orchestratorIntercomTarget,
 		foregroundControl,
-		intercomEvents,
 		chainSkills: chainSkillsParam,
 		chainDir: chainDirBase,
 	} = params;
@@ -546,7 +531,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					prev,
 					originalTask,
 					ctx,
-					intercomEvents,
 					cwd,
 					runId,
 					globalTaskIndex,
@@ -563,8 +547,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					totalSteps,
 					controlConfig,
 					onControlEvent,
-					childIntercomTarget,
-					orchestratorIntercomTarget,
 					foregroundControl,
 					nestedRoute: params.nestedRoute,
 					worktreeSetup,
@@ -582,23 +564,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				if (interrupted) {
 					return {
 						content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` }],
-						details: buildChainExecutionDetails({
-							results,
-							includeProgress,
-							allProgress,
-							allArtifactPaths,
-							artifactsDir,
-							chainAgents,
-							totalSteps,
-							currentStepIndex: stepIndex,
-						}),
-					};
-				}
-				const detachedIndexInStep = parallelResults.findIndex((result) => result.detached);
-				const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
-				if (detached) {
-					return {
-						content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
 						details: buildChainExecutionDetails({
 							results,
 							includeProgress,
@@ -744,8 +709,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				cwd: resolveChildCwd(cwd ?? ctx.cwd, seqStep.cwd),
 				signal,
 				interruptSignal: interruptController.signal,
-				allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-				intercomEvents,
 				runId,
 				index: globalTaskIndex,
 				sessionDir: sessionDirForIndex(globalTaskIndex),
@@ -758,8 +721,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				maxSubagentDepth,
 				controlConfig,
 				onControlEvent,
-				intercomSessionName: childIntercomTarget?.(seqStep.agent, globalTaskIndex),
-				orchestratorIntercomTarget,
 				nestedRoute: params.nestedRoute,
 				modelOverride: effectiveModel,
 				availableModels,
@@ -815,21 +776,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					}),
 				};
 			}
-			if (r.detached) {
-				return {
-					content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${r.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
-					details: buildChainExecutionDetails({
-						results,
-						includeProgress,
-						allProgress,
-						allArtifactPaths,
-						artifactsDir,
-						chainAgents,
-						totalSteps,
-						currentStepIndex: stepIndex,
-					}),
-				};
-			}
+
 
 			if (r.exitCode !== 0) {
 				const summary = buildChainSummary(chainSteps, results, chainDir, "failed", {

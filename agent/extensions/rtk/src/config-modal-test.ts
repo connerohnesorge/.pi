@@ -16,14 +16,14 @@ const settingsListUpdates: Array<{ id: string; value: string }> = [];
 mock.module("@earendil-works/pi-tui", {
 	namedExports: {
 		Box: class {
-			addChild(): void {}
+			addChild(): void { }
 		},
 		Container: class {
-			addChild(): void {}
+			addChild(): void { }
 			render(): string[] {
 				return ["settings-content"];
 			}
-			invalidate(): void {}
+			invalidate(): void { }
 		},
 		SettingsList: class {
 			handleInput(data: string): void {
@@ -33,8 +33,8 @@ mock.module("@earendil-works/pi-tui", {
 				settingsListUpdates.push({ id, value });
 			}
 		},
-		Spacer: class {},
-		Text: class {},
+		Spacer: class { },
+		Text: class { },
 		truncateToWidth: (text: string, width: number) => text.slice(0, width),
 		visibleWidth: (text: string) => text.length,
 	},
@@ -102,8 +102,8 @@ runTest("zellij settings modal renders overlay frame and delegates non-enter inp
 					values: ["on", "off"],
 				},
 			],
-			onChange: () => {},
-			onClose: () => {},
+			onChange: () => { },
+			onClose: () => { },
 			helpText: "Esc: close",
 		},
 		createThemeStub() as never,
@@ -111,7 +111,7 @@ runTest("zellij settings modal renders overlay frame and delegates non-enter inp
 	const modal = new ZellijModal(settingsModal, {
 		titleBar: {
 			left: { text: "RTK Integration Settings", maxWidth: 30, color: "accent" },
-			right: { text: "pi-rtk-optimizer", maxWidth: 20, color: "dim" },
+			right: { text: "pi-rtk", maxWidth: 20, color: "dim" },
 		},
 		helpUndertitle: { text: "Esc: close", color: "dim" },
 		overlay: { anchor: "center", width: 86, maxHeight: "85%", margin: 1 },

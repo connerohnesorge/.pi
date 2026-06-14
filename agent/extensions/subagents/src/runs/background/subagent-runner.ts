@@ -23,12 +23,7 @@ import {
 	type MaxOutputConfig,
 	truncateOutput,
 } from "../../shared/types.ts";
-import {
-	DEFAULT_CONTROL_CONFIG,
-	buildControlEvent,
-	deriveActivityState,
 	claimControlNotification,
-	formatControlIntercomMessage,
 	formatControlNoticeMessage,
 } from "../shared/subagent-control.ts";
 import {
@@ -91,8 +86,6 @@ interface SubagentRunConfig {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
-	controlIntercomTarget?: string;
-	childIntercomTargets?: Array<string | undefined>;
 	resultMode?: SubagentRunMode;
 	nestedRoute?: NestedRouteInfo;
 	nestedSelf?: { parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }> };
@@ -105,7 +98,6 @@ interface StepResult {
 	success: boolean;
 	skipped?: boolean;
 	sessionFile?: string;
-	intercomTarget?: string;
 	model?: string;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
@@ -397,8 +389,6 @@ interface SingleStepContext {
 	piPackageRoot?: string;
 	piArgv1?: string;
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
-	childIntercomTarget?: string;
-	orchestratorIntercomTarget?: string;
 	nestedRoute?: NestedRouteInfo;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
 	onChildEvent?: (event: ChildEvent) => void;
@@ -419,7 +409,6 @@ async function runSingleStep(
 	artifactPaths?: ArtifactPaths;
 	interrupted?: boolean;
 	sessionFile?: string;
-	intercomTarget?: string;
 	completionGuardTriggered?: boolean;
 }> {
 	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
@@ -470,8 +459,6 @@ async function runSingleStep(
 			mcpDirectTools: step.mcpDirectTools,
 			cwd: step.cwd ?? ctx.cwd,
 			promptFileStem: step.agent,
-			intercomSessionName: ctx.childIntercomTarget,
-			orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
 			runId: ctx.id,
 			childAgentName: step.agent,
 			childIndex: ctx.flatIndex,
@@ -588,7 +575,6 @@ async function runSingleStep(
 		exitCode: finalResult?.exitCode ?? 1,
 		error: finalResult?.error,
 		sessionFile: step.sessionFile,
-		intercomTarget: ctx.childIntercomTarget,
 		model: finalResult?.model,
 		attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 		modelAttempts,
@@ -835,23 +821,13 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const mutatingFailureWindowMs = 5 * 60_000;
 	const appendControlEvent = (event: ReturnType<typeof buildControlEvent>) => {
 		if (!controlConfig.enabled) return;
-		const childIntercomTarget = config.childIntercomTargets?.[event.index ?? statusPayload.currentStep];
-		const channels = event.type === "active_long_running"
-			? controlConfig.notifyChannels.filter((channel) => channel !== "intercom")
-			: controlConfig.notifyChannels;
-		if (channels.length === 0 || !claimControlNotification(controlConfig, event, emittedControlEventKeys, childIntercomTarget)) return;
+		const channels = controlConfig.notifyChannels;
+		if (channels.length === 0 || !claimControlNotification(controlConfig, event, emittedControlEventKeys)) return;
 		appendJsonl(eventsPath, JSON.stringify({
 			type: "subagent.control",
 			event,
 			channels,
-			childIntercomTarget,
-			noticeText: formatControlNoticeMessage(event, childIntercomTarget),
-			...(config.controlIntercomTarget && channels.includes("intercom") ? {
-				intercom: {
-					to: config.controlIntercomTarget,
-					message: formatControlIntercomMessage(event, childIntercomTarget),
-				},
-			} : {}),
+			noticeText: formatControlNoticeMessage(event),
 		}));
 	};
 	const syncTopLevelCurrentTool = (): void => {
@@ -1226,8 +1202,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							outputFile: path.join(asyncDir, `output-${fi}.log`),
 							piPackageRoot: config.piPackageRoot,
 							piArgv1: config.piArgv1,
-							childIntercomTarget: config.childIntercomTargets?.[fi],
-							orchestratorIntercomTarget: config.controlIntercomTarget,
 							nestedRoute: config.nestedRoute,
 							registerInterrupt: (interrupt) => {
 								activeChildInterrupt = interrupt;
@@ -1306,7 +1280,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						success: pr.exitCode === 0,
 						skipped: pr.skipped,
 						sessionFile: pr.sessionFile,
-						intercomTarget: pr.intercomTarget,
 						model: pr.model,
 						attemptedModels: pr.attemptedModels,
 						modelAttempts: pr.modelAttempts,
@@ -1372,8 +1345,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				outputFile: path.join(asyncDir, `output-${flatIndex}.log`),
 				piPackageRoot: config.piPackageRoot,
 				piArgv1: config.piArgv1,
-				childIntercomTarget: config.childIntercomTargets?.[flatIndex],
-				orchestratorIntercomTarget: config.controlIntercomTarget,
 				nestedRoute: config.nestedRoute,
 				registerInterrupt: (interrupt) => {
 					activeChildInterrupt = interrupt;
@@ -1392,7 +1363,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				error: singleResult.error,
 				success: singleResult.exitCode === 0,
 				sessionFile: singleResult.sessionFile,
-				intercomTarget: singleResult.intercomTarget,
 				model: singleResult.model,
 				attemptedModels: singleResult.attemptedModels,
 				modelAttempts: singleResult.modelAttempts,
@@ -1581,13 +1551,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				error: r.error,
 				success: r.success,
 				skipped: r.skipped || undefined,
-				sessionFile: r.sessionFile,
-				intercomTarget: r.intercomTarget,
-				model: r.model,
-				attemptedModels: r.attemptedModels,
-				modelAttempts: r.modelAttempts,
-				artifactPaths: r.artifactPaths,
-				truncated: r.truncated,
 			})),
 			exitCode: interrupted || results.every((r) => r.success) ? 0 : 1,
 			timestamp: runEndedAt,
@@ -1598,7 +1561,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			asyncDir,
 			sessionId: config.sessionId,
 			sessionFile: effectiveSessionFile,
-			intercomTarget: config.controlIntercomTarget,
 			shareUrl,
 			gistUrl,
 			shareError,

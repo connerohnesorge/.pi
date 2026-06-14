@@ -211,7 +211,7 @@ runTest("path compaction preserves the tail and handles Windows separators", () 
 	assert.ok(compactUnixPath.endsWith("path-utils.ts"));
 	assert.ok(compactUnixPath.includes("/"));
 
-	const windowsPath = "C:\\Users\\Administrator\\Documents\\pi-rtk-optimizer\\src\\windows-command-helpers.ts";
+	const windowsPath = "C:\\Users\\Administrator\\Documents\\pi-rtk\\src\\windows-command-helpers.ts";
 	const compactWindowsPath = compactPath(windowsPath, 30);
 	assert.ok(compactWindowsPath.length <= 30);
 	assert.equal(compactWindowsPath.includes("\\"), true);

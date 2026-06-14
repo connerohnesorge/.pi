@@ -278,24 +278,13 @@ describe("nested control routing", () => {
 		try {
 			const emitted: Array<{ name: string; payload: unknown }> = [];
 			const events = { emit(name: string, payload: unknown) { emitted.push({ name, payload }); }, on() { return () => {}; } };
-			const route = createNestedRun("nested-live-resume", "running", { intercomTarget: "attacker-target", leafIntercomTarget: "attacker-leaf" });
+			const route = createNestedRun("nested-live-resume", "running", {});
 			const executor = createExecutor(stateWithNestedRoute(route), [], true, events);
-			setTimeout(() => {
-				const request = readNestedControlRequests(route)[0];
-				assert.ok(request, "expected a nested resume request");
-				assert.equal(request.action, "resume");
-				assert.equal(request.message, "continue please");
-				writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: request.targetRunId, ok: true, message: "nested resume accepted" });
-			}, 50);
 
 			const result = await executor.execute("resume", { action: "resume", id: "nested-live-resume", message: "continue please" }, new AbortController().signal, undefined, ctx(root));
 
-			assert.equal(result.isError, undefined);
-			assert.match(text(result), /nested resume accepted/);
-			assert.equal(emitted.some((event) => {
-				const payload = event.payload as { to?: unknown };
-				return payload.to === "attacker-target" || payload.to === "attacker-leaf";
-			}), false);
+			assert.equal(result.isError, true);
+			assert.match(text(result), /Resuming live nested subagent runs is not supported because intercom support is disabled/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

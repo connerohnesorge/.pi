@@ -6,7 +6,6 @@ import {
 	claimControlNotification,
 	controlNotificationKey,
 	deriveActivityState,
-	formatControlIntercomMessage,
 	formatControlNoticeMessage,
 	resolveControlConfig,
 	shouldNotifyControlEvent,
@@ -76,7 +75,7 @@ describe("subagent control attention state", () => {
 		assert.equal(shouldNotifyControlEvent(config, event), true);
 		assert.equal(shouldNotifyControlEvent(config, activeEvent), true);
 		assert.deepEqual(config.notifyOn, ["active_long_running", "needs_attention"]);
-		assert.deepEqual(config.notifyChannels, ["event", "async", "intercom"]);
+		assert.deepEqual(config.notifyChannels, ["event", "async"]);
 	});
 
 	it("defaults active-long-running notices to elapsed time only", () => {
@@ -125,7 +124,7 @@ describe("subagent control attention state", () => {
 			activeNoticeAfterTokens: 8000,
 			failedToolAttemptsBeforeAttention: 4,
 			notifyOn: ["active_long_running", "needs_attention", "nope" as never],
-			notifyChannels: ["event", "intercom", "bad" as never],
+			notifyChannels: ["event", "async", "bad" as never],
 		});
 		assert.equal(custom.needsAttentionAfterMs, 1234);
 		assert.equal(custom.activeNoticeAfterMs, 2345);
@@ -133,7 +132,7 @@ describe("subagent control attention state", () => {
 		assert.equal(custom.activeNoticeAfterTokens, 8000);
 		assert.equal(custom.failedToolAttemptsBeforeAttention, 4);
 		assert.deepEqual(custom.notifyOn, ["active_long_running", "needs_attention"]);
-		assert.deepEqual(custom.notifyChannels, ["event", "intercom"]);
+		assert.deepEqual(custom.notifyChannels, ["event", "async"]);
 	});
 
 	it("falls back to defaults for invalid non-empty notification arrays", () => {
@@ -142,7 +141,7 @@ describe("subagent control attention state", () => {
 			notifyChannels: ["bogus" as never],
 		});
 		assert.deepEqual(custom.notifyOn, ["active_long_running", "needs_attention"]);
-		assert.deepEqual(custom.notifyChannels, ["event", "async", "intercom"]);
+		assert.deepEqual(custom.notifyChannels, ["event", "async"]);
 	});
 
 	it("allows empty notification arrays to disable notifications", () => {
@@ -163,7 +162,6 @@ describe("subagent control attention state", () => {
 
 		assert.match(message, /Subagent needs attention: worker/);
 		assert.match(message, /Hint: Inspect status first unless the run is clearly blocked/);
-		assert.match(message, /Nudge: intercom\(\{ action: "send", to: "subagent-worker-78f659a3"/);
 		assert.match(message, /Status: subagent_control\(\{ action: "status", id: "78f659a3" \}\)/);
 		assert.match(message, /Interrupt: subagent_control\(\{ action: "interrupt", id: "78f659a3" \}\)/);
 		assert.doesNotMatch(message, /Wait:/);
@@ -207,19 +205,9 @@ describe("subagent control attention state", () => {
 
 		assert.match(message, /Subagent failed: worker/);
 		assert.match(message, /read the output artifact or session/);
-		assert.match(message, /Run intercom target \(may be inactive\): subagent-worker-78f659a3-1/);
 		assert.doesNotMatch(message, /Status:/);
 		assert.doesNotMatch(message, /Interrupt:/);
 		assert.doesNotMatch(message, /What are you blocked on/);
-	});
-
-	it("formats intercom notifications with the same control commands", () => {
-		const event = buildControlEvent({ to: "needs_attention", runId: "78f659a3", agent: "worker" });
-
-		const message = formatControlIntercomMessage(event, "subagent-worker-78f659a3");
-
-		assert.match(message, /worker needs attention in run 78f659a3/);
-		assert.match(message, /Nudge: intercom\(\{ action: "send", to: "subagent-worker-78f659a3"/);
 	});
 
 	it("dedupes notifications once per child target and attention state", () => {

@@ -4,18 +4,15 @@ import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
-	type IntercomEventBus,
 	type NestedRunSummary,
-	type SubagentResultIntercomChild,
 	type SubagentState,
 } from "../../shared/types.ts";
 import {
 	attachNestedChildrenToResultChildren,
-	buildSubagentResultIntercomPayload,
 	compactNestedResultChildren,
-	deliverSubagentResultIntercomEvent,
 	resolveSubagentResultStatus,
-} from "../../intercom/result-intercom.ts";
+	type SubagentChildResultSummary,
+} from "../shared/result-utils.ts";
 import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
 
 const WATCHER_RESTART_DELAY_MS = 3000;
@@ -92,7 +89,7 @@ function shouldFallBackToPolling(error: unknown): boolean {
 }
 
 export function createResultWatcher(
-	pi: { events: IntercomEventBus },
+	pi: { events: { emit(channel: string, data: unknown): void } },
 	state: SubagentState,
 	resultsDir: string,
 	completionTtlMs: number,
@@ -139,7 +136,7 @@ export function createResultWatcher(
 					output: data.summary,
 					success: data.success,
 				}];
-			const normalizedChildren = attachNestedChildrenToResultChildren(runId, resultChildren.map((result = {}, index): SubagentResultIntercomChild => {
+			const normalizedChildren = attachNestedChildrenToResultChildren(runId, resultChildren.map((result = {}, index): SubagentChildResultSummary => {
 				const baseOutput = result.output ?? data.summary;
 				const hasRealOutput = typeof baseOutput === "string" && baseOutput.trim().length > 0;
 				const output = hasRealOutput ? baseOutput : "(no output)";
@@ -158,30 +155,9 @@ export function createResultWatcher(
 					index,
 					artifactPath: result.artifactPaths?.outputPath,
 					...(typeof sessionPath === "string" && fsApi.existsSync(sessionPath) ? { sessionPath } : {}),
-					...(result.intercomTarget ? { intercomTarget: result.intercomTarget } : {}),
 					...(childNestedChildren ? { children: childNestedChildren } : {}),
 				};
 			}), nestedChildren);
-
-			const intercomTarget = data.intercomTarget?.trim();
-			if (intercomTarget) {
-				const mode = data.mode === "single" || data.mode === "parallel" || data.mode === "chain"
-					? data.mode
-					: resultChildren.length > 1 ? "chain" : "single";
-				const payload = buildSubagentResultIntercomPayload({
-					to: intercomTarget,
-					runId,
-					mode,
-					source: "async",
-					children: normalizedChildren,
-					asyncId: data.id,
-					asyncDir: data.asyncDir,
-				});
-				const delivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
-				if (!delivered) {
-					console.error(`Subagent async grouped result intercom delivery was not acknowledged for '${resultPath}'.`);
-				}
-			}
 
 			pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				...data,

@@ -5,8 +5,7 @@ import { getArtifactsDir } from "../shared/artifacts.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult } from "../runs/shared/nested-events.ts";
-import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
-import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
+
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
 import { expandTilde, getSubagentSessionRoot } from "../shared/runtime-paths.ts";
@@ -44,23 +43,8 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 									message = ok
 										? `Interrupt requested for nested run ${request.targetRunId}.`
 										: `Nested run ${request.targetRunId} has no active child step to interrupt.`;
-								} else if (!request.message?.trim()) {
-									message = "Nested resume requires message.";
-								} else if (!control.currentAgent) {
-									message = `Nested run ${request.targetRunId} has no active child message route.`;
-								} else {
-									const index = control.currentIndex ?? 0;
-									const target = resolveSubagentIntercomTarget(request.targetRunId, control.currentAgent, index);
-									ok = await deliverSubagentIntercomMessageEvent(
-										pi.events,
-										target,
-										`Follow-up for nested run ${request.targetRunId} (${control.currentAgent}):\n\n${request.message.trim()}`,
-										500,
-										{ source: "nested-resume", runId: request.targetRunId, agent: control.currentAgent, index },
-									);
-									message = ok
-										? `Delivered follow-up to live nested run ${request.targetRunId}.`
-										: `Nested child intercom target is not registered: ${target}`;
+								} else if (request.action === "resume") {
+									message = "Resuming live nested subagent runs is not supported because intercom support is disabled.";
 								}
 							} catch (error) {
 								message = error instanceof Error ? error.message : String(error);

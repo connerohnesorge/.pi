@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadPromptHistory, openPromptallHistory, registerPromptallExtension, selectPromptWithTui } from "../index.ts";
+import {
+	PROMPTALL_SHORTCUT,
+	loadPromptHistory,
+	openPromptallHistory,
+	registerPromptallExtension,
+	selectPromptWithTui,
+} from "../index.ts";
 import type { PromptHistoryItem } from "../prompt-history.ts";
 
 function prompt(id: string, text: string, timestampMs: number): PromptHistoryItem {
@@ -92,9 +98,10 @@ function createHarness(options: { mode?: string; prompts?: PromptHistoryItem[]; 
 	};
 }
 
-test("runtime registers /promptall command and Ctrl+R shortcut", () => {
+test("runtime registers /promptall command and Ctrl+Alt+R shortcut", () => {
 	const h = createHarness();
-	assert.ok(h.shortcuts.has("ctrl+r"));
+	assert.equal(PROMPTALL_SHORTCUT, "ctrl+alt+r");
+	assert.ok(h.shortcuts.has(PROMPTALL_SHORTCUT));
 	assert.ok(h.commands.has("promptall"));
 });
 
@@ -110,11 +117,11 @@ test("/promptall inserts the selected prompt without submitting it", async () =>
 	assert.match(h.notifications.at(-1)?.message ?? "", /Prompt inserted/);
 });
 
-test("Ctrl+R shortcut uses the same prompt insertion flow", async () => {
+test("Ctrl+Alt+R shortcut uses the same prompt insertion flow", async () => {
 	const selected = prompt("p1", "from editor shortcut", 2000);
 	const h = createHarness({ prompts: [selected] });
 
-	await h.shortcuts.get("ctrl+r").handler(h.ctx);
+	await h.shortcuts.get(PROMPTALL_SHORTCUT).handler(h.ctx);
 
 	assert.equal(h.editorText, "from editor shortcut");
 	assert.equal(h.loadCalls, 1);

@@ -2,12 +2,12 @@
 
 First-party [pi](https://github.com/earendil-works/pi-coding-agent) extension for searching and reusing old prompts.
 
-`promptall` binds **Ctrl+R** in interactive pi. The picker searches user prompts from **all saved pi sessions by default**, newest first, and inserts the selected prompt back into the editor without submitting it.
+`promptall` binds **Ctrl+Alt+R** in interactive pi. The picker searches user prompts from **all saved pi sessions by default**, newest first, and inserts the selected prompt back into the editor without submitting it.
 
 ## Usage
 
 ```text
-Ctrl+R       # open prompt history search
+Ctrl+Alt+R   # open prompt history search
 /promptall   # open the same picker from a slash command
 ```
 

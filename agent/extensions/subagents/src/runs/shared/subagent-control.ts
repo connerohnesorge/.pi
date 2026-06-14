@@ -8,7 +8,7 @@ import {
 } from "../../shared/types.ts";
 
 const CONTROL_EVENT_TYPES: ControlEventType[] = ["active_long_running", "needs_attention"];
-const CONTROL_NOTIFICATION_CHANNELS: ControlNotificationChannel[] = ["event", "async", "intercom"];
+const CONTROL_NOTIFICATION_CHANNELS: ControlNotificationChannel[] = ["event", "async"];
 const DEFAULT_NOTIFY_ON: ControlEventType[] = ["active_long_running", "needs_attention"];
 
 export const DEFAULT_CONTROL_CONFIG: ResolvedControlConfig = {
@@ -169,13 +169,9 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 			`Run: ${runTarget}${event.index !== undefined ? ` step ${event.index + 1}` : ""}`,
 			`Signal: ${event.message}`,
 			"Next: read the output artifact or session from the subagent result, then retry with a more explicit implementation prompt or handle the fix directly.",
-			childIntercomTarget ? `Run intercom target (may be inactive): ${childIntercomTarget}` : undefined,
-		].filter((line): line is string => Boolean(line)).join("\n");
+		].join("\n");
 	}
 
-	const nudgeCommand = childIntercomTarget
-		? `intercom({ action: "send", to: "${childIntercomTarget}", message: "What are you blocked on? Reply with the smallest next step or ask for a decision." })`
-		: undefined;
 	if (event.type === "active_long_running") {
 		const facts = formatLongRunningFacts(event);
 		return [
@@ -184,9 +180,6 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 			`Signal: ${event.message}`,
 			facts ? `Facts: ${facts}` : undefined,
 			"Hint: Inspect status, then nudge if the work seems stuck.",
-			childIntercomTarget
-				? `Nudge: ${nudgeCommand}`
-				: "Nudge: no child message route registered",
 			`Status: subagent_control({ action: "status", id: "${runTarget}" })`,
 			`Interrupt: subagent_control({ action: "interrupt", id: "${runTarget}" })`,
 		].filter((line): line is string => Boolean(line)).join("\n");
@@ -198,29 +191,7 @@ export function formatControlNoticeMessage(event: ControlEvent, childIntercomTar
 		`Signal: ${event.message}`,
 		event.recentFailureSummary ? `Recent failures: ${event.recentFailureSummary}` : undefined,
 		"Hint: Inspect status first unless the run is clearly blocked.",
-		childIntercomTarget
-			? `Nudge: ${nudgeCommand}`
-			: "Nudge: no child message route registered",
 		`Status: subagent_control({ action: "status", id: "${runTarget}" })`,
 		`Interrupt: subagent_control({ action: "interrupt", id: "${runTarget}" })`,
 	].filter((line): line is string => Boolean(line)).join("\n");
-}
-
-export function formatControlIntercomMessage(event: ControlEvent, childIntercomTarget?: string): string {
-	const statusLabel = event.reason === "completion_guard"
-		? "subagent failed"
-		: event.type === "active_long_running"
-			? "subagent active but long-running"
-			: "subagent needs attention";
-	return [
-		statusLabel,
-		"",
-		event.reason === "completion_guard"
-			? `${event.agent} failed in run ${event.runId}.`
-			: event.type === "active_long_running"
-				? `${event.agent} is still active but long-running in run ${event.runId}.`
-				: `${event.agent} needs attention in run ${event.runId}.`,
-		"",
-		formatControlNoticeMessage(event, childIntercomTarget),
-	].join("\n");
 }

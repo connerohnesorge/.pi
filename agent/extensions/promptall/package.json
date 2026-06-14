@@ -1,7 +1,7 @@
 {
   "name": "promptall",
   "version": "0.1.0",
-  "description": "Pi extension for Ctrl+R prompt history search across saved sessions",
+  "description": "Pi extension for Ctrl+Alt+R prompt history search across saved sessions",
   "type": "module",
   "keywords": [
     "pi-package",

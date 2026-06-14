@@ -115,8 +115,6 @@ interface AsyncChainParams {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
-	controlIntercomTarget?: string;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
 }
 
@@ -141,8 +139,6 @@ interface AsyncSingleParams {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
-	controlIntercomTarget?: string;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
 }
 
@@ -242,8 +238,6 @@ export function executeAsyncChain(
 		worktreeSetupHook,
 		worktreeSetupHookTimeoutMs,
 		controlConfig,
-		controlIntercomTarget,
-		childIntercomTarget,
 		nestedRoute,
 	} = params;
 	const resultMode = params.resultMode ?? "chain";
@@ -392,13 +386,7 @@ export function executeAsyncChain(
 		if (error instanceof UnavailableSubagentSkillError || error instanceof AsyncStartValidationError) return formatAsyncStartError(resultMode, error.message);
 		throw error;
 	}
-	let childTargetIndex = 0;
-	const childIntercomTargets = childIntercomTarget ? steps.flatMap((step) => {
-		if ("parallel" in step) {
-			return step.parallel.map((task) => childIntercomTarget(task.agent, childTargetIndex++));
-		}
-		return [childIntercomTarget(step.agent, childTargetIndex++)];
-	}) : undefined;
+	// (removed intercom targets)
 
 	let spawnResult: { pid?: number; error?: string } = {};
 	try {
@@ -421,8 +409,6 @@ export function executeAsyncChain(
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
-				controlIntercomTarget,
-				childIntercomTargets,
 				resultMode,
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
 				nestedSelf: inheritedNestedRoute && nestedAddress ? {
@@ -479,9 +465,6 @@ export function executeAsyncChain(
 						path: nestedAddress.path,
 						asyncDir,
 						pid: spawnResult.pid,
-						ownerIntercomTarget: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
-						leafIntercomTarget: childIntercomTargets?.[0],
-						intercomTarget: childIntercomTargets?.[0],
 						ownerState: "live",
 						mode: resultMode,
 						state: "running",
@@ -552,8 +535,6 @@ export function executeAsyncSingle(
 		worktreeSetupHook,
 		worktreeSetupHookTimeoutMs,
 		controlConfig,
-		controlIntercomTarget,
-		childIntercomTarget,
 		nestedRoute,
 	} = params;
 	const task = params.task ?? "";
@@ -639,8 +620,6 @@ export function executeAsyncSingle(
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
-				controlIntercomTarget,
-				childIntercomTargets: childIntercomTarget ? [childIntercomTarget(agent, 0)] : undefined,
 				resultMode: "single",
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
 				nestedSelf: inheritedNestedRoute && nestedAddress ? {
@@ -679,9 +658,6 @@ export function executeAsyncSingle(
 						path: nestedAddress.path,
 						asyncDir,
 						pid: spawnResult.pid,
-						ownerIntercomTarget: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
-						leafIntercomTarget: childIntercomTarget?.(agent, 0),
-						intercomTarget: childIntercomTarget?.(agent, 0),
 						ownerState: "live",
 						mode: "single",
 						state: "running",
