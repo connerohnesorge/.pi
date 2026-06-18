@@ -12,7 +12,7 @@ import {
 	type PromptHistoryItem,
 } from "./prompt-history.ts";
 
-export const PROMPTALL_SHORTCUT = "ctrl+alt+r";
+export const PROMPTALL_SHORTCUT = "ctrl+r";
 
 export interface PromptallHistoryDeps {
 	listSessions?: () => Promise<SessionInfo[]>;
@@ -173,7 +173,7 @@ export async function selectPromptWithTui(
 				lines.push(border);
 				return lines;
 			},
-			invalidate() {},
+			invalidate() { },
 			handleInput(data: string) {
 				if (keybindings.matches(data, "tui.select.up")) {
 					move(-1);

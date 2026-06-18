@@ -23,7 +23,11 @@ import {
 	type MaxOutputConfig,
 	truncateOutput,
 } from "../../shared/types.ts";
+import {
+	DEFAULT_CONTROL_CONFIG,
+	buildControlEvent,
 	claimControlNotification,
+	deriveActivityState,
 	formatControlNoticeMessage,
 } from "../shared/subagent-control.ts";
 import {
