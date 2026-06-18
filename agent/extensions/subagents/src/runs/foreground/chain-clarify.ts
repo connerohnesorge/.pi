@@ -8,170 +8,26 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { matchesKey, visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 import type { AgentConfig } from "../../agents/agents.ts";
+import type { ModelInfo, ThinkingLevel } from "../../shared/model-info.ts";
 import type { ResolvedStepBehavior } from "../../shared/settings.ts";
-import { resolveModelCandidate, splitThinkingSuffix } from "../shared/model-fallback.ts";
-import { findModelInfo, getSupportedThinkingLevels, type ModelInfo, type ThinkingLevel } from "../../shared/model-info.ts";
+import { splitThinkingSuffix } from "../shared/model-fallback.ts";
+import {
+	type BehaviorOverride,
+	ChainClarifyModel,
+	type ChainClarifyInputAction,
+	type ChainClarifyResult,
+	type ClarifyMode,
+	type EditMode,
+	ensureCursorVisible,
+	getCursorDisplayPos,
+	type SkillInfo,
+	type TextEditorState,
+	wrapText,
+} from "./chain-clarify-model.ts";
 
-type ClarifyMode = 'single' | 'parallel' | 'chain';
-
-export interface BehaviorOverride {
-	output?: string | false;
-	reads?: string[] | false;
-	progress?: boolean;
-	model?: string;
-	skills?: string[] | false;
-}
-
-export interface ChainClarifyResult {
-	confirmed: boolean;
-	templates: string[];
-	behaviorOverrides: (BehaviorOverride | undefined)[];
-	runInBackground?: boolean;
-}
-
-type EditMode = "template" | "output" | "reads" | "model" | "thinking" | "skills";
-
-
-interface TextEditorState {
-	buffer: string;
-	cursor: number;
-	viewportOffset: number;
-}
-
-function createEditorState(initial = ""): TextEditorState {
-	return { buffer: initial, cursor: 0, viewportOffset: 0 };
-}
-
-function wrapText(text: string, width: number): { lines: string[]; starts: number[] } {
-	if (width <= 0) return { lines: [text], starts: [0] };
-	if (text.length === 0) return { lines: [""], starts: [0] };
-
-	const lines: string[] = [];
-	const starts: number[] = [];
-	let offset = 0;
-	const segments = text.split("\n");
-	for (const [index, segment] of segments.entries()) {
-		if (segment.length === 0) {
-			starts.push(offset);
-			lines.push("");
-		} else {
-			let lineStart = 0;
-			let pos = 0;
-			let lineWidth = 0;
-			while (pos < segment.length) {
-				const char = String.fromCodePoint(segment.codePointAt(pos)!);
-				const charWidth = visibleWidth(char);
-				if (lineWidth > 0 && lineWidth + charWidth > width) {
-					starts.push(offset + lineStart);
-					lines.push(segment.slice(lineStart, pos));
-					lineStart = pos;
-					lineWidth = 0;
-					continue;
-				}
-				pos += char.length;
-				lineWidth += charWidth;
-			}
-			starts.push(offset + lineStart);
-			lines.push(segment.slice(lineStart));
-		}
-		offset += segment.length + (index < segments.length - 1 ? 1 : 0);
-	}
-	if (!text.endsWith("\n") && text.length > 0 && visibleWidth(lines[lines.length - 1] ?? "") === width) {
-		starts.push(text.length);
-		lines.push("");
-	}
-	return { lines, starts };
-}
-
-function getCursorDisplayPos(cursor: number, starts: number[]): { line: number; col: number } {
-	for (let i = starts.length - 1; i >= 0; i--) {
-		if (cursor >= starts[i]!) return { line: i, col: cursor - starts[i]! };
-	}
-	return { line: 0, col: 0 };
-}
-
-function ensureCursorVisible(cursorLine: number, viewportHeight: number, currentOffset: number): number {
-	if (cursorLine < currentOffset) return Math.max(0, cursorLine);
-	if (cursorLine >= currentOffset + viewportHeight) return Math.max(0, cursorLine - viewportHeight + 1);
-	return Math.max(0, currentOffset);
-}
-
-function isWordChar(ch: string): boolean {
-	const code = ch.charCodeAt(0);
-	return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
-}
-
-function wordBackward(buffer: string, cursor: number): number {
-	let pos = cursor;
-	while (pos > 0 && !isWordChar(buffer[pos - 1]!)) pos--;
-	while (pos > 0 && isWordChar(buffer[pos - 1]!)) pos--;
-	return pos;
-}
-
-function wordForward(buffer: string, cursor: number): number {
-	let pos = cursor;
-	while (pos < buffer.length && isWordChar(buffer[pos]!)) pos++;
-	while (pos < buffer.length && !isWordChar(buffer[pos]!)) pos++;
-	return pos;
-}
-
-function normalizeInsertText(data: string): string | null {
-	let text = data.split("\x1b[200~").join("").split("\x1b[201~").join("");
-	text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-	const newline = text.indexOf("\n");
-	if (newline !== -1) text = text.slice(0, newline);
-	text = text.replace(/\t/g, "    ");
-	if (text.length === 0) return null;
-	for (let i = 0; i < text.length; i++) {
-		if (text.charCodeAt(i) < 32) return null;
-	}
-	return text;
-}
-
-function handleEditorInput(state: TextEditorState, data: string, textWidth: number): TextEditorState | null {
-	if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "return")) return null;
-
-	const { lines: wrapped, starts } = wrapText(state.buffer, textWidth);
-	const cursorPos = getCursorDisplayPos(state.cursor, starts);
-
-	if (matchesKey(data, "alt+left") || matchesKey(data, "ctrl+left")) return { ...state, cursor: wordBackward(state.buffer, state.cursor) };
-	if (matchesKey(data, "alt+right") || matchesKey(data, "ctrl+right")) return { ...state, cursor: wordForward(state.buffer, state.cursor) };
-	if (matchesKey(data, "left")) return state.cursor > 0 ? { ...state, cursor: state.cursor - 1 } : state;
-	if (matchesKey(data, "right")) return state.cursor < state.buffer.length ? { ...state, cursor: state.cursor + 1 } : state;
-	if (matchesKey(data, "up") && cursorPos.line > 0) {
-		const targetLine = cursorPos.line - 1;
-		return { ...state, cursor: starts[targetLine]! + Math.min(cursorPos.col, wrapped[targetLine]?.length ?? 0) };
-	}
-	if (matchesKey(data, "down") && cursorPos.line < wrapped.length - 1) {
-		const targetLine = cursorPos.line + 1;
-		return { ...state, cursor: starts[targetLine]! + Math.min(cursorPos.col, wrapped[targetLine]?.length ?? 0) };
-	}
-	if (matchesKey(data, "home")) return { ...state, cursor: starts[cursorPos.line]! };
-	if (matchesKey(data, "end")) return { ...state, cursor: starts[cursorPos.line]! + (wrapped[cursorPos.line]?.length ?? 0) };
-	if (matchesKey(data, "ctrl+home")) return { ...state, cursor: 0 };
-	if (matchesKey(data, "ctrl+end")) return { ...state, cursor: state.buffer.length };
-	if (matchesKey(data, "alt+backspace")) {
-		const target = wordBackward(state.buffer, state.cursor);
-		return target === state.cursor ? state : { ...state, buffer: state.buffer.slice(0, target) + state.buffer.slice(state.cursor), cursor: target };
-	}
-	if (matchesKey(data, "backspace")) {
-		return state.cursor > 0
-			? { ...state, buffer: state.buffer.slice(0, state.cursor - 1) + state.buffer.slice(state.cursor), cursor: state.cursor - 1 }
-			: state;
-	}
-	if (matchesKey(data, "delete")) {
-		return state.cursor < state.buffer.length
-			? { ...state, buffer: state.buffer.slice(0, state.cursor) + state.buffer.slice(state.cursor + 1) }
-			: state;
-	}
-
-	const insert = normalizeInsertText(data);
-	return insert
-		? { ...state, buffer: state.buffer.slice(0, state.cursor) + insert + state.buffer.slice(state.cursor), cursor: state.cursor + insert.length }
-		: null;
-}
+export type { BehaviorOverride, ChainClarifyResult, ClarifyMode } from "./chain-clarify-model.ts";
 
 function renderWithCursor(text: string, cursorPos: number): string {
 	const before = text.slice(0, cursorPos);
@@ -200,38 +56,50 @@ function renderEditor(state: TextEditorState, width: number, viewportHeight: num
 export class ChainClarifyComponent implements Component {
 	readonly width = 84;
 
-	private selectedStep = 0;
-	private editingStep: number | null = null;
-	private editMode: EditMode = "template";
-	private editState: TextEditorState = createEditorState();
-
+	private readonly model: ChainClarifyModel;
 	private readonly EDIT_VIEWPORT_HEIGHT = 12;
-	private behaviorOverrides: Map<number, BehaviorOverride> = new Map();
-	private modelSearchQuery: string = "";
-	private modelSelectedIndex: number = 0;
-	private filteredModels: ModelInfo[] = [];
 	private readonly MODEL_SELECTOR_HEIGHT = 10;
-	private thinkingSelectedIndex: number = 0;
-	private skillSearchQuery: string = "";
-	private skillSelectedNames: Set<string> = new Set();
-	private skillCursorIndex: number = 0;
-	private filteredSkills: Array<{ name: string; source: string; description?: string }> = [];
 	private noticeMessage: { text: string; type: "info" | "error" } | null = null;
 	private noticeMessageTimer: ReturnType<typeof setTimeout> | null = null;
-	/** Run in background (async) mode */
-	private runInBackground = false;
 	private tui: TUI;
 	private theme: Theme;
-	private agentConfigs: AgentConfig[];
-	private templates: string[];
-	private originalTask: string;
-	private chainDir: string | undefined;
-	private resolvedBehaviors: ResolvedStepBehavior[];
-	private availableModels: ModelInfo[];
-	private preferredProvider: string | undefined;
-	private availableSkills: Array<{ name: string; source: string; description?: string }>;
 	private done: (result: ChainClarifyResult) => void;
-	private mode: ClarifyMode;
+
+	get selectedStep(): number { return this.model.selectedStep; }
+	set selectedStep(value: number) { this.model.selectedStep = value; }
+	get editingStep(): number | null { return this.model.editingStep; }
+	set editingStep(value: number | null) { this.model.editingStep = value; }
+	get editMode(): EditMode { return this.model.editMode; }
+	set editMode(value: EditMode) { this.model.editMode = value; }
+	get editState(): TextEditorState { return this.model.editState; }
+	set editState(value: TextEditorState) { this.model.editState = value; }
+	get behaviorOverrides(): Map<number, BehaviorOverride> { return this.model.behaviorOverrides; }
+	get modelSearchQuery(): string { return this.model.modelSearchQuery; }
+	set modelSearchQuery(value: string) { this.model.modelSearchQuery = value; }
+	get modelSelectedIndex(): number { return this.model.modelSelectedIndex; }
+	set modelSelectedIndex(value: number) { this.model.modelSelectedIndex = value; }
+	get filteredModels(): ModelInfo[] { return this.model.filteredModels; }
+	set filteredModels(value: ModelInfo[]) { this.model.filteredModels = value; }
+	get thinkingSelectedIndex(): number { return this.model.thinkingSelectedIndex; }
+	set thinkingSelectedIndex(value: number) { this.model.thinkingSelectedIndex = value; }
+	get skillSearchQuery(): string { return this.model.skillSearchQuery; }
+	set skillSearchQuery(value: string) { this.model.skillSearchQuery = value; }
+	get skillSelectedNames(): Set<string> { return this.model.skillSelectedNames; }
+	get skillCursorIndex(): number { return this.model.skillCursorIndex; }
+	set skillCursorIndex(value: number) { this.model.skillCursorIndex = value; }
+	get filteredSkills(): SkillInfo[] { return this.model.filteredSkills; }
+	set filteredSkills(value: SkillInfo[]) { this.model.filteredSkills = value; }
+	get runInBackground(): boolean { return this.model.runInBackground; }
+	set runInBackground(value: boolean) { this.model.runInBackground = value; }
+	get agentConfigs(): AgentConfig[] { return this.model.agentConfigs; }
+	get templates(): string[] { return this.model.templates; }
+	get originalTask(): string { return this.model.originalTask; }
+	get chainDir(): string | undefined { return this.model.chainDir; }
+	get resolvedBehaviors(): ResolvedStepBehavior[] { return this.model.resolvedBehaviors; }
+	get availableModels(): ModelInfo[] { return this.model.availableModels; }
+	get preferredProvider(): string | undefined { return this.model.preferredProvider; }
+	get availableSkills(): SkillInfo[] { return this.model.availableSkills; }
+	get mode(): ClarifyMode { return this.model.mode; }
 
 	constructor(
 		tui: TUI,
@@ -249,18 +117,18 @@ export class ChainClarifyComponent implements Component {
 	) {
 		this.tui = tui;
 		this.theme = theme;
-		this.agentConfigs = agentConfigs;
-		this.templates = templates;
-		this.originalTask = originalTask;
-		this.chainDir = chainDir;
-		this.resolvedBehaviors = resolvedBehaviors;
-		this.availableModels = availableModels;
-		this.preferredProvider = preferredProvider;
-		this.availableSkills = availableSkills;
 		this.done = done;
-		this.mode = mode;
-		this.filteredModels = [...availableModels];
-		this.filteredSkills = [...availableSkills];
+		this.model = new ChainClarifyModel({
+			agentConfigs,
+			templates,
+			originalTask,
+			chainDir,
+			resolvedBehaviors,
+			availableModels,
+			preferredProvider,
+			availableSkills,
+			mode,
+		});
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -303,13 +171,6 @@ export class ChainClarifyComponent implements Component {
 			this.theme.fg("dim", text) +
 			this.theme.fg("border", "─".repeat(padRight) + "╯")
 		);
-	}
-
-	/** Exit edit mode and reset state */
-	private exitEditMode(): void {
-		this.editingStep = null;
-		this.editState = createEditorState();
-		this.tui.requestRender();
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -377,40 +238,13 @@ export class ChainClarifyComponent implements Component {
 	// ─────────────────────────────────────────────────────────────────────────────
 
 	/** Get effective behavior for a step (with user overrides applied) */
-	private getEffectiveBehavior(stepIndex: number): ResolvedStepBehavior {
-		const base = this.resolvedBehaviors[stepIndex]!;
-		const override = this.behaviorOverrides.get(stepIndex);
-		if (!override) return base;
-
-		return {
-			output: override.output !== undefined ? override.output : base.output,
-			outputMode: base.outputMode,
-			reads: override.reads !== undefined ? override.reads : base.reads,
-			progress: override.progress !== undefined ? override.progress : base.progress,
-			skills: override.skills !== undefined ? override.skills : base.skills,
-			model: override.model !== undefined ? override.model : base.model,
-		};
+	getEffectiveBehavior(stepIndex: number): ResolvedStepBehavior {
+		return this.model.getEffectiveBehavior(stepIndex);
 	}
 
 	/** Get the effective model for a step (override or agent default) */
-	private getEffectiveModel(stepIndex: number): string {
-		const override = this.behaviorOverrides.get(stepIndex);
-		if (override?.model) return this.resolveModelFullId(override.model);
-
-		const baseModel = this.resolvedBehaviors[stepIndex]?.model;
-		if (baseModel) return this.resolveModelFullId(baseModel);
-		return "default";
-	}
-
-	/** Resolve a model name to its full provider/model format */
-	private resolveModelFullId(modelName: string): string {
-		return resolveModelCandidate(modelName, this.availableModels, this.preferredProvider) ?? modelName;
-	}
-
-	/** Update a behavior override for a step */
-	private updateBehavior(stepIndex: number, field: keyof BehaviorOverride, value: string | boolean | string[] | false): void {
-		const existing = this.behaviorOverrides.get(stepIndex) ?? {};
-		this.behaviorOverrides.set(stepIndex, { ...existing, [field]: value });
+	getEffectiveModel(stepIndex: number): string {
+		return this.model.getEffectiveModel(stepIndex);
 	}
 
 	private showNotice(text: string, type: "info" | "error"): void {
@@ -424,460 +258,52 @@ export class ChainClarifyComponent implements Component {
 		this.tui.requestRender();
 	}
 
+	private applyInputAction(action: ChainClarifyInputAction): void {
+		switch (action.kind) {
+			case "confirm":
+				this.done(action.result);
+				return;
+			case "cancel":
+				this.done(action.result);
+				return;
+			case "notice":
+				this.showNotice(action.text, action.noticeType);
+				return;
+			case "render":
+				this.tui.requestRender();
+				return;
+			case "none":
+				return;
+		}
+	}
+
 	// TUI Component lifecycle method invoked through the Component interface.
 	readonly handleInput = (data: string): void => {
-		if (this.editingStep !== null) {
-			if (this.editMode === "model") {
-				this.handleModelSelectorInput(data);
-			} else if (this.editMode === "thinking") {
-				this.handleThinkingSelectorInput(data);
-			} else if (this.editMode === "skills") {
-				this.handleSkillSelectorInput(data);
-			} else {
-				this.handleEditInput(data);
-			}
-			return;
-		}
-
-		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-			this.done({ confirmed: false, templates: [], behaviorOverrides: [] });
-			return;
-		}
-
-		if (matchesKey(data, "return")) {
-			const overrides: (BehaviorOverride | undefined)[] = [];
-			for (let i = 0; i < this.agentConfigs.length; i++) {
-				overrides.push(this.behaviorOverrides.get(i));
-			}
-			this.done({ confirmed: true, templates: this.templates, behaviorOverrides: overrides, runInBackground: this.runInBackground });
-			return;
-		}
-
-		if (matchesKey(data, "up")) {
-			this.selectedStep = Math.max(0, this.selectedStep - 1);
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "down")) {
-			const maxStep = Math.max(0, this.agentConfigs.length - 1);
-			this.selectedStep = Math.min(maxStep, this.selectedStep + 1);
-			this.tui.requestRender();
-			return;
-		}
-
-		if (data === "e") {
-			this.enterEditMode("template");
-			return;
-		}
-
-		if (data === "m") {
-			this.enterModelSelector();
-			return;
-		}
-
-		if (data === "t") {
-			this.enterThinkingSelector();
-			return;
-		}
-
-		if (data === "s") {
-			this.editingStep = this.selectedStep;
-			this.editMode = "skills";
-			this.skillSearchQuery = "";
-			this.skillCursorIndex = 0;
-			this.filteredSkills = [...this.availableSkills];
-			const current = this.getEffectiveBehavior(this.selectedStep).skills;
-			this.skillSelectedNames.clear();
-			if (current !== false && current.length > 0) {
-				current.forEach((skillName) => this.skillSelectedNames.add(skillName));
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (data === "w" && this.mode !== 'parallel') {
-			this.enterEditMode("output");
-			return;
-		}
-
-		if (data === "r" && this.mode === 'chain') {
-			this.enterEditMode("reads");
-			return;
-		}
-
-		if (data === "p" && this.mode === 'chain') {
-			const anyEnabled = this.agentConfigs.some((_, i) => this.getEffectiveBehavior(i).progress);
-			const newState = !anyEnabled;
-			for (let i = 0; i < this.agentConfigs.length; i++) {
-				this.updateBehavior(i, "progress", newState);
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (data === "b") {
-			this.runInBackground = !this.runInBackground;
-			this.tui.requestRender();
-			return;
-		}
-
+		this.applyInputAction(this.model.handleInput(data, this.width - 4, this.EDIT_VIEWPORT_HEIGHT));
 	};
 
-	private enterEditMode(mode: EditMode): void {
-		this.editingStep = this.selectedStep;
-		this.editMode = mode;
-		let buffer = "";
-
-		if (mode === "template") {
-			const template = this.templates[this.selectedStep] ?? "";
-			buffer = template.split("\n")[0] ?? "";
-		} else if (mode === "output") {
-			const behavior = this.getEffectiveBehavior(this.selectedStep);
-			buffer = behavior.output === false ? "" : (behavior.output || "");
-		} else if (mode === "reads") {
-			const behavior = this.getEffectiveBehavior(this.selectedStep);
-			buffer = behavior.reads === false ? "" : (behavior.reads?.join(", ") || "");
-		}
-
-		this.editState = createEditorState(buffer);
-		this.tui.requestRender();
-	}
-
 	/** Enter model selector mode */
-	private enterModelSelector(): void {
-		this.editingStep = this.selectedStep;
-		this.editMode = "model";
-		this.modelSearchQuery = "";
-		this.modelSelectedIndex = 0;
-		this.filteredModels = [...this.availableModels];
-		const currentModel = splitThinkingSuffix(this.getEffectiveModel(this.selectedStep)).baseModel;
-		const currentIndex = this.filteredModels.findIndex((m) => m.fullId === currentModel || m.id === currentModel);
-		if (currentIndex >= 0) {
-			this.modelSelectedIndex = currentIndex;
-		}
-
+	enterModelSelector(): void {
+		this.model.enterModelSelector();
 		this.tui.requestRender();
 	}
 
-	/** Filter models based on search query */
-	private filterModels(): void {
-		const query = this.modelSearchQuery.toLowerCase();
-		if (!query) {
-			this.filteredModels = [...this.availableModels];
-		} else {
-			this.filteredModels = this.availableModels.filter((m) =>
-				m.fullId.toLowerCase().includes(query) ||
-				m.id.toLowerCase().includes(query) ||
-				m.provider.toLowerCase().includes(query)
-			);
-		}
-		this.modelSelectedIndex = Math.min(this.modelSelectedIndex, Math.max(0, this.filteredModels.length - 1));
-	}
-
-	private handleModelSelectorInput(data: string): void {
-		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-			this.exitEditMode();
-			return;
-		}
-
-		if (matchesKey(data, "return")) {
-			const selected = this.filteredModels[this.modelSelectedIndex];
-			if (selected) {
-				const { thinkingSuffix } = splitThinkingSuffix(this.getEffectiveModel(this.editingStep!));
-				const requestedLevel = thinkingSuffix.slice(1);
-				const selectedModel = findModelInfo(selected.fullId, this.availableModels, this.preferredProvider);
-				const suffix = getSupportedThinkingLevels(selectedModel).some((level) => level === requestedLevel) ? thinkingSuffix : "";
-				this.updateBehavior(this.editingStep!, "model", `${selected.fullId}${suffix}`);
-			}
-			this.exitEditMode();
-			return;
-		}
-
-		if (matchesKey(data, "up")) {
-			if (this.filteredModels.length > 0) {
-				this.modelSelectedIndex = this.modelSelectedIndex === 0
-					? this.filteredModels.length - 1
-					: this.modelSelectedIndex - 1;
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "down")) {
-			if (this.filteredModels.length > 0) {
-				this.modelSelectedIndex = this.modelSelectedIndex === this.filteredModels.length - 1
-					? 0
-					: this.modelSelectedIndex + 1;
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "backspace")) {
-			if (this.modelSearchQuery.length > 0) {
-				this.modelSearchQuery = this.modelSearchQuery.slice(0, -1);
-				this.filterModels();
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (data.length === 1 && data.charCodeAt(0) >= 32) {
-			this.modelSearchQuery += data;
-			this.filterModels();
-			this.tui.requestRender();
-			return;
-		}
+	handleModelSelectorInput(data: string): void {
+		this.applyInputAction(this.model.handleModelSelectorInput(data));
 	}
 
 	private getAvailableThinkingLevels(stepIndex: number): ThinkingLevel[] {
-		return getSupportedThinkingLevels(findModelInfo(this.getEffectiveModel(stepIndex), this.availableModels, this.preferredProvider));
+		return this.model.getAvailableThinkingLevels(stepIndex);
 	}
 
 	/** Enter thinking level selector mode */
-	private enterThinkingSelector(): void {
-		if (!this.getEffectiveBehavior(this.selectedStep).model) {
-			this.showNotice("Select a model first", "error");
-			return;
-		}
-		this.editingStep = this.selectedStep;
-		this.editMode = "thinking";
-
-		const levels = this.getAvailableThinkingLevels(this.selectedStep);
-		const { thinkingSuffix } = splitThinkingSuffix(this.getEffectiveModel(this.selectedStep));
-		const suffix = thinkingSuffix.slice(1);
-		const levelIdx = levels.findIndex((level) => level === suffix);
-		this.thinkingSelectedIndex = levelIdx >= 0 ? levelIdx : Math.max(0, levels.indexOf("off"));
-
-		this.tui.requestRender();
-	}
-
-	private handleThinkingSelectorInput(data: string): void {
-		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-			this.exitEditMode();
-			return;
-		}
-
-		const levels = this.getAvailableThinkingLevels(this.editingStep!);
-		if (levels.length === 0) return;
-
-		if (matchesKey(data, "return")) {
-			const selectedLevel = levels[this.thinkingSelectedIndex] ?? "off";
-			this.applyThinkingLevel(selectedLevel);
-			this.exitEditMode();
-			return;
-		}
-
-		if (matchesKey(data, "up")) {
-			this.thinkingSelectedIndex = this.thinkingSelectedIndex === 0
-				? levels.length - 1
-				: this.thinkingSelectedIndex - 1;
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "down")) {
-			this.thinkingSelectedIndex = this.thinkingSelectedIndex === levels.length - 1
-				? 0
-				: this.thinkingSelectedIndex + 1;
-			this.tui.requestRender();
-			return;
-		}
+	enterThinkingSelector(): void {
+		this.applyInputAction(this.model.enterThinkingSelector());
 	}
 
 	/** Apply thinking level to the current step's model */
-	private applyThinkingLevel(level: ThinkingLevel): void {
-		const stepIndex = this.editingStep!;
-		const currentModel = this.getEffectiveBehavior(stepIndex).model;
-		if (!currentModel) return;
-
-		const { baseModel } = splitThinkingSuffix(currentModel);
-		const newModel = level === "off" ? baseModel : `${baseModel}:${level}`;
-		this.updateBehavior(stepIndex, "model", newModel);
-	}
-
-	private filterSkills(): void {
-		const query = this.skillSearchQuery.toLowerCase();
-		if (!query) {
-			this.filteredSkills = [...this.availableSkills];
-		} else {
-			this.filteredSkills = this.availableSkills.filter((s) =>
-				s.name.toLowerCase().includes(query) ||
-				(s.description?.toLowerCase().includes(query) ?? false),
-			);
-		}
-		this.skillCursorIndex = Math.min(this.skillCursorIndex, Math.max(0, this.filteredSkills.length - 1));
-	}
-
-	private handleSkillSelectorInput(data: string): void {
-		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-			this.exitEditMode();
-			return;
-		}
-
-		if (matchesKey(data, "return")) {
-			const selected = [...this.skillSelectedNames];
-			this.updateBehavior(this.editingStep!, "skills", selected);
-			this.exitEditMode();
-			return;
-		}
-
-		if (data === " ") {
-			if (this.filteredSkills.length > 0) {
-				const skill = this.filteredSkills[this.skillCursorIndex];
-				if (skill) {
-					if (this.skillSelectedNames.has(skill.name)) {
-						this.skillSelectedNames.delete(skill.name);
-					} else {
-						this.skillSelectedNames.add(skill.name);
-					}
-				}
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "up")) {
-			if (this.filteredSkills.length > 0) {
-				this.skillCursorIndex = this.skillCursorIndex === 0
-					? this.filteredSkills.length - 1
-					: this.skillCursorIndex - 1;
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "down")) {
-			if (this.filteredSkills.length > 0) {
-				this.skillCursorIndex = this.skillCursorIndex === this.filteredSkills.length - 1
-					? 0
-					: this.skillCursorIndex + 1;
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "backspace")) {
-			if (this.skillSearchQuery.length > 0) {
-				this.skillSearchQuery = this.skillSearchQuery.slice(0, -1);
-				this.filterSkills();
-			}
-			this.tui.requestRender();
-			return;
-		}
-
-		if (data.length === 1 && data.charCodeAt(0) >= 32) {
-			this.skillSearchQuery += data;
-			this.filterSkills();
-			this.tui.requestRender();
-			return;
-		}
-	}
-
-	private handleEditInput(data: string): void {
-		const textWidth = this.width - 4; // Must match render: innerW - 2 = (width - 2) - 2
-		if (matchesKey(data, "shift+up") || matchesKey(data, "pageup")) {
-			const { lines: wrapped, starts } = wrapText(this.editState.buffer, textWidth);
-			const cursorPos = getCursorDisplayPos(this.editState.cursor, starts);
-			const targetLine = Math.max(0, cursorPos.line - this.EDIT_VIEWPORT_HEIGHT);
-			const targetCol = Math.min(cursorPos.col, wrapped[targetLine]?.length ?? 0);
-			this.editState = { ...this.editState, cursor: starts[targetLine] + targetCol };
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "shift+down") || matchesKey(data, "pagedown")) {
-			const { lines: wrapped, starts } = wrapText(this.editState.buffer, textWidth);
-			const cursorPos = getCursorDisplayPos(this.editState.cursor, starts);
-			const targetLine = Math.min(wrapped.length - 1, cursorPos.line + this.EDIT_VIEWPORT_HEIGHT);
-			const targetCol = Math.min(cursorPos.col, wrapped[targetLine]?.length ?? 0);
-			this.editState = { ...this.editState, cursor: starts[targetLine] + targetCol };
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "tab")) return;
-
-		const nextState = handleEditorInput(this.editState, data, textWidth);
-		if (nextState) {
-			this.editState = nextState;
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "escape")) {
-			this.saveEdit();
-			this.exitEditMode();
-			return;
-		}
-
-		if (matchesKey(data, "ctrl+c")) {
-			this.exitEditMode();
-			return;
-		}
-	}
-
-	private saveEdit(): void {
-		const stepIndex = this.editingStep!;
-
-		if (this.editMode === "template") {
-			// For template, preserve other lines if they existed
-			const original = this.templates[stepIndex] ?? "";
-			const originalLines = original.split("\n");
-			originalLines[0] = this.editState.buffer;
-			this.templates[stepIndex] = originalLines.join("\n");
-		} else if (this.editMode === "output") {
-			// Capture OLD output before updating (for downstream propagation)
-			const oldBehavior = this.getEffectiveBehavior(stepIndex);
-			const oldOutput = typeof oldBehavior.output === "string" ? oldBehavior.output : null;
-
-			// Empty string or whitespace means disable output
-			const trimmed = this.editState.buffer.trim();
-			const newOutput = trimmed === "" ? false : trimmed;
-			this.updateBehavior(stepIndex, "output", newOutput);
-
-			// Propagate output filename change to downstream steps' reads
-			if (oldOutput && typeof newOutput === "string" && oldOutput !== newOutput) {
-				this.propagateOutputChange(stepIndex, oldOutput, newOutput);
-			}
-		} else if (this.editMode === "reads") {
-			// Parse comma-separated list, empty means disable reads
-			const trimmed = this.editState.buffer.trim();
-			if (trimmed === "") {
-				this.updateBehavior(stepIndex, "reads", false);
-			} else {
-				const files = trimmed.split(",").map(f => f.trim()).filter(f => f !== "");
-				this.updateBehavior(stepIndex, "reads", files.length > 0 ? files : false);
-			}
-		}
-	}
-
-	/**
-	 * When a step's output filename changes, update downstream steps that read from it.
-	 * This maintains the chain dependency automatically.
-	 */
-	private propagateOutputChange(changedStepIndex: number, oldOutput: string, newOutput: string): void {
-		// Check all downstream steps (steps that come after the changed step)
-		for (let i = changedStepIndex + 1; i < this.agentConfigs.length; i++) {
-			const behavior = this.getEffectiveBehavior(i);
-			
-			// Skip if reads is disabled or empty
-			if (behavior.reads === false || !behavior.reads || behavior.reads.length === 0) {
-				continue;
-			}
-
-			// Check if this step reads the old output file
-			const readsArray = behavior.reads;
-			const oldIndex = readsArray.indexOf(oldOutput);
-			
-			if (oldIndex !== -1) {
-				// Replace old filename with new filename in reads
-				const newReads = [...readsArray];
-				newReads[oldIndex] = newOutput;
-				this.updateBehavior(i, "reads", newReads);
-			}
-		}
+	applyThinkingLevel(level: ThinkingLevel): void {
+		this.model.applyThinkingLevel(level);
 	}
 
 	render(_width: number): string[] {
