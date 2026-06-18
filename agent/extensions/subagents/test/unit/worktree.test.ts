@@ -334,6 +334,18 @@ process.stdout.write(JSON.stringify({ syntheticPaths: [] }));
 		}
 	});
 
+	it("checks hook existence before timeout validation", () => {
+		const repoDir = createRepo("pi-worktree-hook-order-");
+		try {
+			assert.throws(
+				() => createWorktrees(repoDir, "hook-order", 1, { setupHook: { hookPath: "missing/setup.mjs", timeoutMs: 0 } }),
+				/worktree setup hook not found/i,
+			);
+		} finally {
+			cleanupRepo(repoDir);
+		}
+	});
+
 	it("rejects tracked synthetic paths from hook output", { skip: hookScriptSkip }, () => {
 		const repoDir = createRepo("pi-worktree-hook-tracked-");
 		const hookPath = createHookScript(repoDir, "tracked-hook.mjs", `
