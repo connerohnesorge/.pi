@@ -1,0 +1,31 @@
+{
+	"name": "pi-agent-extensions-workspace",
+	"private": true,
+	"packageManager": "npm@10.9.2",
+	"workspaces": [
+		"ask-user",
+		"btw",
+		"effort",
+		"finally",
+		"goalie",
+		"loop",
+		"otel",
+		"pi-fork-yourself",
+		"promptall",
+		"rtk",
+		"skill-inline",
+		"subagents",
+		"worktree"
+	],
+	"scripts": {
+		"build": "turbo run build",
+		"typecheck": "turbo run typecheck",
+		"test": "turbo run test",
+		"pack:dry": "turbo run pack:dry",
+		"check": "turbo run check",
+		"clean": "turbo run clean"
+	},
+	"devDependencies": {
+		"turbo": "^2.9.18"
+	}
+}

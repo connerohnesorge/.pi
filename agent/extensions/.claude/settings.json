@@ -1,0 +1,208 @@
+{
+  "hooks": {
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks config-change",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks notification",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks permission-request",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks post-tool-use",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks post-tool-use-failure",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks pre-compact",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks pre-tool-use",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks session-end",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks session-start",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks stop",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks subagent-start",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks subagent-stop",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks task-completed",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks teammate-idle",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks user-prompt-submit",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks worktree-create",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "command": "cnb hooks worktree-remove",
+            "timeout": 1800000,
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}

@@ -1,2 +1,6 @@
 # added by cnb init
 .rocks/changes/**/*.jsonc
+
+# workspace tooling
+node_modules/
+.turbo/

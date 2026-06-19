@@ -1,62 +1,65 @@
 {
-  "name": "worktree",
-  "version": "26.5.5",
-  "description": "Adds a Claude Code-like --worktree flag to Pi.",
-  "type": "module",
-  "main": "./src/index.ts",
-  "exports": {
-    ".": {
-      "import": "./src/index.ts"
-    }
-  },
-  "license": "MIT",
-  "author": "Season Saw",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/season179/pi-ecosystem.git",
-    "directory": "packages/worktree"
-  },
-  "keywords": [
-    "pi",
-    "pi-package",
-    "pi-extension",
-    "worktree",
-    "git",
-    "git-worktree",
-    "claude-code",
-    "isolation",
-    "safety"
-  ],
-  "files": [
-    "src",
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
-  "pi": {
-    "extensions": [
-      "./src/extensions/worktree.ts"
-    ]
-  },
-  "scripts": {
-    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "tsc -p tsconfig.json",
-    "prepack": "npm run clean && npm run build",
-    "prepublishOnly": "npm run clean && npm run build"
-  },
-  "engines": {
-    "node": ">=22"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.74.0"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@types/node": "^24.12.4",
-    "typescript": "^5.9.3"
-  }
+	"name": "worktree",
+	"version": "26.5.5",
+	"description": "Adds a Claude Code-like --worktree flag to Pi.",
+	"type": "module",
+	"main": "./src/index.ts",
+	"exports": {
+		".": {
+			"import": "./src/index.ts"
+		}
+	},
+	"license": "MIT",
+	"author": "Season Saw",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/season179/pi-ecosystem.git",
+		"directory": "packages/worktree"
+	},
+	"keywords": [
+		"pi",
+		"pi-package",
+		"pi-extension",
+		"worktree",
+		"git",
+		"git-worktree",
+		"claude-code",
+		"isolation",
+		"safety"
+	],
+	"files": [
+		"src",
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./src/extensions/worktree.ts"
+		]
+	},
+	"scripts": {
+		"clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+		"build": "tsc -p tsconfig.json",
+		"prepack": "npm run clean && npm run build",
+		"prepublishOnly": "npm run clean && npm run build",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"pack:dry": "npm pack --dry-run",
+		"check": "npm run typecheck && npm run build && npm run pack:dry"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "^0.74.0"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@types/node": "^24.12.4",
+		"typescript": "^5.9.3"
+	}
 }

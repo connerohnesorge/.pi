@@ -12,16 +12,18 @@
 	],
 	"license": "ISC",
 	"files": [
-		"extensions",
+		"main.js",
 		"README.md"
 	],
 	"engines": {
 		"node": ">=18"
 	},
 	"scripts": {
-		"check": "node --check extensions/inline-skill-autocomplete.js",
-		"test": "node --test test/*.test.js",
-		"verify": "npm run check && npm run test && npm pack --dry-run"
+		"check": "npm run build && npm run test && npm run pack:dry",
+		"test": "node --test",
+		"verify": "npm run check",
+		"build": "node --check main.js",
+		"pack:dry": "npm pack --dry-run"
 	},
 	"pi": {
 		"extensions": [
