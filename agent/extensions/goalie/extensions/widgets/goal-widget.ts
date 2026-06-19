@@ -8,6 +8,11 @@ import {
 	truncateText,
 	type GoalDisplayRecordLike,
 } from "../goal-core.ts";
+import {
+	currentToolElapsedSeconds,
+	elapsedSecondsFromMs,
+	type GoalAuditorProgress,
+} from "../goal-auditor-progress.ts";
 
 
 type GoalWidgetColor = Extract<ThemeColor, "accent" | "warning" | "success" | "error" | "dim" | "muted" | "text">;
@@ -19,14 +24,7 @@ export interface GoalWidgetRecord extends GoalDisplayRecordLike {
 	pauseSuggestedAction?: string;
 }
 
-export interface AuditorWidgetProgress {
-	currentTool?: string;
-	currentToolArgs?: string;
-	currentToolStartedAt?: number;
-	recentOutput: string[];
-	phase: "running" | "tool_executing" | "producing_report" | "done";
-	elapsedMs: number;
-}
+export type AuditorWidgetProgress = GoalAuditorProgress;
 
 export interface GoalWidgetOptions {
 	theme: Theme;
@@ -119,13 +117,13 @@ function getAuditorStepInfo(progress: AuditorWidgetProgress): { label: string; p
 	return { label: "Producing report...", percent: 85 };
 }
 
-export function renderAuditorWidgetLines(progress: AuditorWidgetProgress, theme: Theme, width: number): string[] {
+export function renderAuditorWidgetLines(progress: AuditorWidgetProgress, theme: Theme, width: number, options: { now?: number } = {}): string[] {
 	const safeWidth = Math.max(1, width);
 	const isActive = progress.phase !== "done";
 	const icon = isActive ? theme.fg("accent", spinnerFrame()) : theme.fg("success", "✓");
 	const label = isActive ? "auditing" : "audit complete";
 	// formatDuration expects seconds, progress.elapsedMs is in milliseconds
-	const duration = formatDuration(Math.floor(progress.elapsedMs / 1000));
+	const duration = formatDuration(elapsedSecondsFromMs(progress.elapsedMs));
 	const lines: string[] = [
 		heading(
 			theme,
@@ -148,8 +146,9 @@ export function renderAuditorWidgetLines(progress: AuditorWidgetProgress, theme:
 		const argText = progress.currentToolArgs
 			? truncateText(progress.currentToolArgs, Math.max(10, safeWidth - 24))
 			: "";
-		const toolDuration = progress.currentToolStartedAt
-			? ` ${theme.fg("dim", formatDuration(Date.now() - progress.currentToolStartedAt))}`
+		const toolElapsedSeconds = currentToolElapsedSeconds(progress, options.now ?? Date.now());
+		const toolDuration = toolElapsedSeconds !== null
+			? ` ${theme.fg("dim", formatDuration(toolElapsedSeconds))}`
 			: "";
 		lines.push(branchLine(
 			theme,
@@ -191,10 +190,10 @@ export function renderAuditorWidgetLines(progress: AuditorWidgetProgress, theme:
 	return lines;
 }
 
-export function renderGoalWidgetLines(goal: GoalWidgetRecord | null, theme: Theme, width: number, options: { openGoalCount?: number; auditorProgress?: AuditorWidgetProgress | null } = {}): string[] {
+export function renderGoalWidgetLines(goal: GoalWidgetRecord | null, theme: Theme, width: number, options: { openGoalCount?: number; auditorProgress?: AuditorWidgetProgress | null; now?: number } = {}): string[] {
 	// When auditor progress is active, show auditor display instead of normal goal widget
 	if (options.auditorProgress) {
-		return renderAuditorWidgetLines(options.auditorProgress, theme, width);
+		return renderAuditorWidgetLines(options.auditorProgress, theme, width, { now: options.now });
 	}
 	if (!goal) {
 		const openGoalCount = options.openGoalCount ?? 0;

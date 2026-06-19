@@ -1,8 +1,8 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
-import { defineTool, type AgentToolResult, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { defineTool, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, Text } from "@earendil-works/pi-tui";
 import {
 	footerStatus,
 	formatDuration,
@@ -31,14 +31,7 @@ import {
 } from "./goal-questionnaire.ts";
 import {
 	ABORT_GOAL_TOOL_NAME,
-	ACTIVE_GOAL_TOOL_NAMES,
-	CREATE_GOAL_TOOL_NAME,
-	POST_STOP_ALLOWED_TOOLS,
 	PROPOSE_DRAFT_TOOL_NAME,
-	QUESTIONNAIRE_TOOL_NAME,
-	QUESTION_TOOL_NAME,
-	GOAL_PROGRESS_TOOL_NAMES,
-	lifecycleToolNamesForGoalStatus,
 	TWEAK_APPLY_TOOL_NAME,
 } from "./goal-tool-names.ts";
 import {
@@ -94,12 +87,19 @@ import {
 	untrustedObjectiveBlock,
 } from "./prompts/goal-prompts.ts";
 import { buildGoalRunningNotification } from "./widgets/goal-notifications.ts";
-import { GoalWidgetComponent, type AuditorWidgetProgress } from "./widgets/goal-widget.ts";
+import { GoalWidgetComponent } from "./widgets/goal-widget.ts";
+import type { GoalAuditorProgress } from "./goal-auditor-progress.ts";
+import { createGoalCompletionRuntime } from "./goal-completion-runtime.ts";
+import { createGoalObjectiveRuntime } from "./goal-objective-runtime.ts";
+import {
+	computeGoalActiveTools,
+	evaluateGoalToolCall,
+	shouldQueueContinuationAtTurnEnd,
+} from "./goal-tool-policy.ts";
 
 import {
 	abortGoalCommandMessage,
 	buildAbortedByAgentGoal,
-	buildCompletionReport,
 	buildGoalCreatedReport,
 	buildPausedByAgentGoal,
 	clearGoalCommandMessage,
@@ -120,30 +120,6 @@ const COMPLETE_STATUS = "complete";
 const CONTINUATION_IDLE_RETRY_MS = 50;
 const STATUS_REFRESH_MS = 1000;
 /**
- * Tools that count as "real work" toward the active goal. If a non-tool-use
- * turn ends without any of these having been called, we DO NOT queue the next
- * autoContinue — the agent was just chatting. This stops infinite chat loops.
- */
-const GOAL_PROGRESS_TOOL_SET = new Set<string>(GOAL_PROGRESS_TOOL_NAMES);
-
-
-/**
- * Tools that are NEVER blocked by the post-stop in-turn block. After pause_goal,
- * abort_goal, update_goal=complete, or apply_goal_tweak fires, the agent should
- * yield the turn; we block all subsequent tool calls except these read-only inspections.
- */
-const POST_STOP_ALLOWED_TOOL_SET = new Set<string>(POST_STOP_ALLOWED_TOOLS);
-
-/**
- * When non-null, goalie tweak drafting is in progress for this goal id and the
- * agent is allowed to call apply_goal_tweak. Cleared after the tweak is applied
- * or when a user-driven turn arrives without a tweak follow-through. This is
- * the schema-level affordance gate that prevents the agent from "tweaking" via
- * arbitrary write/edit calls.
- */
-let tweakDraftingFor: string | null = null;
-
-/**
  * Thin session-local confirmation intent for /goalie drafting.
  * It protects mode consistency and user confirmation without turning drafting
  * into a separate long-running runtime state machine.
@@ -153,7 +129,6 @@ interface GoalConfirmationIntent {
 	originalTopic: string;
 	startedAt: number;
 }
-let confirmationIntent: GoalConfirmationIntent | null = null;
 
 
 // ---------- summaries ----------
@@ -334,19 +309,6 @@ function assistantTurnTokens(message: unknown): number {
 	return usageChannelTokens(usage.input) + usageChannelTokens(usage.output);
 }
 
-function isMeaningfulProgressToolCall(toolName: string, args: unknown): boolean {
-	if (!GOAL_PROGRESS_TOOL_SET.has(toolName)) return false;
-		if (toolName === "read") {
-			const path = asRecord(args)?.path;
-			if (typeof path === "string" && (path === ".pi/goals" || path.startsWith(".pi/goals/"))) return false;
-		}
-		if (toolName === "bash") {
-			const command = asRecord(args)?.command;
-			if (typeof command === "string" && /^\s*echo\b/.test(command)) return false;
-		}
-	return true;
-}
-
 // ---------- extension entry point ----------
 
 export default function goalExtension(pi: ExtensionAPI): void {
@@ -373,9 +335,16 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	let terminalInputUnsubscribe: (() => void) | null = null;
 	let statusRefreshTimer: ReturnType<typeof setInterval> | null = null;
 	let statusRefreshCtx: ExtensionContext | null = null;
-	let auditProgress: AuditorWidgetProgress | null = null;
+	let auditProgress: GoalAuditorProgress | null = null;
 	let auditAnimationTimer: ReturnType<typeof setInterval> | null = null;
 	let auditAbortController: AbortController | null = null;
+	/**
+	 * When non-null, goalie tweak drafting is in progress for this goal id and the
+	 * agent is allowed to call apply_goal_tweak. Cleared after the tweak is applied
+	 * or when a user-driven turn arrives without a tweak follow-through.
+	 */
+	let tweakDraftingFor: string | null = null;
+	let confirmationIntent: GoalConfirmationIntent | null = null;
 
 
 	// Per-turn flags reset in turn_start (#4, C9 fix).
@@ -398,40 +367,15 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		lastAccountedAt: null as number | null,
 	};
 
-	const goalExecutionWorkTools = ["read", "bash", "edit", "write"] as const;
-
 	function syncGoalTools(): void {
 		try {
-			const active = new Set(pi.getActiveTools());
-			for (const name of goalExecutionWorkTools) active.add(name);
-			active.delete(QUESTION_TOOL_NAME);
-			active.delete(QUESTIONNAIRE_TOOL_NAME);
-			for (const name of ACTIVE_GOAL_TOOL_NAMES) active.delete(name);
-			const phase = confirmationIntent !== null ? "drafting" : tweakDraftingFor !== null ? "tweakDrafting" : "normal";
-			const lifecycleTools = lifecycleToolNamesForGoalStatus(state.goal?.status, phase);
-			for (const name of lifecycleTools) active.add(name);
-			// apply_goal_tweak is only available during an active goalie tweak-drafting flow.
-			// Note: tweak drafting can run against active OR paused goals.
-			if (state.goal && tweakDraftingFor === state.goal.id) {
-				active.add(TWEAK_APPLY_TOOL_NAME);
-				active.add(QUESTION_TOOL_NAME);
-				active.add(QUESTIONNAIRE_TOOL_NAME);
-			} else {
-				active.delete(TWEAK_APPLY_TOOL_NAME);
-			}
-			// Keep the commit tool available and let its validator enforce that a
-			// drafting flow is active. This avoids fragile hidden-tool drift after
-			// question turns, compaction, or active-tool resync.
-			active.add(PROPOSE_DRAFT_TOOL_NAME);
-			// create_goal stays hidden — hard invariant: user must confirm via propose_goal_draft.
-			active.delete(CREATE_GOAL_TOOL_NAME);
-			if (confirmationIntent !== null) {
-				active.add(QUESTION_TOOL_NAME);
-				active.add(QUESTIONNAIRE_TOOL_NAME);
-			} else if (state.goal?.status === "active") {
-				for (const name of goalExecutionWorkTools) active.add(name);
-			}
-			pi.setActiveTools(Array.from(active));
+			pi.setActiveTools(computeGoalActiveTools({
+				currentTools: pi.getActiveTools(),
+				goalStatus: state.goal?.status,
+				goalId: state.goal?.id,
+				confirmationActive: confirmationIntent !== null,
+				tweakDraftingFor,
+			}));
 		} catch {}
 	}
 
@@ -544,6 +488,16 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		}
 		const diskGoal = fresh.get(focusedGoalId) ?? null;
 		if (!diskGoal) {
+			// `readActiveGoalPool` intentionally filters complete active files during
+			// the deferred archival window. Keep the in-memory completed goal focused
+			// until `turn_end` archives it; otherwise an allowed post-stop `get_goal`
+			// call can orphan the complete active file before archival runs.
+			if (current?.status === "complete" && current.activePath && !current.archivedPath) {
+				goalsById = fresh;
+				goalsById.set(current.id, current);
+				focusedGoalId = current.id;
+				return true;
+			}
 			if (current && !current.activePath) {
 				goalsById = fresh;
 				goalsById.set(current.id, current);
@@ -693,7 +647,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			if (ctx) {
 				syncGoalPromptFromDisk(ctx);
 				const next = state.goal;
-				if (next) state.goal = next.status === "complete" ? archiveGoalFile(ctx, next) : writeActiveGoalFile(ctx, next);
+				if (next) state.goal = writeActiveGoalFile(ctx, next);
 			}
 		}
 		pi.appendEntry(STATE_ENTRY, goalDetails(state.goal));
@@ -790,6 +744,61 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			syncStatusRefresh(ctx);
 		}
 	}
+
+	const completionRuntime = createGoalCompletionRuntime({
+		getGoal: () => state.goal,
+		setGoal: (goal) => { state.goal = goal; },
+		writeActiveGoalFile,
+		archiveGoalFile,
+		appendStateEntry: (goal) => pi.appendEntry(STATE_ENTRY, goalDetails(goal)),
+		appendFocusEntry,
+		appendGoalCompletedEvent: (ctx, completedGoal, archivedGoal) => {
+			try {
+				appendGoalEvent(ctx, {
+					type: "goal_completed",
+					goalId: completedGoal.id,
+					archivePath: archivedGoal.archivedPath,
+					at: nowIso(),
+				});
+			} catch {
+				// Ledger append failure should not crash completion
+			}
+		},
+		accountProgress,
+		clearAuditProgress: () => { auditProgress = null; },
+		invalidateGoalWidget: () => { goalWidgetComponent?.invalidate(); },
+		setTurnStoppedFor: (goalId) => { turnStoppedFor = goalId; },
+		resetGetGoalNudgeState,
+		removeGoalFromPool: (goalId) => { goalsById.delete(goalId); },
+		clearFocus: () => { focusedGoalId = null; },
+		syncGoalTools,
+		updateUI,
+		detailedSummary,
+	});
+
+	const objectiveRuntime = createGoalObjectiveRuntime({
+		setGoal: (goal) => { state.goal = goal; },
+		writeActiveGoalFile,
+		appendStateEntry: (goal) => pi.appendEntry(STATE_ENTRY, goalDetails(goal)),
+		appendGoalTweakedEvent: (ctx, goal, changeSummary) => {
+			try {
+				appendGoalEvent(ctx, {
+					type: "goal_tweaked",
+					goalId: goal.id,
+					changeSummary,
+					at: goal.updatedAt,
+				});
+			} catch {
+				// Ledger append failure should not crash objective changes
+			}
+		},
+		clearTweakDrafting: () => { tweakDraftingFor = null; },
+		resetGetGoalNudgeState,
+		setTurnStoppedFor: (goalId) => { turnStoppedFor = goalId; },
+		syncGoalTools,
+		updateUI,
+		notify: (ctx, message, level) => { ctx.ui.notify(message, level); },
+	});
 
 	function loadState(ctx: ExtensionContext): void {
 		goalsById = readActiveGoalPool(ctx);
@@ -1417,6 +1426,12 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			handleDirectGoalSet(rawArgs, ctx, "goal");
 		},
 	});
+	pi.registerCommand("goalie-tweak", {
+		description: "Start an agent-assisted interview to revise the focused goalie objective.",
+		handler: async (rawArgs, ctx) => {
+			await startGoalTweakDrafting(rawArgs, ctx);
+		},
+	});
 	pi.registerCommand("goalie-edit", {
 		description: "Open the current goalie file in your $EDITOR to refine the condition contract.",
 		handler: async (_rawArgs, ctx) => {
@@ -1690,55 +1705,6 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			reconcileFocusedGoalFromDisk(ctx);
 
-			// The single home for marking the focused goal complete. The three
-			// completion branches below (auditor disabled, auditor bypassed via
-			// Escape, auditor approved) differ only in their completion-report
-			// argument; everything else — the in-memory complete, active-file
-			// write, ledger state entry, turn-stop bookkeeping, tool resync, and
-			// UI update — is identical and lives here.
-			//
-			// This owns only the WRITE half of the two-phase completion contract:
-			// it marks the goal complete and writes the active file but does NOT
-			// archive. Archival is deferred to the `turn_end` hook (search
-			// `status === "complete" && !state.goal?.archivedPath`), which fires
-			// once after the agent has seen the audit result. Do not archive here.
-			type CompletionReportVariant =
-				| { auditSkippedReason: string }
-				| { auditorReport: string };
-			function finalizeGoalCompletion(
-				ctx: ExtensionContext,
-				goal: GoalRecord,
-				variant: CompletionReportVariant,
-			): AgentToolResult<GoalStateEntry> {
-				accountProgress(ctx);
-				auditProgress = null;
-				goalWidgetComponent?.invalidate();
-				state.goal = {
-					...goal,
-					status: "complete",
-					stopReason: "agent",
-					updatedAt: nowIso(),
-				};
-				state.goal = writeActiveGoalFile(ctx, state.goal);
-				pi.appendEntry(STATE_ENTRY, goalDetails(state.goal));
-				turnStoppedFor = state.goal?.id ?? null;
-				resetGetGoalNudgeState(state.goal?.id);
-				syncGoalTools();
-				updateUI(ctx);
-				return {
-					content: [{
-						type: "text",
-						text: buildCompletionReport({
-							detailedSummary: detailedSummary(state.goal),
-							completionSummary: params.completionSummary,
-							...variant,
-						}),
-					}],
-					details: goalDetails(state.goal),
-					terminate: true,
-				};
-			}
-
 			// -- Phase 1: Objective update (quick sync) --
 			// Apply updatedObjective before any completion logic so the completion
 			// flow (if status=complete is also set) reads the latest objective.
@@ -1753,24 +1719,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					};
 				}
 				if (!state.goal) throw new Error("Goal disappeared during objective update.");
-				const next: GoalRecord = {
-					...state.goal,
-					objective: newObjective,
-					updatedAt: nowIso(),
-				};
-				state.goal = writeActiveGoalFile(ctx, next);
-				pi.appendEntry(STATE_ENTRY, goalDetails(state.goal));
-				try {
-					appendGoalEvent(ctx, {
-						type: "goal_tweaked",
-						goalId: state.goal.id,
-						changeSummary: "Objective updated via update_goal",
-						at: state.goal.updatedAt,
-					});
-				} catch {
-					// Ledger append failure should not block update
-				}
-				updateUI(ctx);
+				objectiveRuntime.applyObjectiveUpdate(ctx, state.goal, {
+					newObjective,
+					changeSummary: "Objective updated via update_goal",
+				});
 
 				// Quick sync only (no status=complete) — return without terminating
 				if (params.status !== COMPLETE_STATUS) {
@@ -1853,7 +1805,11 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					// Ledger append failure should not block completion
 				}
 				// Set goal complete in memory (defer archival to turn_end)
-				return finalizeGoalCompletion(ctx, auditTarget, { auditSkippedReason: "auditor disabled in settings" });
+				return completionRuntime.finalizeGoalCompletion(ctx, {
+					goal: auditTarget,
+					completionSummary: params.completionSummary,
+					variant: { auditSkippedReason: "auditor disabled in settings" },
+				});
 			}
 
 			// Auditor is enabled — run the normal audit flow
@@ -1938,7 +1894,11 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					details: { phase: "skipped", goalId: auditTarget.id, auditor: auditorLabel },
 				});
 				// Set goal complete in memory (defer archival to turn_end)
-				return finalizeGoalCompletion(ctx, auditTarget, { auditSkippedReason: "auditor bypassed (user pressed Escape during audit)" });
+				return completionRuntime.finalizeGoalCompletion(ctx, {
+					goal: auditTarget,
+					completionSummary: params.completionSummary,
+					variant: { auditSkippedReason: "auditor bypassed (user pressed Escape during audit)" },
+				});
 			}
 
 			// Show final audit output briefly before clearing
@@ -2005,7 +1965,11 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			// Defer archival: set goal complete in-memory + write active file WITHOUT
 			// archiving. Archival happens at turn_end so the agent can see the auditor
 			// approval before the goal is archived.
-			return finalizeGoalCompletion(ctx, auditTarget, { auditorReport: auditor.output });
+			return completionRuntime.finalizeGoalCompletion(ctx, {
+				goal: auditTarget,
+				completionSummary: params.completionSummary,
+				variant: { auditorReport: auditor.output },
+			});
 		},
 		renderCall(args, theme) {
 			const label = args?.status ?? args?.updatedObjective ? "sync" : "";
@@ -2060,13 +2024,13 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 			const suggestionLine = suggested ? `\nSuggested: ${truncateText(suggested, 160)}` : "";
 			ctx.ui.notify(
-				`Goal paused by agent.\nReason: ${truncateText(reason, 200)}${suggestionLine}\n\nUse /goal-resume to continue, /goal-tweak to revise, or /goal-clear to abandon.`,
+				`Goal paused by agent.\nReason: ${truncateText(reason, 200)}${suggestionLine}\n\nUse /goalie-resume to continue, /goalie-tweak to revise, or /goalie-clear to abandon.`,
 				"warning",
 			);
 			return {
 				content: [{
 					type: "text",
-					text: `Goal paused. Reason: ${reason}${suggested ? `\nSuggested: ${suggested}` : ""}\nWaiting for user to /goal-resume, /goal-tweak, or /goal-clear. Stop now; do not start another tool call.`,
+					text: `Goal paused. Reason: ${reason}${suggested ? `\nSuggested: ${suggested}` : ""}\nWaiting for user to /goalie-resume, /goalie-tweak, or /goalie-clear. Stop now; do not start another tool call.`,
 				}],
 				details: goalDetails(state.goal),
 				terminate: true,
@@ -2184,7 +2148,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 						type: "text",
 						text: "apply_goal_tweak REJECTED: no goalie tweak-drafting flow is active for this goal. " +
 							"This tool can only be called during a goalie tweak-drafting interview that the user initiated. " +
-							"If you want to change the goal, ask the user to run /goalie-edit or start a new /goalie discussion.",
+							"If you want to change the goal, ask the user to run /goalie-tweak, use /goalie-edit for direct file editing, or start a new /goalie discussion.",
 					}],
 					details: goalDetails(state.goal),
 				};
@@ -2199,52 +2163,14 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			if (!newObjective) throw new Error("apply_goal_tweak requires a non-empty newObjective.");
 			const changeSummary = params.changeSummary.trim();
 			if (!changeSummary) throw new Error("apply_goal_tweak requires a non-empty changeSummary.");
-			const next: GoalRecord = {
-				...state.goal,
-				objective: newObjective,
-				updatedAt: nowIso(),
-				// Clear any prior agent pause reason — the user has redefined the work.
-				pauseReason: undefined,
-				pauseSuggestedAction: undefined,
-			};
-			// IMPORTANT: bypass setGoal() / persist() here. persist() calls
-			// syncGoalPromptFromDisk() which would RE-READ the stale objective
-			// from the still-old goal file on disk and clobber our new objective
-			// before writing. apply_goal_tweak is the authoritative source for
-			// objective changes — the disk is downstream, not upstream. Do the
-			// minimal state update manually:
-			//   1) write the new record to disk authoritatively
-			//   2) update in-memory `goal` to the canonical post-write record
-			//   3) append the state entry and re-sync tools
-			//   4) clear the tweak drafting gate so apply_goal_tweak can't be re-used
-			state.goal = writeActiveGoalFile(ctx, next);
-			pi.appendEntry(STATE_ENTRY, goalDetails(state.goal));
-			tweakDraftingFor = null;
-			// Reset autoContinue counter — plan changed, agent gets a fresh chain.
-			resetGetGoalNudgeState(state.goal.id);
-			// C9 fix: mark turn-stopped so subsequent in-turn tool calls are blocked.
-			turnStoppedFor = state.goal.id;
-			syncGoalTools();
-			updateUI(ctx);
-			ctx.ui.notify(`Goal tweaked: ${truncateText(changeSummary, 160)}`, "info");
-			// Append ledger event for tweak
-			try {
-				appendGoalEvent(ctx, {
-					type: "goal_tweaked",
-					goalId: state.goal.id,
-					changeSummary,
-					at: state.goal.updatedAt,
-				});
-			} catch {
-				// Ledger append failure should not crash tweak
-			}
+			const result = objectiveRuntime.applyGoalTweak(ctx, state.goal, { newObjective, changeSummary });
 			return {
 				content: [{
 					type: "text",
-					text: `Goal tweak applied. ${changeSummary}\nStop now; the next continuation will arrive automatically if the goal is active.`,
+					text: result.text,
 				}],
-				details: goalDetails(state.goal),
-				terminate: true,
+				details: result.details,
+				terminate: result.terminate,
 			};
 		},
 		renderCall(args, theme) {
@@ -2304,35 +2230,29 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	// #4 + C9 fix + Phase 5 C3: gate in-turn tool calls based on lifecycle state.
 	pi.on("tool_call", async (event, ctx) => {
-		// Post-stop in-turn block (C9 0ad8 fix): after pause_goal / abort_goal /
-		// update_goal=complete / apply_goal_tweak fires in this turn, block all subsequent tool calls except
-		// read-only inspection. Forces the agent to yield the turn instead of "fixing"
-		// the situation by creating extra files etc.
-		if (turnStoppedFor !== null && !POST_STOP_ALLOWED_TOOL_SET.has(event.toolName)) {
+		const decision = evaluateGoalToolCall({
+			toolName: event.toolName,
+			args: (event as { args?: unknown }).args,
+			turnStoppedFor,
+			goalId: state.goal?.id,
+			goalStatus: state.goal?.status,
+			goalAutoContinue: state.goal?.autoContinue,
+			confirmationActive: confirmationIntent !== null,
+			tweakDraftingActive: tweakDraftingFor !== null,
+		});
+		if (decision.blockReason) {
 			return {
 				block: true,
-				reason: `The goal was already stopped earlier in this turn (goalId=${turnStoppedFor}). ` +
-					`Do not call more tools; end the turn with a brief summary and yield to the user.`,
+				reason: decision.blockReason,
 			};
 		}
-		// Phase 5 soft gate relaxation: active-goal question block and repeated get_goal
-		// block are removed. The agent is trusted to prefer work tools; prompts nudge
-		// toward concrete work without hard-stopping the turn.
-		if (confirmationIntent === null && tweakDraftingFor === null && state.goal?.status === "active") {
-			if (event.toolName === "get_goal") {
-				const prior = activeGetGoalTurnsByGoalId.get(state.goal.id) ?? 0;
-				activeGetGoalTurnsByGoalId.set(state.goal.id, prior + 1);
-				// Nudge only: do not hard-block, but warn in tool response via get_goal execute
-			}
+		if (decision.countGetGoalNudge && state.goal?.id) {
+			const prior = activeGetGoalTurnsByGoalId.get(state.goal.id) ?? 0;
+			activeGetGoalTurnsByGoalId.set(state.goal.id, prior + 1);
 		}
-		// Track for #4 empty-turn gate.
-		if (isMeaningfulProgressToolCall(event.toolName, asRecord(event)?.args)) {
-			if (state.goal?.id) activeGetGoalTurnsByGoalId.delete(state.goal.id);
-			goalWorkToolCalledThisTurn = true;
-		} else if (state.goal?.status === "active" && state.goal.autoContinue && event.toolName !== "get_goal") {
-			// A non-progress tool should not create an infinite retry chain.
-			turnStoppedFor = state.goal.id;
-		}
+		if (decision.resetGetGoalNudge && state.goal?.id) activeGetGoalTurnsByGoalId.delete(state.goal.id);
+		if (decision.goalWorkToolCalledThisTurn) goalWorkToolCalledThisTurn = true;
+		if (decision.turnStoppedFor !== undefined) turnStoppedFor = decision.turnStoppedFor;
 		return;
 	});
 
@@ -2355,36 +2275,17 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		// Archive a goal that was marked complete by update_goal but whose archival
 		// was deferred so the agent could see/recognize the audit result first.
 		// This runs after the agent's turn ends — the agent has now seen the result.
-		if (state.goal?.status === "complete" && !state.goal?.archivedPath) {
-			const completedGoal = state.goal;
-			const archived = archiveGoalFile(ctx, completedGoal);
-			resetGetGoalNudgeState(completedGoal.id);
-			goalsById.delete(completedGoal.id);
-			focusedGoalId = null;
-			appendFocusEntry(null, "completed");
-			syncGoalTools();
-			updateUI(ctx);
-			try {
-				appendGoalEvent(ctx, {
-					type: "goal_completed",
-					goalId: completedGoal.id,
-					archivePath: archived.archivedPath,
-					at: nowIso(),
-				});
-			} catch {
-				// Ledger append failure should not crash completion
-			}
-		}
+		completionRuntime.archiveCompletedGoalAtTurnEnd(ctx);
 
 		// If the assistant ended a turn without queuing more tool calls, push a continuation right away.
 		// #4: only queue if some real work was done this turn — otherwise the model is
 		// just chatting and we should not keep firing turns on noise.
-		if (
-			!isToolUseAssistantMessage(message)
-			&& state.goal?.status === "active"
-			&& state.goal.autoContinue
-			&& goalWorkToolCalledThisTurn
-		) {
+		if (shouldQueueContinuationAtTurnEnd({
+			assistantUsedTool: isToolUseAssistantMessage(message),
+			goalStatus: state.goal?.status,
+			goalAutoContinue: state.goal?.autoContinue,
+			goalWorkToolCalledThisTurn,
+		})) {
 			queueContinuation(ctx);
 		}
 	});

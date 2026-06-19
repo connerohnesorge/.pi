@@ -8,7 +8,7 @@
  * enough of the real interface for the lifecycle to work.
  */
 
-import { accessSync, readFileSync } from "node:fs";
+import { accessSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -19,6 +19,7 @@ import {
 	assertArchivedDirEmpty,
 	createGoalFixture,
 	createMockPiHarness,
+	executeTool,
 	executeUpdateGoal,
 	readGoalFile,
 	startGoalSession,
@@ -27,10 +28,9 @@ import {
 // ── Test Suite ───────────────────────────────────────────────────────────────
 
 describe("Extension E2E", () => {
-	const harness = createMockPiHarness();
-
 	// ── 1: Quick-sync ──────────────────────────────────────────────────────
 	it("e2e: quick-sync objective via update_goal handler", async () => {
+		const harness = createMockPiHarness();
 		const f = createGoalFixture({
 			prefix: "goal-e2e-ext-",
 			objective: "E2E test: initial",
@@ -82,6 +82,7 @@ describe("Extension E2E", () => {
 
 	// ── 2: Combined sync + complete ────────────────────────────────────────
 	it("e2e: combined sync+complete applies updated objective before audit", async () => {
+		const harness = createMockPiHarness();
 		const f = createGoalFixture({
 			prefix: "goal-e2e-ext-",
 			objective: "E2E test: initial",
@@ -133,6 +134,7 @@ describe("Extension E2E", () => {
 
 	// ── 3: Deferred archival ───────────────────────────────────────────────
 	it("e2e: complete without sync produces deferred archival state", async () => {
+		const harness = createMockPiHarness();
 		const f = createGoalFixture({
 			prefix: "goal-e2e-ext-",
 			objective: "E2E test: initial",
@@ -172,8 +174,110 @@ describe("Extension E2E", () => {
 		}
 	});
 
-	// ── 4: Rejection gate tests ─────────────────────────────────────────────
+	// ── 4: Runtime policy and tweak path ───────────────────────────────────
+	it("e2e: active tools are computed and tweak flow applies through real handlers", async () => {
+		const harness = createMockPiHarness();
+		const f = createGoalFixture({
+			prefix: "goal-e2e-ext-",
+			objective: "E2E test: initial",
+			at: Date.UTC(2026, 5, 26, 9, 0, 0),
+		});
+		try {
+			await startGoalSession(harness, f.mockCtx);
+			assert.ok(harness.activeTools.includes("update_goal"), "active goal exposes update_goal");
+			assert.ok(harness.activeTools.includes("pause_goal"), "active goal exposes pause_goal");
+			assert.ok(harness.activeTools.includes("write"), "active goal exposes work tools");
+			assert.equal(harness.activeTools.includes("create_goal"), false, "direct create_goal stays hidden");
+
+			await harness.getCommand("goalie-tweak")("clarify done criteria", f.mockCtx);
+			assert.ok(harness.activeTools.includes("apply_goal_tweak"), "goalie-tweak arms apply_goal_tweak");
+			assert.ok(harness.activeTools.includes("goal_question"), "goalie-tweak exposes question tool");
+
+			const result = await executeTool(
+				harness,
+				f.mockCtx,
+				"apply_goal_tweak",
+				{ newObjective: "E2E test: tweaked objective", changeSummary: "Clarified done criteria" },
+				"call-tweak",
+			);
+			assert.equal(result.terminate, true);
+			assert.match(result.content?.[0]?.text ?? "", /Goal tweak applied/);
+			assertActiveGoal(f.cwd, f.goal.id, "E2E test: tweaked objective");
+			assert.equal(harness.activeTools.includes("apply_goal_tweak"), false, "tweak tool is hidden after application");
+		} finally {
+			f.cleanup();
+		}
+	});
+
+	it("e2e: allowed get_goal after completion does not orphan deferred archival", async () => {
+		const harness = createMockPiHarness();
+		const f = createGoalFixture({
+			prefix: "goal-e2e-ext-",
+			objective: "E2E test: initial",
+			at: Date.UTC(2026, 5, 26, 9, 0, 0),
+		});
+		try {
+			await startGoalSession(harness, f.mockCtx);
+			await executeUpdateGoal(
+				harness,
+				f.mockCtx,
+				{ status: "complete", completionSummary: "E2E test deferred archival.", confirmBypassAuditor: true },
+				"call-complete-before-get",
+			);
+			await executeTool(harness, f.mockCtx, "get_goal", {}, "call-get-after-complete");
+			const turnEnd = harness.lifecycleHandlers.get("turn_end");
+			assert.ok(turnEnd, "turn_end handler must be registered");
+			await turnEnd({ message: { role: "assistant", stopReason: "stop", usage: { input: 0, output: 0 } } }, f.mockCtx);
+
+			const activeFile = path.join(f.cwd, f.goal.activePath ?? ".pi/goals/missing");
+			let activeExists = false;
+			try {
+				accessSync(activeFile);
+				activeExists = true;
+			} catch {}
+			assert.equal(activeExists, false, "turn_end must remove the deferred active file even after get_goal");
+			const archived = readdirSync(path.join(f.cwd, ".pi", "goals", "archived")).filter((name) => name.includes(f.goal.id));
+			assert.equal(archived.length, 1, "turn_end must archive the completed goal exactly once");
+		} finally {
+			f.cleanup();
+		}
+	});
+
+	it("e2e: session_compact does not archive a deferred completed goal before turn_end", async () => {
+		const harness = createMockPiHarness();
+		const f = createGoalFixture({
+			prefix: "goal-e2e-ext-",
+			objective: "E2E test: initial",
+			at: Date.UTC(2026, 5, 26, 9, 0, 0),
+		});
+		try {
+			await startGoalSession(harness, f.mockCtx);
+			await executeUpdateGoal(
+				harness,
+				f.mockCtx,
+				{ status: "complete", completionSummary: "E2E test deferred archival.", confirmBypassAuditor: true },
+				"call-compact",
+			);
+			const sessionCompact = harness.lifecycleHandlers.get("session_compact");
+			assert.ok(sessionCompact, "session_compact handler must be registered");
+			await sessionCompact({}, f.mockCtx);
+
+			const activeFile = path.join(f.cwd, f.goal.activePath ?? ".pi/goals/missing");
+			let activeExists = false;
+			try {
+				accessSync(activeFile);
+				activeExists = true;
+			} catch {}
+			assert.ok(activeExists, "generic persist during compaction must keep deferred complete goal active");
+			assertArchivedDirEmpty(f.cwd);
+		} finally {
+			f.cleanup();
+		}
+	});
+
+	// ── 5: Rejection gate tests ─────────────────────────────────────────────
 	it("e2e: update_goal rejects null/absent goal state", async () => {
+		const harness = createMockPiHarness();
 		const f = createGoalFixture({
 			prefix: "goal-e2e-ext-",
 			objective: "E2E test: initial",

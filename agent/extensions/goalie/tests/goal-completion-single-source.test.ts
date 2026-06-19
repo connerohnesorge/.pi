@@ -1,80 +1,159 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
-// Grep-guard for the single-sourced completion contract (proposal
-// refactor-deepen-goalie-completion). These tests read goal.ts as text and
-// assert structurally that:
-//   1. the in-memory "mark complete" shape + active-file write live in exactly
-//      one place (`finalizeGoalCompletion`), and
-//   2. the `turn_end` archive block is the sole site that archives a completed
-//      goal — the finalizer itself never archives (deferred archival, ADR-0001).
-// If a future edit re-scatters the completion write or moves archival into the
-// finalizer, these guards fail.
+import { createGoalCompletionRuntime } from "../extensions/goal-completion-runtime.ts";
+import { archiveGoalFile, writeActiveGoalFile } from "../extensions/storage/goal-files.ts";
+import type { GoalFocusReason, GoalRecord, GoalStateEntry } from "../extensions/goal-record.ts";
+import {
+	cleanupGoalContext,
+	createTempGoalContext,
+	createTestGoal,
+	type TestContext,
+} from "./helpers/goal-test-helpers.ts";
 
-const goalSource = readFileSync(
-	fileURLToPath(new URL("../extensions/goal.ts", import.meta.url)),
-	"utf8",
-);
-
-function countOccurrences(haystack: string, needle: string): number {
-	return haystack.split(needle).length - 1;
+interface RuntimeHarness {
+	stateGoal: GoalRecord | null;
+	turnStoppedFor: string | null;
+	stateEntries: GoalStateEntry[];
+	focusEntries: Array<{ goalId: string | null; reason: GoalFocusReason }>;
+	completedEvents: Array<{ completedGoal: GoalRecord; archivedGoal: GoalRecord }>;
+	accounted: number;
+	clearedAudit: number;
+	invalidated: number;
+	syncedTools: number;
+	updatedUi: number;
+	pool: Map<string, GoalRecord>;
+	runtime: ReturnType<typeof createGoalCompletionRuntime>;
 }
 
-test("the in-memory completion shape exists exactly once (in finalizeGoalCompletion)", () => {
-	// The object-literal completion transform `{ ...goal, status: "complete",
-	// stopReason: "agent", ... }` is the heart of the finalizer; after the
-	// refactor it must appear exactly once.
-	assert.equal(countOccurrences(goalSource, 'status: "complete"'), 1, 'in-memory `status: "complete"` must appear exactly once');
-	assert.equal(countOccurrences(goalSource, 'stopReason: "agent"'), 1, 'completion `stopReason: "agent"` must appear exactly once');
+function makeGoal(overrides: Partial<GoalRecord> = {}): GoalRecord {
+	return createTestGoal({
+		objective: "Completion runtime test goal",
+		at: Date.UTC(2026, 5, 7, 9, 0, 0),
+		overrides,
+	});
+}
 
-	// And that single completion shape belongs to the finalizer.
-	assert.ok(goalSource.includes("function finalizeGoalCompletion("), "finalizeGoalCompletion must exist");
+function createRuntimeHarness(ctx: TestContext, initial: GoalRecord | null): RuntimeHarness {
+	const harness: RuntimeHarness = {
+		stateGoal: initial,
+		turnStoppedFor: null,
+		stateEntries: [] as GoalStateEntry[],
+		focusEntries: [] as Array<{ goalId: string | null; reason: GoalFocusReason }>,
+		completedEvents: [] as Array<{ completedGoal: GoalRecord; archivedGoal: GoalRecord }>,
+		accounted: 0,
+		clearedAudit: 0,
+		invalidated: 0,
+		syncedTools: 0,
+		updatedUi: 0,
+		pool: new Map(initial ? [[initial.id, initial]] : []),
+		runtime: undefined as unknown as ReturnType<typeof createGoalCompletionRuntime>,
+	};
+	harness.runtime = createGoalCompletionRuntime({
+		getGoal: () => harness.stateGoal,
+		setGoal: (goal) => {
+			harness.stateGoal = goal;
+			if (goal) harness.pool.set(goal.id, goal);
+		},
+		writeActiveGoalFile,
+		archiveGoalFile,
+		appendStateEntry: (goal) => harness.stateEntries.push({ version: 3, goal }),
+		appendFocusEntry: (goalId, reason) => harness.focusEntries.push({ goalId, reason }),
+		appendGoalCompletedEvent: (_ctx, completedGoal, archivedGoal) => harness.completedEvents.push({ completedGoal, archivedGoal }),
+		accountProgress: () => { harness.accounted += 1; },
+		clearAuditProgress: () => { harness.clearedAudit += 1; },
+		invalidateGoalWidget: () => { harness.invalidated += 1; },
+		setTurnStoppedFor: (goalId) => { harness.turnStoppedFor = goalId; },
+		resetGetGoalNudgeState: () => {},
+		removeGoalFromPool: (goalId) => { harness.pool.delete(goalId); },
+		clearFocus: () => { harness.stateGoal = null; },
+		syncGoalTools: () => { harness.syncedTools += 1; },
+		updateUI: () => { harness.updatedUi += 1; },
+		detailedSummary: (goal) => `Goal: ${goal?.objective ?? "none"}\nStatus: ${goal?.status ?? "none"}`,
+	});
+	return harness;
+}
+
+test("completion runtime finalizer marks complete, writes active file, and does not archive", () => {
+	const ctx = createTempGoalContext("goal-completion-runtime-test-");
+	try {
+		const active = writeActiveGoalFile(ctx, makeGoal());
+		const harness = createRuntimeHarness(ctx, active);
+		const result = harness.runtime.finalizeGoalCompletion(ctx as any, {
+			goal: active,
+			completionSummary: "Done.",
+			variant: { auditSkippedReason: "auditor disabled in settings" },
+		});
+
+		const completed = harness.stateGoal;
+		assert.equal(completed?.status, "complete");
+		assert.equal(completed?.stopReason, "agent");
+		assert.equal(harness.turnStoppedFor, completed?.id);
+		assert.equal(harness.accounted, 1);
+		assert.equal(harness.clearedAudit, 1);
+		assert.equal(harness.invalidated, 1);
+		assert.equal(harness.syncedTools, 1);
+		assert.equal(harness.updatedUi, 1);
+		assert.equal(harness.stateEntries.at(-1)?.goal?.status, "complete");
+		assert.equal(result.terminate, true);
+		const text = (result.content[0] as { text?: string } | undefined)?.text ?? "";
+		assert.match(text, /Goal audit skipped/);
+		assert.match(text, /auditor disabled in settings/);
+		assert.match(completed?.activePath ?? "", /^\.pi\/goals\/active_goal_/);
+		assert.equal(completed?.archivedPath, undefined);
+		assert.ok(existsSync(path.join(ctx.cwd, completed?.activePath ?? "missing")), "complete goal remains in active file before turn_end");
+	} finally {
+		cleanupGoalContext(ctx);
+	}
 });
 
-test("the completion write sequence (complete shape + writeActiveGoalFile) lives only in the finalizer", () => {
-	const finalizerStart = goalSource.indexOf("function finalizeGoalCompletion(");
-	assert.notEqual(finalizerStart, -1, "finalizeGoalCompletion must exist");
-
-	// Bound the finalizer body: from its declaration to the start of the next
-	// top-level marker inside execute (the "Phase 1" comment immediately follows
-	// the finalizer declaration in the same scope).
-	const phase1 = goalSource.indexOf("-- Phase 1: Objective update", finalizerStart);
-	assert.notEqual(phase1, -1, "Phase 1 marker must follow the finalizer");
-	const finalizerBody = goalSource.slice(finalizerStart, phase1);
-
-	// The completion write sequence is inside the finalizer.
-	assert.ok(finalizerBody.includes('status: "complete"'), "finalizer must contain the in-memory complete shape");
-	assert.ok(finalizerBody.includes("writeActiveGoalFile(ctx, state.goal)"), "finalizer must write the active file");
-	assert.ok(finalizerBody.includes("buildCompletionReport("), "finalizer must build the completion report");
-
-	// The finalizer must NOT archive — archival is deferred to turn_end.
-	assert.ok(!finalizerBody.includes("archiveGoalFile("), "finalizer must NOT archive (deferred to turn_end)");
+test("completion runtime report variant carries auditor approval output", () => {
+	const ctx = createTempGoalContext("goal-completion-runtime-test-");
+	try {
+		const active = writeActiveGoalFile(ctx, makeGoal());
+		const harness = createRuntimeHarness(ctx, active);
+		const result = harness.runtime.finalizeGoalCompletion(ctx as any, {
+			goal: active,
+			completionSummary: "All done.",
+			variant: { auditorReport: "Verified everything.\n\n<approved/>" },
+		});
+		const text = (result.content[0] as { text?: string } | undefined)?.text ?? "";
+		assert.match(text, /Goal audit approved/);
+		assert.match(text, /Verified everything/);
+		assert.match(text, /<approved\/>/);
+	} finally {
+		cleanupGoalContext(ctx);
+	}
 });
 
-test("the three completion branches all delegate to finalizeGoalCompletion", () => {
-	assert.equal(
-		countOccurrences(goalSource, "return finalizeGoalCompletion(ctx, auditTarget, "),
-		3,
-		"all three update_goal completion branches must call finalizeGoalCompletion",
-	);
-	// Each variant passed exactly once.
-	assert.equal(countOccurrences(goalSource, '{ auditSkippedReason: "auditor disabled in settings" }'), 1, "disabled-branch variant once");
-	assert.equal(countOccurrences(goalSource, '{ auditSkippedReason: "auditor bypassed (user pressed Escape during audit)" }'), 1, "Esc-branch variant once");
-	assert.equal(countOccurrences(goalSource, "{ auditorReport: auditor.output }"), 1, "approved-branch variant once");
-});
+test("completion runtime archives a deferred completed goal exactly once at turn_end", () => {
+	const ctx = createTempGoalContext("goal-completion-runtime-test-");
+	try {
+		const active = writeActiveGoalFile(ctx, makeGoal());
+		const harness = createRuntimeHarness(ctx, active);
+		harness.runtime.finalizeGoalCompletion(ctx as any, {
+			goal: active,
+			variant: { auditSkippedReason: "auditor disabled in settings" },
+		});
+		const completed = harness.stateGoal;
+		assert.ok(completed, "completed goal exists before archive");
 
-test("the turn_end archive block is the sole deferred-archival site for completed goals", () => {
-	// The guard `state.goal?.status === "complete" && !state.goal?.archivedPath`
-	// that fires the deferred archive must guard exactly one archiveGoalFile call.
-	const guard = 'if (state.goal?.status === "complete" && !state.goal?.archivedPath) {';
-	assert.equal(countOccurrences(goalSource, guard), 1, "the deferred-archival guard must appear exactly once (turn_end)");
+		const archived = harness.runtime.archiveCompletedGoalAtTurnEnd(ctx as any);
+		assert.equal(archived?.completedGoal.id, completed.id);
+		assert.equal(archived?.archivedGoal.activePath, undefined);
+		assert.match(archived?.archivedGoal.archivedPath ?? "", /^\.pi\/goals\/archived\/goal_/);
+		assert.equal(harness.stateGoal, null);
+		assert.equal(harness.pool.has(completed.id), false);
+		assert.deepEqual(harness.focusEntries.at(-1), { goalId: null, reason: "completed" });
+		assert.equal(harness.completedEvents.length, 1);
+		assert.equal(existsSync(path.join(ctx.cwd, completed.activePath ?? "missing")), false, "active file removed after archive");
 
-	// That guarded block contains the lone completed-goal archival call.
-	const guardStart = goalSource.indexOf(guard);
-	assert.notEqual(guardStart, -1, "turn_end archive guard must exist");
-	const guardedBlock = goalSource.slice(guardStart, guardStart + 600);
-	assert.ok(guardedBlock.includes("archiveGoalFile(ctx, completedGoal)"), "turn_end guard must archive the completed goal");
-	assert.ok(guardedBlock.includes('type: "goal_completed"'), "turn_end guard must append the goal_completed ledger event");
+		const again = harness.runtime.archiveCompletedGoalAtTurnEnd(ctx as any);
+		assert.equal(again, null);
+		assert.equal(harness.completedEvents.length, 1, "second turn_end does not append another completion event");
+	} finally {
+		cleanupGoalContext(ctx);
+	}
 });

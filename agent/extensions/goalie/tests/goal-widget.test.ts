@@ -21,11 +21,13 @@ function goal(overrides: Partial<GoalWidgetRecord> = {}): GoalWidgetRecord {
 	};
 }
 
+const AUDIT_NOW = Date.UTC(2026, 5, 19, 12, 0, 0);
+
 function auditorProgress(overrides: Partial<AuditorWidgetProgress> = {}): AuditorWidgetProgress {
 	return {
 		currentTool: "read",
 		currentToolArgs: '{"path":"test.txt"}',
-		currentToolStartedAt: Date.now() - 5000,
+		currentToolStartedAt: AUDIT_NOW - 5000,
 		recentOutput: ["checking file exists...", "confirming test coverage..."],
 		phase: "tool_executing",
 		elapsedMs: 5000,
@@ -81,12 +83,13 @@ test("renderGoalWidgetLines shows other open goals and unfocused multi-goal guid
 
 test("renderAuditorWidgetLines shows auditor progress with current tool", () => {
 	const progress = auditorProgress();
-	const lines = renderAuditorWidgetLines(progress, theme, 100);
+	const lines = renderAuditorWidgetLines(progress, theme, 100, { now: AUDIT_NOW });
 	// Should show audit heading with duration (5s)
 	assert.match(lines[0], /Audit/);
 	assert.match(lines[0], /auditing/);
-	// Should show current tool
-	assert.match(lines.join("\n"), /tool.*read.*test\.txt/);
+	// Should show current tool with a 5-second duration (not 5000 seconds)
+	assert.match(lines.join("\n"), /tool.*read.*test\.txt.*5s/);
+	assert.doesNotMatch(lines.join("\n"), /1h23m20s/);
 	// Should show recent output lines
 	assert.match(lines.join("\n"), /checking file exists/);
 	assert.match(lines.join("\n"), /confirming test coverage/);
@@ -110,7 +113,7 @@ test("renderAuditorWidgetLines handles empty recent output", () => {
 test("auditor progress overrides normal goal display when provided", () => {
 	// When auditorProgress is passed to renderGoalWidgetLines, should show auditor instead of goal
 	const progress = auditorProgress();
-	const lines = renderGoalWidgetLines(goal(), theme, 100, { auditorProgress: progress });
+	const lines = renderGoalWidgetLines(goal(), theme, 100, { auditorProgress: progress, now: AUDIT_NOW });
 	assert.match(lines[0], /Audit/);
 	assert.doesNotMatch(lines[0], /Sisyphus|\bGoal\b/);
 });

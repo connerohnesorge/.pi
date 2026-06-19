@@ -10,6 +10,8 @@ import {
 	type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
 import type { GoalRecord } from "./goal-record.ts";
+import type { AuditorProgressCallback, GoalAuditorProgress } from "./goal-auditor-progress.ts";
+export type { AuditorProgressCallback, GoalAuditorProgress } from "./goal-auditor-progress.ts";
 
 export interface GoalAuditorConfig {
 	provider?: string;
@@ -17,23 +19,6 @@ export interface GoalAuditorConfig {
 	thinkingLevel?: ThinkingLevel;
 	disabled?: boolean;
 }
-
-interface AuditorProgress {
-	/** Current tool being executed by the auditor, if any */
-	currentTool?: string;
-	/** Arguments passed to the current tool (truncated for display) */
-	currentToolArgs?: string;
-	/** When the current tool started (ms since epoch) */
-	currentToolStartedAt?: number;
-	/** Recent text output lines from the auditor's assistant messages */
-	recentOutput: string[];
-	/** Phase of the audit */
-	phase: "running" | "tool_executing" | "producing_report" | "done";
-	/** Elapsed ms since audit started */
-	elapsedMs: number;
-}
-
-export type AuditorProgressCallback = (progress: AuditorProgress) => void;
 
 export interface GoalAuditorResult {
 	approved: boolean;
@@ -247,7 +232,7 @@ export async function runGoalCompletionAuditor(args: {
 			tools: ["read", "grep", "find", "ls", "bash"],
 		});
 		const startedAt = Date.now();
-		const progress: AuditorProgress = {
+		const progress: GoalAuditorProgress = {
 			recentOutput: [],
 			phase: "running",
 			elapsedMs: 0,

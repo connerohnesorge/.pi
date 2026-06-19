@@ -20,40 +20,52 @@ import {
 
 export interface MockPiHarness {
 	tools: ToolDefinition[];
+	commands: Map<string, Function>;
 	lifecycleHandlers: Map<string, Function>;
 	apiCalls: Array<{ type: string; data?: unknown }>;
+	activeTools: string[];
 	resetApiCalls: () => void;
 	getTool: (name: string) => ToolDefinition;
+	getCommand: (name: string) => Function;
 }
 
 export function createMockPiHarness(): MockPiHarness {
 	const tools: ToolDefinition[] = [];
+	const commands = new Map<string, Function>();
 	const lifecycleHandlers = new Map<string, Function>();
 	const apiCalls: Array<{ type: string; data?: unknown }> = [];
+	let activeTools: string[] = [];
 	const mockPi = {
 		registerTool: (def: ToolDefinition) => { tools.push(def); },
-		registerCommand: () => {},
+		registerCommand: (name: string, def: { handler: Function }) => { commands.set(name, def.handler); },
 		on: (event: string, handler: Function) => { lifecycleHandlers.set(event, handler); },
 		appendEntry: (customType: string, data: unknown) => {
 			apiCalls.push({ type: "appendEntry", data: { customType, data } });
 		},
 		registerMessageRenderer: () => {},
-		sendMessage: () => {},
-		getActiveTools: () => new Map(),
-		setActiveTools: () => {},
+		sendMessage: (data?: unknown, options?: unknown) => { apiCalls.push({ type: "sendMessage", data: { data, options } }); },
+		getActiveTools: () => activeTools,
+		setActiveTools: (tools: string[]) => { activeTools = [...tools]; },
 		hasUI: false,
 	};
 	piGoalExtension(mockPi as any);
 
 	return {
 		tools,
+		commands,
 		lifecycleHandlers,
 		apiCalls,
+		get activeTools() { return activeTools; },
 		resetApiCalls: () => { apiCalls.length = 0; },
 		getTool: (name: string) => {
 			const tool = tools.find((candidate) => candidate.name === name);
 			if (!tool) throw new Error(`Tool "${name}" not found`);
 			return tool;
+		},
+		getCommand: (name: string) => {
+			const handler = commands.get(name);
+			if (!handler) throw new Error(`Command "${name}" not found`);
+			return handler;
 		},
 	};
 }
@@ -122,14 +134,24 @@ export async function startGoalSession(harness: MockPiHarness, ctx: ExtensionCon
 	await sessionStart({ reason: "start" }, ctx);
 }
 
+export async function executeTool(
+	harness: MockPiHarness,
+	ctx: ExtensionContext,
+	toolName: string,
+	params: Record<string, unknown>,
+	callId = "call-1",
+): Promise<any> {
+	const tool = harness.getTool(toolName);
+	return (tool.execute as Function)(callId, params, new AbortController().signal, undefined, ctx);
+}
+
 export async function executeUpdateGoal(
 	harness: MockPiHarness,
 	ctx: ExtensionContext,
 	params: Record<string, unknown>,
 	callId = "call-1",
 ): Promise<any> {
-	const updateGoal = harness.getTool("update_goal");
-	return (updateGoal.execute as Function)(callId, params, new AbortController().signal, undefined, ctx);
+	return executeTool(harness, ctx, "update_goal", params, callId);
 }
 
 export function assertActiveGoal(cwd: string, goalId: string, expectedObjective: string, expectedStatus = "active"): void {

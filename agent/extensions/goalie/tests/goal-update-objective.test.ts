@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createGoalObjectiveRuntime } from "../extensions/goal-objective-runtime.ts";
 import { buildCompletionReport } from "../extensions/goal-policy.ts";
 import {
 	archiveGoalFile,
 	readActiveGoalPool,
 	writeActiveGoalFile,
 } from "../extensions/storage/goal-files.ts";
-import type { GoalRecord } from "../extensions/goal-record.ts";
+import type { GoalRecord, GoalStateEntry } from "../extensions/goal-record.ts";
 import {
 	assertAllowsGoalUpdate,
 	assertRejectsCompleteGoalUpdate,
@@ -30,6 +31,40 @@ function makeGoal(overrides: Partial<GoalRecord> = {}): GoalRecord {
 	});
 }
 
+function makeObjectiveRuntime() {
+	let stateGoal: GoalRecord | null = null;
+	let stateEntry: GoalStateEntry | null = null;
+	let tweakDraftingCleared = false;
+	let turnStoppedFor: string | null = null;
+	let syncedTools = 0;
+	let updatedUi = 0;
+	let notified: string | null = null;
+	const events: Array<{ goalId: string; changeSummary: string; at: string }> = [];
+	const runtime = createGoalObjectiveRuntime({
+		setGoal: (goal) => { stateGoal = goal; },
+		writeActiveGoalFile,
+		appendStateEntry: (goal) => { stateEntry = { version: 3, goal }; },
+		appendGoalTweakedEvent: (_ctx, goal, changeSummary) => events.push({ goalId: goal.id, changeSummary, at: goal.updatedAt }),
+		clearTweakDrafting: () => { tweakDraftingCleared = true; },
+		resetGetGoalNudgeState: () => {},
+		setTurnStoppedFor: (goalId) => { turnStoppedFor = goalId; },
+		syncGoalTools: () => { syncedTools += 1; },
+		updateUI: () => { updatedUi += 1; },
+		notify: (_ctx, message) => { notified = message; },
+	});
+	return {
+		runtime,
+		get stateGoal() { return stateGoal; },
+		get stateEntry() { return stateEntry; },
+		get tweakDraftingCleared() { return tweakDraftingCleared; },
+		get turnStoppedFor() { return turnStoppedFor; },
+		get syncedTools() { return syncedTools; },
+		get updatedUi() { return updatedUi; },
+		get notified() { return notified; },
+		events,
+	};
+}
+
 // ─── validateGoalUpdate (handler gate) ───────────────────────────────────────
 
 test("validateGoalUpdate rejects null goal (no goal exists)", () => {
@@ -48,34 +83,38 @@ test("validateGoalUpdate accepts paused goal", () => {
 	assertAllowsGoalUpdate(makeGoal({ status: "paused" }));
 });
 
-// ─── update_goal({updatedObjective}) quick-sync path ─────────────────────────
+// ─── update_goal({updatedObjective}) quick-sync runtime ─────────────────────
 
-test("update_goal with updatedObjective updates objective in memory and on disk", () => {
+test("objective runtime updates objective in memory, state entry, ledger, UI, and disk", () => {
 	const ctx = createTempGoalContext(TEST_PREFIX);
 	try {
 		const originalObj = "Original objective: build feature X";
 		const newObj = "Updated objective: build feature Y after requirements change";
 
-		const goal = makeGoal({ objective: originalObj });
-		const active = writeActiveGoalFile(ctx, goal);
-		assert.equal(active.status, "active");
-		assert.equal(active.objective, originalObj);
-		assert.ok(readActiveGoalText(ctx, active).includes(originalObj));
-		assert.ok(readActiveGoalPool(ctx).has(goal.id));
+		const active = writeActiveGoalFile(ctx, makeGoal({ objective: originalObj }));
+		const harness = makeObjectiveRuntime();
+		const result = harness.runtime.applyObjectiveUpdate(ctx as any, active, {
+			newObjective: newObj,
+			changeSummary: "Objective updated via update_goal",
+		});
 
-		const updated = writeActiveGoalFile(ctx, { ...active, objective: newObj });
-		assert.equal(updated.status, "active");
-		assert.equal(updated.objective, newObj);
-		assert.match(updated.activePath ?? "", /^\.pi\/goals\/active_goal_/);
-		assert.equal(updated.archivedPath, undefined);
+		assert.equal(result.goal.status, "active");
+		assert.equal(result.goal.objective, newObj);
+		assert.equal(harness.stateGoal?.objective, newObj);
+		assert.equal(harness.stateEntry?.goal?.objective, newObj);
+		assert.equal(harness.events.length, 1);
+		assert.equal(harness.events[0]?.changeSummary, "Objective updated via update_goal");
+		assert.equal(harness.updatedUi, 1);
+		assert.equal(harness.syncedTools, 1, "quick objective update resyncs tools through the runtime operation");
+		assert.match(result.goal.activePath ?? "", /^\.pi\/goals\/active_goal_/);
+		assert.equal(result.goal.archivedPath, undefined);
 
-		const disk2 = readActiveGoalText(ctx, updated);
+		const disk2 = readActiveGoalText(ctx, result.goal);
 		assert.ok(disk2.includes(newObj));
 		assert.ok(!disk2.includes(originalObj));
 		assert.ok(disk2.includes('"status": "active"'));
-
-		assert.ok(readActiveGoalPool(ctx).has(goal.id));
-		assert.equal(updated.activePath, active.activePath);
+		assert.ok(readActiveGoalPool(ctx).has(active.id));
+		assert.equal(result.goal.activePath, active.activePath);
 	} finally {
 		cleanupGoalContext(ctx);
 	}
@@ -89,11 +128,13 @@ test("combined updatedObjective + status=complete applies update before completi
 		const originalObj = "Original objective for combined test";
 		const newObj = "Updated before complete: final requirement";
 
-		const goal = makeGoal({ objective: originalObj });
-		const active = writeActiveGoalFile(ctx, goal);
-		assert.equal(active.objective, originalObj);
-
-		const combined = completeGoalOnDisk(ctx, active, { objective: newObj });
+		const active = writeActiveGoalFile(ctx, makeGoal({ objective: originalObj }));
+		const harness = makeObjectiveRuntime();
+		const updated = harness.runtime.applyObjectiveUpdate(ctx as any, active, {
+			newObjective: newObj,
+			changeSummary: "Objective updated via update_goal",
+		}).goal;
+		const combined = completeGoalOnDisk(ctx, updated, { objective: updated.objective });
 		assert.equal(combined.objective, newObj);
 		assert.equal(combined.status, "complete");
 		assert.match(combined.activePath ?? "", /^\.pi\/goals\/active_goal_/);
@@ -126,43 +167,37 @@ test("buildCompletionReport handles updated objective display", () => {
 	assert.ok(report.includes("<approved/>"));
 });
 
-// ─── apply_goal_tweak handler simulation ─────────────────────────────────────
-// The apply_goal_tweak handler writes the new objective via writeActiveGoalFile,
-// appends a state entry, clears tweakDraftingFor, sets turnStoppedFor, and
-// returns terminate:true. We simulate the storage-level write and verify
-// the goal is updated on disk.
+// ─── apply_goal_tweak runtime ────────────────────────────────────────────────
 
-test("apply_goal_tweak path: writeActiveGoalFile with new objective (simulated handler execution)", () => {
+test("objective runtime applies goal tweak authoritatively and terminates", () => {
 	const ctx = createTempGoalContext(TEST_PREFIX);
 	try {
 		const originalObj = "Original objective";
 		const newObj = "Tweaked objective after goalie tweak interview";
+		const active = writeActiveGoalFile(ctx, makeGoal({ objective: originalObj }));
+		const harness = makeObjectiveRuntime();
 
-		// Write the original active goal
-		const goal = makeGoal({ objective: originalObj });
-		const active = writeActiveGoalFile(ctx, goal);
-		assert.equal(active.objective, originalObj);
-
-		// Simulate apply_goal_tweak: write with new objective (same pattern
-		// the handler uses: spread state goal, set new objective + updatedAt)
-		const tweaked = writeActiveGoalFile(ctx, {
-			...active,
-			objective: newObj,
-			updatedAt: new Date().toISOString(),
+		const result = harness.runtime.applyGoalTweak(ctx as any, active, {
+			newObjective: newObj,
+			changeSummary: "Clarified success criteria",
 		});
-		assert.equal(tweaked.objective, newObj, "objective must be updated");
-		assert.equal(tweaked.status, "active", "status must remain active after tweak");
-		assert.equal(tweaked.activePath, active.activePath,
-			"active file path should not change on tweak");
 
-		// Verify disk has the updated objective
-		const diskContent = readActiveGoalText(ctx, tweaked);
+		assert.equal(result.goal.objective, newObj);
+		assert.equal(result.goal.status, "active");
+		assert.equal(result.goal.activePath, active.activePath);
+		assert.equal(result.terminate, true);
+		assert.match(result.text, /Goal tweak applied/);
+		assert.equal(harness.tweakDraftingCleared, true);
+		assert.equal(harness.turnStoppedFor, result.goal.id);
+		assert.equal(harness.syncedTools, 1);
+		assert.equal(harness.updatedUi, 1);
+		assert.match(harness.notified ?? "", /Clarified success criteria/);
+		assert.equal(harness.events[0]?.changeSummary, "Clarified success criteria");
+
+		const diskContent = readActiveGoalText(ctx, result.goal);
 		assert.ok(diskContent.includes(newObj), "disk must have the tweaked objective");
 		assert.ok(diskContent.includes('"status": "active"'), "disk must show active status");
-
-		// Verify still in the active pool
-		const pool = readActiveGoalPool(ctx);
-		assert.ok(pool.has(goal.id), "tweaked goal must still be in active pool");
+		assert.ok(readActiveGoalPool(ctx).has(active.id), "tweaked goal must still be in active pool");
 	} finally {
 		cleanupGoalContext(ctx);
 	}
@@ -178,7 +213,8 @@ test("goal evolution instruction is present in continuationPrompt and goalPrompt
 	assert.ok(contText.includes("Goal evolution:"), "continuationPrompt must include Goal evolution instruction");
 	assert.ok(contText.includes("updatedObjective"), "continuationPrompt must reference updatedObjective");
 	assert.ok(contText.includes("stale"), "continuationPrompt must mention stale goals");
-	assert.ok(contText.includes("/goalie-edit"), "continuationPrompt must mention /goalie-edit as an alternative");
+	assert.ok(contText.includes("/goalie-tweak"), "continuationPrompt must mention /goalie-tweak for broader revisions");
+	assert.ok(contText.includes("/goalie-edit"), "continuationPrompt must preserve /goalie-edit as direct editing alternative");
 
 	const goalText = goalPrompt(goal);
 	assert.ok(goalText.includes("Goal evolution:"), "goalPrompt must include Goal evolution instruction");

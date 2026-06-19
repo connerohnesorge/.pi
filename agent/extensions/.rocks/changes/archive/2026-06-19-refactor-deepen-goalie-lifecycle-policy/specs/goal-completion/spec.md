@@ -1,6 +1,4 @@
-# Goal Completion Specification
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Single-Sourced Goal Completion
 
@@ -46,23 +44,3 @@ Completion SHALL be two-phase: the finalizer writes the goal complete WITHOUT ar
 
 - WHEN generic goal persistence runs while a completed-but-not-archived goal is still visible before turn end
 - THEN it preserves the deferred active-file state and does not archive the goal
-
-### Requirement: Removal of Dead Completion-Adjacent Gates
-
-The goalie extension SHALL NOT retain unused gate/policy exports that have no runtime caller.
-The no-op and orphan helpers `validateGoalCreationSlot`, `evaluateDraftingToolGate`,
-`isGoalUnfinished`, `shouldQueueContinuation`, and `GOAL_WORK_TOOL_NAMES` SHALL be removed
-along with their dedicated tests.
-
-#### Scenario: No dead gate remains
-
-- WHEN the codebase is searched for the removed symbols outside their deleted tests
-- THEN no references exist
-- AND the live `GOAL_PROGRESS_TOOL_NAMES` constant and the live policy validators remain intact
-
-#### Scenario: Live policy validators are preserved
-
-- WHEN completion, pause, abort, and resume run
-- THEN their `PolicyValidation` guards (`validateGoalUpdate`, `validateGoalCompletion`,
-  `validatePauseGoal`, `validateGoalAbort`, `validateResumeGoal`) still execute
-- AND user-facing rejection wording is unchanged
