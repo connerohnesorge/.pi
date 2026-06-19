@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import {
 	type AgentConfig,
 	type AgentScope,
@@ -5,6 +6,9 @@ import {
 	type ChainConfig,
 	type ChainStepConfig,
 	buildRuntimeName,
+	defaultInheritProjectContext,
+	defaultInheritSkills,
+	defaultSystemPromptMode,
 	frontmatterNameForConfig,
 	parsePackageName,
 } from "./agents.ts";
@@ -38,8 +42,8 @@ export type TargetPlan<T extends { source: AgentSource; filePath: string }> =
 	| { ok: false; error: string };
 
 export type DeletePlan =
-	| { ok: true; kind: "agent"; target: AgentConfig; lines: string[] }
-	| { ok: true; kind: "chain"; target: ChainConfig; lines: string[] }
+	| { ok: true; kind: "agent"; target: AgentConfig; lines: string[]; warnings: string[] }
+	| { ok: true; kind: "chain"; target: ChainConfig; lines: string[]; warnings: string[] }
 	| { ok: false; error: string };
 
 export function parseCsv(value: string): string[] {
@@ -352,13 +356,12 @@ export function planDelete(params: ManagementParams, catalog: ManagementCatalog)
 		if (!targetPlan.ok) return targetPlan;
 		const target = targetPlan.target;
 		const refs = catalog.chains.filter((c) => c.steps.some((s) => s.agent === target.name)).map((c) => `${c.name} (${c.source})`);
-		const lines = [`Deleted agent '${target.name}' at ${target.filePath}.`];
-		if (refs.length) lines.push(`Warning: chains reference deleted agent '${target.name}': ${refs.join(", ")}.`);
-		return { ok: true, kind: "agent", target, lines };
+		const warnings = refs.length ? [`Warning: chains reference deleted agent '${target.name}': ${refs.join(", ")}.`] : [];
+		return { ok: true, kind: "agent", target, warnings, lines: [`Deleted agent '${target.name}' at ${target.filePath}.`, ...warnings] };
 	}
 	const targetPlan = resolveTargetPlan("chain", params.chainName!, findChainsInCatalog(params.chainName!, catalog, scopeHint ?? "both"), catalog, params.agentScope);
 	if (!targetPlan.ok) return targetPlan;
-	return { ok: true, kind: "chain", target: targetPlan.target, lines: [`Deleted chain '${targetPlan.target.name}' at ${targetPlan.target.filePath}.`] };
+	return { ok: true, kind: "chain", target: targetPlan.target, warnings: [], lines: [`Deleted chain '${targetPlan.target.name}' at ${targetPlan.target.filePath}.`] };
 }
 
 export function buildCreateRuntimeIdentity(cfg: Record<string, unknown>):
@@ -375,4 +378,262 @@ export function buildCreateRuntimeIdentity(cfg: Record<string, unknown>):
 	const scopeRaw = cfg.scope ?? "user";
 	if (scopeRaw !== "user" && scopeRaw !== "project") return { ok: false, error: "config.scope must be 'user' or 'project'." };
 	return { ok: true, name, packageName: parsedPackage.packageName, runtimeName, scope: scopeRaw, isChain: hasKey(cfg, "steps"), description };
+}
+
+export interface ManagementDirectories {
+	cwd: string;
+	userAgentDir: string;
+	projectAgentDir: string;
+	userChainDir: string;
+	projectChainDir: string;
+}
+
+export interface ManagementPlanFacts {
+	catalog: ManagementCatalog;
+	directories: ManagementDirectories;
+	warnings: WarningContext | (() => WarningContext);
+	pathExists(filePath: string): boolean;
+}
+
+function warningFacts(facts: ManagementPlanFacts): WarningContext {
+	return typeof facts.warnings === "function" ? facts.warnings() : facts.warnings;
+}
+
+export type ManagementFileOperation =
+	| { type: "write-agent"; targetDir: string; filePath: string; agent: AgentConfig }
+	| { type: "write-chain"; targetDir: string; filePath: string; chain: ChainConfig }
+	| { type: "rename"; kind: "agent" | "chain"; from: string; to: string }
+	| { type: "delete"; kind: "agent" | "chain"; filePath: string };
+
+export type ManagementPlan =
+	| { ok: false; error: string }
+	| { ok: true; action: "list"; agents: AgentConfig[]; chains: ChainConfig[] }
+	| { ok: true; action: "get"; items: Array<{ kind: "agent"; agent: AgentConfig } | { kind: "chain"; chain: ChainConfig } | { kind: "message"; text: string }>; anyFound: boolean }
+	| { ok: true; action: "create"; entity: "agent"; operation: Extract<ManagementFileOperation, { type: "write-agent" }>; warnings: string[] }
+	| { ok: true; action: "create"; entity: "chain"; operation: Extract<ManagementFileOperation, { type: "write-chain" }>; warnings: string[] }
+	| { ok: true; action: "update"; entity: "agent"; oldName: string; updated: AgentConfig; operations: ManagementFileOperation[]; warnings: string[] }
+	| { ok: true; action: "update"; entity: "chain"; oldName: string; updated: ChainConfig; operations: ManagementFileOperation[]; warnings: string[] }
+	| { ok: true; action: "delete"; entity: "agent"; target: AgentConfig; operations: ManagementFileOperation[]; warnings: string[] }
+	| { ok: true; action: "delete"; entity: "chain"; target: ChainConfig; operations: ManagementFileOperation[]; warnings: string[] };
+
+function scopedList(catalog: ManagementCatalog, scope: AgentScope): { agents: AgentConfig[]; chains: ChainConfig[] } {
+	const scopedAgents = allAgents(catalog)
+		.filter((a) => scope === "both" || a.source === "builtin" || a.source === scope)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	const agents = scopedAgents.filter((a) => !a.disabled);
+	const chains = catalog.chains
+		.filter((c) => scope === "both" || c.source === scope)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	return { agents, chains };
+}
+
+function planList(params: ManagementParams, facts: ManagementPlanFacts): ManagementPlan {
+	const scope = normalizeListScope(params.agentScope) ?? "both";
+	return { ok: true, action: "list", ...scopedList(facts.catalog, scope) };
+}
+
+function planGet(params: ManagementParams, facts: ManagementPlanFacts): ManagementPlan {
+	if (!params.agent && !params.chainName) return { ok: false, error: "Specify 'agent' or 'chainName' for get." };
+	const hasBoth = Boolean(params.agent && params.chainName);
+	const items: Extract<ManagementPlan, { action: "get" }>["items"] = [];
+	let anyFound = false;
+	if (params.agent) {
+		const matches = findAgentsInCatalog(params.agent, facts.catalog, "both");
+		if (!matches.length) {
+			const msg = `Agent '${params.agent}' not found. Available: ${availableNames(facts.catalog, "agent").join(", ") || "none"}.`;
+			if (!hasBoth) return { ok: false, error: msg };
+			items.push({ kind: "message", text: msg });
+		} else {
+			anyFound = true;
+			items.push(...matches.map((agent) => ({ kind: "agent" as const, agent })));
+		}
+	}
+	if (params.chainName) {
+		const matches = findChainsInCatalog(params.chainName, facts.catalog, "both");
+		if (!matches.length) {
+			const msg = `Chain '${params.chainName}' not found. Available: ${availableNames(facts.catalog, "chain").join(", ") || "none"}.`;
+			if (!hasBoth) return { ok: false, error: msg };
+			items.push({ kind: "message", text: msg });
+		} else {
+			anyFound = true;
+			items.push(...matches.map((chain) => ({ kind: "chain" as const, chain })));
+		}
+	}
+	return { ok: true, action: "get", items, anyFound };
+}
+
+function targetDirForCreate(identity: { scope: ManagementScope; isChain: boolean }, dirs: ManagementDirectories): string {
+	if (identity.isChain) return identity.scope === "user" ? dirs.userChainDir : dirs.projectChainDir;
+	return identity.scope === "user" ? dirs.userAgentDir : dirs.projectAgentDir;
+}
+
+function planCreate(params: ManagementParams, facts: ManagementPlanFacts): ManagementPlan {
+	const parsedConfig = configObject(params.config);
+	if (parsedConfig.error) return { ok: false, error: parsedConfig.error };
+	const cfg = parsedConfig.value;
+	if (!cfg) return { ok: false, error: "config required for create." };
+	const identity = buildCreateRuntimeIdentity(cfg);
+	if (!identity.ok) return identity;
+	const { name, packageName, runtimeName, scope, isChain, description } = identity;
+	if (nameExistsInCatalog(facts.catalog, scope, runtimeName)) {
+		return { ok: false, error: `Name '${runtimeName}' already exists in ${scope} scope. Use update instead.` };
+	}
+	const targetDir = targetDirForCreate(identity, facts.directories);
+	const targetPath = path.join(targetDir, isChain ? `${runtimeName}.chain.md` : `${runtimeName}.md`);
+	if (facts.pathExists(targetPath)) {
+		return { ok: false, error: `File already exists at ${targetPath} but is not a valid ${isChain ? "chain" : "agent"} definition. Remove or rename it first.` };
+	}
+	const warnings: string[] = [];
+	if (!isChain && facts.catalog.builtin.some((a) => a.name === runtimeName)) warnings.push(`Note: this shadows the builtin agent '${runtimeName}'.`);
+	if (isChain) {
+		const parsed = parseStepList(cfg.steps);
+		if (parsed.error) return { ok: false, error: parsed.error };
+		const chain: ChainConfig = { name: runtimeName, localName: name, packageName, description, source: scope, filePath: targetPath, steps: parsed.steps! };
+		const missing = unknownChainAgents(facts.catalog, chain.steps);
+		if (missing.length) warnings.push(`Warning: chain steps reference unknown agents: ${missing.join(", ")}.`);
+		warnings.push(...chainStepWarnings(warningFacts(facts), chain.steps));
+		return { ok: true, action: "create", entity: "chain", operation: { type: "write-chain", targetDir, filePath: targetPath, chain }, warnings };
+	}
+	const agent: AgentConfig = {
+		name: runtimeName,
+		localName: name,
+		packageName,
+		description,
+		source: scope,
+		filePath: targetPath,
+		systemPrompt: "",
+		systemPromptMode: defaultSystemPromptMode(name),
+		inheritProjectContext: defaultInheritProjectContext(name),
+		inheritSkills: defaultInheritSkills(),
+	};
+	const applyError = applyAgentConfig(agent, cfg);
+	if (applyError) return { ok: false, error: applyError };
+	const warningsCtx = warningFacts(facts);
+	const mw = modelWarning(warningsCtx, agent.model);
+	if (mw) warnings.push(mw);
+	const fmw = fallbackModelsWarning(warningsCtx, agent.fallbackModels);
+	if (fmw) warnings.push(fmw);
+	const sw = skillsWarning(warningsCtx, agent.skills);
+	if (sw) warnings.push(sw);
+	return { ok: true, action: "create", entity: "agent", operation: { type: "write-agent", targetDir, filePath: targetPath, agent }, warnings };
+}
+
+function renameOperation(
+	kind: "agent" | "chain",
+	currentPath: string,
+	newName: string,
+	scope: ManagementScope,
+	facts: ManagementPlanFacts,
+): { operation?: Extract<ManagementFileOperation, { type: "rename" }>; filePath?: string; error?: string } {
+	if (nameExistsInCatalog(facts.catalog, scope, newName, currentPath)) return { error: `Name '${newName}' already exists in ${scope} scope.` };
+	const ext = kind === "agent" ? ".md" : ".chain.md";
+	const filePath = path.join(path.dirname(currentPath), `${newName}${ext}`);
+	if (facts.pathExists(filePath) && filePath !== currentPath) {
+		return { error: `File already exists at ${filePath} but is not a valid ${kind} definition. Remove or rename it first.` };
+	}
+	return { filePath, operation: { type: "rename", kind, from: currentPath, to: filePath } };
+}
+
+function planUpdate(params: ManagementParams, facts: ManagementPlanFacts): ManagementPlan {
+	if (!params.agent && !params.chainName) return { ok: false, error: "Specify 'agent' or 'chainName' for update." };
+	if (params.agent && params.chainName) return { ok: false, error: "Specify either 'agent' or 'chainName', not both." };
+	const parsedConfig = configObject(params.config);
+	if (parsedConfig.error) return { ok: false, error: parsedConfig.error };
+	const cfg = parsedConfig.value;
+	if (!cfg) return { ok: false, error: "config required for update." };
+	const warnings: string[] = [];
+	if (params.agent) {
+		const scopeHint = asDisambiguationScope(params.agentScope);
+		const targetPlan = resolveTargetPlan("agent", params.agent, findAgentsInCatalog(params.agent, facts.catalog, scopeHint ?? "both"), facts.catalog, params.agentScope);
+		if (!targetPlan.ok) return targetPlan;
+		const target = targetPlan.target;
+		const updated: AgentConfig = { ...target };
+		const oldName = target.name;
+		const identity = resolveUpdatedIdentity(target, cfg);
+		if (identity.error) return { ok: false, error: identity.error };
+		const { newLocalName, newPackageName } = identity;
+		const applyError = applyAgentConfig(updated, cfg);
+		if (applyError) return { ok: false, error: applyError };
+		updated.localName = newLocalName;
+		updated.packageName = newPackageName;
+		updated.name = buildRuntimeName(newLocalName, newPackageName);
+		if (hasKey(cfg, "description")) updated.description = (cfg.description as string).trim();
+		if (hasKey(cfg, "model")) {
+			const mw = modelWarning(warningFacts(facts), updated.model);
+			if (mw) warnings.push(mw);
+		}
+		if (hasKey(cfg, "fallbackModels")) {
+			const fmw = fallbackModelsWarning(warningFacts(facts), updated.fallbackModels);
+			if (fmw) warnings.push(fmw);
+		}
+		if (hasKey(cfg, "skills")) {
+			const sw = skillsWarning(warningFacts(facts), updated.skills);
+			if (sw) warnings.push(sw);
+		}
+		const operations: ManagementFileOperation[] = [];
+		if (updated.name !== oldName) {
+			const renamed = renameOperation("agent", target.filePath, updated.name, target.source, facts);
+			if (renamed.error) return { ok: false, error: renamed.error };
+			operations.push(renamed.operation!);
+			updated.filePath = renamed.filePath!;
+			const refs = facts.catalog.chains.filter((c) => c.steps.some((s) => s.agent === oldName)).map((c) => `${c.name} (${c.source})`);
+			if (refs.length) warnings.push(`Warning: chains still reference '${oldName}': ${refs.join(", ")}.`);
+		}
+		operations.push({ type: "write-agent", targetDir: path.dirname(updated.filePath), filePath: updated.filePath, agent: updated });
+		return { ok: true, action: "update", entity: "agent", oldName, updated, operations, warnings };
+	}
+	const scopeHint = asDisambiguationScope(params.agentScope);
+	const targetPlan = resolveTargetPlan("chain", params.chainName!, findChainsInCatalog(params.chainName!, facts.catalog, scopeHint ?? "both"), facts.catalog, params.agentScope);
+	if (!targetPlan.ok) return targetPlan;
+	const target = targetPlan.target;
+	const updated: ChainConfig = { ...target, steps: [...target.steps] };
+	const oldName = target.name;
+	const identity = resolveUpdatedIdentity(target, cfg);
+	if (identity.error) return { ok: false, error: identity.error };
+	const { newLocalName, newPackageName } = identity;
+	let parsedSteps: ChainStepConfig[] | undefined;
+	if (hasKey(cfg, "steps")) {
+		const parsed = parseStepList(cfg.steps);
+		if (parsed.error) return { ok: false, error: parsed.error };
+		parsedSteps = parsed.steps!;
+	}
+	updated.localName = newLocalName;
+	updated.packageName = newPackageName;
+	updated.name = buildRuntimeName(newLocalName, newPackageName);
+	if (hasKey(cfg, "description")) updated.description = (cfg.description as string).trim();
+	if (parsedSteps) {
+		updated.steps = parsedSteps;
+		const missing = unknownChainAgents(facts.catalog, updated.steps);
+		if (missing.length) warnings.push(`Warning: chain steps reference unknown agents: ${missing.join(", ")}.`);
+		warnings.push(...chainStepWarnings(warningFacts(facts), updated.steps));
+	}
+	const operations: ManagementFileOperation[] = [];
+	if (updated.name !== oldName) {
+		const renamed = renameOperation("chain", target.filePath, updated.name, target.source, facts);
+		if (renamed.error) return { ok: false, error: renamed.error };
+		operations.push(renamed.operation!);
+		updated.filePath = renamed.filePath!;
+	}
+	operations.push({ type: "write-chain", targetDir: path.dirname(updated.filePath), filePath: updated.filePath, chain: updated });
+	return { ok: true, action: "update", entity: "chain", oldName, updated, operations, warnings };
+}
+
+function planDeleteAction(params: ManagementParams, facts: ManagementPlanFacts): ManagementPlan {
+	const deletePlan = planDelete(params, facts.catalog);
+	if (!deletePlan.ok) return deletePlan;
+	if (deletePlan.kind === "agent") {
+		return { ok: true, action: "delete", entity: "agent", target: deletePlan.target, operations: [{ type: "delete", kind: "agent", filePath: deletePlan.target.filePath }], warnings: deletePlan.warnings };
+	}
+	return { ok: true, action: "delete", entity: "chain", target: deletePlan.target, operations: [{ type: "delete", kind: "chain", filePath: deletePlan.target.filePath }], warnings: deletePlan.warnings };
+}
+
+export function planManagementAction(action: string, params: ManagementParams, facts: ManagementPlanFacts): ManagementPlan {
+	switch (action as ManagementAction) {
+		case "list": return planList(params, facts);
+		case "get": return planGet(params, facts);
+		case "create": return planCreate(params, facts);
+		case "update": return planUpdate(params, facts);
+		case "delete": return planDeleteAction(params, facts);
+		default: return { ok: false, error: `Unknown action: ${action}` };
+	}
 }
