@@ -5,14 +5,8 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type AgentConfig,
-	type AgentScope,
 	type ChainConfig,
-	type ChainStepConfig,
-	defaultInheritProjectContext,
-	defaultInheritSkills,
-	defaultSystemPromptMode,
 	discoverAgentsAll,
-	buildRuntimeName,
 	frontmatterNameForConfig,
 } from "./agents.ts";
 import { joinToolList } from "./agent-fields.ts";
@@ -20,30 +14,11 @@ import { serializeAgent } from "./agent-serializer.ts";
 import { serializeChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
 import {
-	allAgents,
-	applyAgentConfig,
-	asDisambiguationScope,
-	availableNames,
-	buildCreateRuntimeIdentity,
-	chainStepWarnings,
-	configObject,
-	fallbackModelsWarning,
-	findAgentsInCatalog,
-	findChainsInCatalog,
-	hasKey,
-	modelWarning,
-	nameExistsInCatalog,
-	normalizeListScope,
-	parseStepList,
-	planDelete,
-	resolveTargetPlan,
-	resolveUpdatedIdentity,
-	skillsWarning,
-	unknownChainAgents,
-	type ManagementAction,
+	planManagementAction,
 	type ManagementCatalog,
+	type ManagementFileOperation,
 	type ManagementParams,
-	type ManagementScope,
+	type ManagementPlan,
 	type WarningContext,
 } from "./agent-management-planner.ts";
 import type { Details } from "../shared/types.ts";
@@ -65,35 +40,6 @@ function discoverCatalog(cwd: string): { discovery: ReturnType<typeof discoverAg
 
 function warningContext(ctx: ManagementContext): WarningContext {
 	return { models: ctx.modelRegistry.getAvailable(), skills: discoverAvailableSkills(ctx.cwd) };
-}
-
-function availableNamesForCwd(cwd: string, kind: "agent" | "chain"): string[] {
-	return availableNames(discoverCatalog(cwd).catalog, kind);
-}
-
-function findAgents(name: string, cwd: string, scope: AgentScope = "both"): AgentConfig[] {
-	return findAgentsInCatalog(name, discoverCatalog(cwd).catalog, scope);
-}
-
-function findChains(name: string, cwd: string, scope: AgentScope = "both"): ChainConfig[] {
-	return findChainsInCatalog(name, discoverCatalog(cwd).catalog, scope);
-}
-
-function renamePath(
-	kind: "agent" | "chain",
-	currentPath: string,
-	newName: string,
-	scope: ManagementScope,
-	catalog: ManagementCatalog,
-): { filePath?: string; error?: string } {
-	if (nameExistsInCatalog(catalog, scope, newName, currentPath)) return { error: `Name '${newName}' already exists in ${scope} scope.` };
-	const ext = kind === "agent" ? ".md" : ".chain.md";
-	const filePath = path.join(path.dirname(currentPath), `${newName}${ext}`);
-	if (fs.existsSync(filePath) && filePath !== currentPath) {
-		return { error: `File already exists at ${filePath} but is not a valid ${kind} definition. Remove or rename it first.` };
-	}
-	fs.renameSync(currentPath, filePath);
-	return { filePath };
 }
 
 function formatAgentDetail(agent: AgentConfig): string {
@@ -147,212 +93,136 @@ function formatChainDetail(chain: ChainConfig): string {
 	return lines.join("\n");
 }
 
-export function handleList(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
-	const scope = normalizeListScope(params.agentScope) ?? "both";
-	const d = discoverAgentsAll(ctx.cwd);
-	const scopedAgents = allAgents(d).filter((a) => scope === "both" || a.source === "builtin" || a.source === scope).sort((a, b) => a.name.localeCompare(b.name));
-	const agents = scopedAgents.filter((a) => !a.disabled);
-	const chains = d.chains.filter((c) => scope === "both" || c.source === scope).sort((a, b) => a.name.localeCompare(b.name));
+function buildPlanFacts(ctx: ManagementContext) {
+	const { discovery, catalog } = discoverCatalog(ctx.cwd);
+	let cachedWarnings: WarningContext | undefined;
+	return {
+		catalog,
+		directories: {
+			cwd: ctx.cwd,
+			userAgentDir: discovery.userDir,
+			projectAgentDir: discovery.projectDir ?? path.join(ctx.cwd, ".pi", "agents"),
+			userChainDir: discovery.userChainDir,
+			projectChainDir: discovery.projectChainDir ?? path.join(ctx.cwd, ".pi", "chains"),
+		},
+		warnings: () => cachedWarnings ??= warningContext(ctx),
+		pathExists: (filePath: string) => fs.existsSync(filePath),
+	};
+}
+
+function applyManagementOperation(operation: ManagementFileOperation): void {
+	switch (operation.type) {
+		case "rename":
+			fs.renameSync(operation.from, operation.to);
+			return;
+		case "write-agent":
+			fs.mkdirSync(operation.targetDir, { recursive: true });
+			fs.writeFileSync(operation.filePath, serializeAgent(operation.agent), "utf-8");
+			return;
+		case "write-chain":
+			fs.mkdirSync(operation.targetDir, { recursive: true });
+			fs.writeFileSync(operation.filePath, serializeChain(operation.chain), "utf-8");
+			return;
+		case "delete":
+			fs.unlinkSync(operation.filePath);
+			return;
+	}
+}
+
+function applyManagementPlan(plan: ManagementPlan): void {
+	if (!plan.ok) return;
+	if ("operations" in plan) {
+		for (const operation of plan.operations) applyManagementOperation(operation);
+		return;
+	}
+	if (plan.action === "create") {
+		applyManagementOperation(plan.operation);
+	}
+}
+
+function formatListPlan(plan: Extract<ManagementPlan, { action: "list" }>): string {
 	const lines = [
 		"Executable agents:",
-		...(agents.length
-			? agents.map((a) => `- ${a.name} (${a.source}${a.defaultContext ? `, context: ${a.defaultContext}` : ""}): ${a.description}`)
+		...(plan.agents.length
+			? plan.agents.map((a) => `- ${a.name} (${a.source}${a.defaultContext ? `, context: ${a.defaultContext}` : ""}): ${a.description}`)
 			: ["- (none)"]),
 		"",
 		"Chains:",
-		...(chains.length ? chains.map((c) => `- ${c.name} (${c.source}): ${c.description}`) : ["- (none)"]),
+		...(plan.chains.length ? plan.chains.map((c) => `- ${c.name} (${c.source}): ${c.description}`) : ["- (none)"]),
 	];
-	return result(lines.join("\n"));
+	return lines.join("\n");
+}
+
+function formatGetPlan(plan: Extract<ManagementPlan, { action: "get" }>): string {
+	return plan.items.map((item) => {
+		if (item.kind === "agent") return formatAgentDetail(item.agent);
+		if (item.kind === "chain") return formatChainDetail(item.chain);
+		return item.text;
+	}).join("\n\n");
+}
+
+function formatCreatePlan(plan: Extract<ManagementPlan, { action: "create" }>): string {
+	const headline = plan.entity === "agent"
+		? `Created agent '${plan.operation.agent.name}' at ${plan.operation.filePath}.`
+		: `Created chain '${plan.operation.chain.name}' at ${plan.operation.filePath}.`;
+	return [headline, ...plan.warnings].join("\n");
+}
+
+function formatUpdatePlan(plan: Extract<ManagementPlan, { action: "update" }>): string {
+	const headline = plan.entity === "agent"
+		? plan.updated.name === plan.oldName
+			? `Updated agent '${plan.updated.name}' at ${plan.updated.filePath}.`
+			: `Updated agent '${plan.oldName}' to '${plan.updated.name}' at ${plan.updated.filePath}.`
+		: plan.updated.name === plan.oldName
+			? `Updated chain '${plan.updated.name}' at ${plan.updated.filePath}.`
+			: `Updated chain '${plan.oldName}' to '${plan.updated.name}' at ${plan.updated.filePath}.`;
+	return [headline, ...plan.warnings].join("\n");
+}
+
+function formatDeletePlan(plan: Extract<ManagementPlan, { action: "delete" }>): string {
+	const headline = plan.entity === "agent"
+		? `Deleted agent '${plan.target.name}' at ${plan.target.filePath}.`
+		: `Deleted chain '${plan.target.name}' at ${plan.target.filePath}.`;
+	return [headline, ...plan.warnings].join("\n");
+}
+
+function formatManagementPlan(plan: ManagementPlan): string {
+	if (!plan.ok) return plan.error;
+	switch (plan.action) {
+		case "list": return formatListPlan(plan);
+		case "get": return formatGetPlan(plan);
+		case "create": return formatCreatePlan(plan);
+		case "update": return formatUpdatePlan(plan);
+		case "delete": return formatDeletePlan(plan);
+	}
+}
+
+function executeManagementPlan(plan: ManagementPlan): AgentToolResult<Details> {
+	if (!plan.ok) return result(plan.error, true);
+	applyManagementPlan(plan);
+	return result(formatManagementPlan(plan), plan.action === "get" ? !plan.anyFound : false);
+}
+
+export function handleList(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
+	return executeManagementPlan(planManagementAction("list", params, buildPlanFacts(ctx)));
 }
 
 function handleGet(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
-	if (!params.agent && !params.chainName) return result("Specify 'agent' or 'chainName' for get.", true);
-	const hasBoth = Boolean(params.agent && params.chainName);
-	const blocks: string[] = [];
-	let anyFound = false;
-	if (params.agent) {
-		const matches = findAgents(params.agent, ctx.cwd, "both");
-		if (!matches.length) {
-			const msg = `Agent '${params.agent}' not found. Available: ${availableNamesForCwd(ctx.cwd, "agent").join(", ") || "none"}.`;
-			if (!hasBoth) return result(msg, true);
-			blocks.push(msg);
-		} else {
-			anyFound = true;
-			blocks.push(...matches.map(formatAgentDetail));
-		}
-	}
-	if (params.chainName) {
-		const matches = findChains(params.chainName, ctx.cwd, "both");
-		if (!matches.length) {
-			const msg = `Chain '${params.chainName}' not found. Available: ${availableNamesForCwd(ctx.cwd, "chain").join(", ") || "none"}.`;
-			if (!hasBoth) return result(msg, true);
-			blocks.push(msg);
-		} else {
-			anyFound = true;
-			blocks.push(...matches.map(formatChainDetail));
-		}
-	}
-	return result(blocks.join("\n\n"), !anyFound);
+	return executeManagementPlan(planManagementAction("get", params, buildPlanFacts(ctx)));
 }
 
 export function handleCreate(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
-	const parsedConfig = configObject(params.config);
-	if (parsedConfig.error) return result(parsedConfig.error, true);
-	const cfg = parsedConfig.value;
-	if (!cfg) return result("config required for create.", true);
-	const identity = buildCreateRuntimeIdentity(cfg);
-	if (!identity.ok) return result(identity.error, true);
-	const { name, packageName, runtimeName, scope, isChain, description } = identity;
-	const { discovery: d, catalog } = discoverCatalog(ctx.cwd);
-	const targetDir = isChain
-		? scope === "user" ? d.userChainDir : d.projectChainDir ?? path.join(ctx.cwd, ".pi", "chains")
-		: scope === "user" ? d.userDir : d.projectDir ?? path.join(ctx.cwd, ".pi", "agents");
-	fs.mkdirSync(targetDir, { recursive: true });
-	if (nameExistsInCatalog(catalog, scope, runtimeName)) return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
-	const targetPath = path.join(targetDir, isChain ? `${runtimeName}.chain.md` : `${runtimeName}.md`);
-	if (fs.existsSync(targetPath)) return result(`File already exists at ${targetPath} but is not a valid ${isChain ? "chain" : "agent"} definition. Remove or rename it first.`, true);
-	const warnings: string[] = [];
-	if (!isChain && d.builtin.some((a) => a.name === runtimeName)) warnings.push(`Note: this shadows the builtin agent '${runtimeName}'.`);
-	if (isChain) {
-		const parsed = parseStepList(cfg.steps);
-		if (parsed.error) return result(parsed.error, true);
-		const chain: ChainConfig = { name: runtimeName, localName: name, packageName, description, source: scope, filePath: targetPath, steps: parsed.steps! };
-		fs.writeFileSync(targetPath, serializeChain(chain), "utf-8");
-		const missing = unknownChainAgents(catalog, chain.steps);
-		if (missing.length) warnings.push(`Warning: chain steps reference unknown agents: ${missing.join(", ")}.`);
-		warnings.push(...chainStepWarnings(warningContext(ctx), chain.steps));
-		return result([`Created chain '${runtimeName}' at ${targetPath}.`, ...warnings].join("\n"));
-	}
-	const agent: AgentConfig = {
-		name: runtimeName,
-		localName: name,
-		packageName,
-		description,
-		source: scope,
-		filePath: targetPath,
-		systemPrompt: "",
-		systemPromptMode: defaultSystemPromptMode(name),
-		inheritProjectContext: defaultInheritProjectContext(name),
-		inheritSkills: defaultInheritSkills(),
-	};
-	const applyError = applyAgentConfig(agent, cfg);
-	if (applyError) return result(applyError, true);
-	const warningsCtx = warningContext(ctx);
-	const mw = modelWarning(warningsCtx, agent.model);
-	if (mw) warnings.push(mw);
-	const fmw = fallbackModelsWarning(warningsCtx, agent.fallbackModels);
-	if (fmw) warnings.push(fmw);
-	const sw = skillsWarning(warningsCtx, agent.skills);
-	if (sw) warnings.push(sw);
-	fs.writeFileSync(targetPath, serializeAgent(agent), "utf-8");
-	return result([`Created agent '${runtimeName}' at ${targetPath}.`, ...warnings].join("\n"));
+	return executeManagementPlan(planManagementAction("create", params, buildPlanFacts(ctx)));
 }
 
 export function handleUpdate(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
-	if (!params.agent && !params.chainName) return result("Specify 'agent' or 'chainName' for update.", true);
-	if (params.agent && params.chainName) return result("Specify either 'agent' or 'chainName', not both.", true);
-	const parsedConfig = configObject(params.config);
-	if (parsedConfig.error) return result(parsedConfig.error, true);
-	const cfg = parsedConfig.value;
-	if (!cfg) return result("config required for update.", true);
-	const warnings: string[] = [];
-	const { catalog } = discoverCatalog(ctx.cwd);
-	let cachedWarningsCtx: WarningContext | undefined;
-	const getWarningsCtx = (): WarningContext => cachedWarningsCtx ??= warningContext(ctx);
-	if (params.agent) {
-		const scopeHint = asDisambiguationScope(params.agentScope);
-		const targetPlan = resolveTargetPlan("agent", params.agent, findAgentsInCatalog(params.agent, catalog, scopeHint ?? "both"), catalog, params.agentScope);
-		if (!targetPlan.ok) return result(targetPlan.error, true);
-		const target = targetPlan.target;
-		const updated: AgentConfig = { ...target };
-		const oldName = target.name;
-		const identity = resolveUpdatedIdentity(target, cfg);
-		if (identity.error) return result(identity.error, true);
-		const { newLocalName, newPackageName } = identity;
-		const applyError = applyAgentConfig(updated, cfg);
-		if (applyError) return result(applyError, true);
-		updated.localName = newLocalName;
-		updated.packageName = newPackageName;
-		updated.name = buildRuntimeName(newLocalName, newPackageName);
-		if (hasKey(cfg, "description")) updated.description = (cfg.description as string).trim();
-		if (hasKey(cfg, "model")) {
-			const mw = modelWarning(getWarningsCtx(), updated.model);
-			if (mw) warnings.push(mw);
-		}
-		if (hasKey(cfg, "fallbackModels")) {
-			const fmw = fallbackModelsWarning(getWarningsCtx(), updated.fallbackModels);
-			if (fmw) warnings.push(fmw);
-		}
-		if (hasKey(cfg, "skills")) {
-			const sw = skillsWarning(getWarningsCtx(), updated.skills);
-			if (sw) warnings.push(sw);
-		}
-		if (updated.name !== oldName) {
-			const renamed = renamePath("agent", target.filePath, updated.name, target.source, catalog);
-			if (renamed.error) return result(renamed.error, true);
-			updated.filePath = renamed.filePath!;
-		}
-		fs.writeFileSync(updated.filePath, serializeAgent(updated), "utf-8");
-		if (updated.name !== oldName) {
-			const refs = discoverAgentsAll(ctx.cwd).chains.filter((c) => c.steps.some((s) => s.agent === oldName)).map((c) => `${c.name} (${c.source})`);
-			if (refs.length) warnings.push(`Warning: chains still reference '${oldName}': ${refs.join(", ")}.`);
-		}
-		const headline = updated.name === oldName
-			? `Updated agent '${updated.name}' at ${updated.filePath}.`
-			: `Updated agent '${oldName}' to '${updated.name}' at ${updated.filePath}.`;
-		return result([headline, ...warnings].join("\n"));
-	}
-	const scopeHint = asDisambiguationScope(params.agentScope);
-	const targetPlan = resolveTargetPlan("chain", params.chainName!, findChainsInCatalog(params.chainName!, catalog, scopeHint ?? "both"), catalog, params.agentScope);
-	if (!targetPlan.ok) return result(targetPlan.error, true);
-	const target = targetPlan.target;
-	const updated: ChainConfig = { ...target, steps: [...target.steps] };
-	const oldName = target.name;
-	const identity = resolveUpdatedIdentity(target, cfg);
-	if (identity.error) return result(identity.error, true);
-	const { newLocalName, newPackageName } = identity;
-	let parsedSteps: ChainStepConfig[] | undefined;
-	if (hasKey(cfg, "steps")) {
-		const parsed = parseStepList(cfg.steps);
-		if (parsed.error) return result(parsed.error, true);
-		parsedSteps = parsed.steps!;
-	}
-	updated.localName = newLocalName;
-	updated.packageName = newPackageName;
-	updated.name = buildRuntimeName(newLocalName, newPackageName);
-	if (hasKey(cfg, "description")) updated.description = (cfg.description as string).trim();
-	if (parsedSteps) {
-		updated.steps = parsedSteps;
-		const missing = unknownChainAgents(catalog, updated.steps);
-		if (missing.length) warnings.push(`Warning: chain steps reference unknown agents: ${missing.join(", ")}.`);
-		warnings.push(...chainStepWarnings(getWarningsCtx(), updated.steps));
-	}
-	if (updated.name !== oldName) {
-		const renamed = renamePath("chain", target.filePath, updated.name, target.source, catalog);
-		if (renamed.error) return result(renamed.error, true);
-		updated.filePath = renamed.filePath!;
-	}
-	fs.writeFileSync(updated.filePath, serializeChain(updated), "utf-8");
-	const headline = updated.name === oldName
-		? `Updated chain '${updated.name}' at ${updated.filePath}.`
-		: `Updated chain '${oldName}' to '${updated.name}' at ${updated.filePath}.`;
-	return result([headline, ...warnings].join("\n"));
+	return executeManagementPlan(planManagementAction("update", params, buildPlanFacts(ctx)));
 }
 
 function handleDelete(params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
-	const plan = planDelete(params, discoverCatalog(ctx.cwd).catalog);
-	if (!plan.ok) return result(plan.error, true);
-	fs.unlinkSync(plan.target.filePath);
-	return result(plan.lines.join("\n"));
+	return executeManagementPlan(planManagementAction("delete", params, buildPlanFacts(ctx)));
 }
 
 export function handleManagementAction(action: string, params: ManagementParams, ctx: ManagementContext): AgentToolResult<Details> {
-	switch (action as ManagementAction) {
-		case "list": return handleList(params, ctx);
-		case "get": return handleGet(params, ctx);
-		case "create": return handleCreate(params, ctx);
-		case "update": return handleUpdate(params, ctx);
-		case "delete": return handleDelete(params, ctx);
-		default: return result(`Unknown action: ${action}`, true);
-	}
+	return executeManagementPlan(planManagementAction(action, params, buildPlanFacts(ctx)));
 }

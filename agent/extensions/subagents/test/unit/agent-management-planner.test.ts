@@ -11,9 +11,11 @@ import {
 	nameExistsInCatalog,
 	parseStepList,
 	planDelete,
+	planManagementAction,
 	resolveTargetPlan,
 	resolveUpdatedIdentity,
 	type ManagementCatalog,
+	type ManagementPlanFacts,
 } from "../../src/agents/agent-management-planner.ts";
 
 function agent(overrides: Partial<AgentConfig> & Pick<AgentConfig, "name" | "source" | "filePath">): AgentConfig {
@@ -41,6 +43,25 @@ function catalog(overrides: Partial<ManagementCatalog> = {}): ManagementCatalog 
 		user: [agent({ name: "worker", source: "user", filePath: "user/worker.md" })],
 		project: [agent({ name: "worker", source: "project", filePath: "project/worker.md" })],
 		chains: [chain({ name: "flow", source: "project", filePath: "project/flow.chain.md", steps: [{ agent: "worker", task: "go" }] })],
+		...overrides,
+	};
+}
+
+function facts(overrides: Partial<ManagementPlanFacts> = {}): ManagementPlanFacts {
+	return {
+		catalog: catalog(),
+		directories: {
+			cwd: "/repo",
+			userAgentDir: "/home/.pi/agents",
+			projectAgentDir: "/repo/.pi/agents",
+			userChainDir: "/home/.pi/chains",
+			projectChainDir: "/repo/.pi/chains",
+		},
+		warnings: {
+			models: [{ provider: "known", id: "model" }],
+			skills: [{ name: "known" }],
+		},
+		pathExists: () => false,
 		...overrides,
 	};
 }
@@ -126,5 +147,65 @@ describe("agent management planner", () => {
 			newPackageName: undefined,
 		});
 		assert.match(resolveUpdatedIdentity(target, { description: "" }).error ?? "", /description must be a non-empty string/);
+	});
+
+	it("plans create operations as typed writes without filesystem mutation", () => {
+		const plan = planManagementAction("create", {
+			config: { name: "Scout", package: "Code Analysis", description: "Fast recon", scope: "project", model: "missing/model", skills: "missing-skill" },
+		}, facts());
+
+		assert.equal(plan.ok, true);
+		assert.equal(plan.ok && plan.action, "create");
+		if (plan.ok && plan.action === "create" && plan.entity === "agent") {
+			assert.equal(plan.operation.type, "write-agent");
+			assert.equal(plan.operation.targetDir, "/repo/.pi/agents");
+			assert.equal(plan.operation.filePath, "/repo/.pi/agents/code-analysis.scout.md");
+			assert.equal(plan.operation.agent.name, "code-analysis.scout");
+			assert.deepEqual(plan.warnings, [
+				"Warning: model 'missing/model' is not in the current model registry.",
+				"Warning: skills not found: missing-skill.",
+			]);
+		} else {
+			assert.fail("expected create agent plan");
+		}
+	});
+
+	it("plans update rename plus write operations before adapters touch files", () => {
+		const plan = planManagementAction("update", {
+			agent: "worker",
+			agentScope: "project",
+			config: { name: "Builder", description: "Build things" },
+		}, facts());
+
+		assert.equal(plan.ok, true);
+		assert.equal(plan.ok && plan.action, "update");
+		if (plan.ok && plan.action === "update" && plan.entity === "agent") {
+			assert.equal(plan.oldName, "worker");
+			assert.equal(plan.updated.name, "builder");
+			assert.deepEqual(plan.operations.map((op) => op.type), ["rename", "write-agent"]);
+			assert.deepEqual(plan.operations[0], { type: "rename", kind: "agent", from: "project/worker.md", to: "project/builder.md" });
+			assert.deepEqual(plan.warnings, ["Warning: chains still reference 'worker': flow (project)."]);
+		} else {
+			assert.fail("expected update agent plan");
+		}
+	});
+
+	it("plans list and get as typed data for the formatting adapter", () => {
+		let warningCalls = 0;
+		const list = planManagementAction("list", {}, facts({ warnings: () => { warningCalls++; return { models: [], skills: [] }; } }));
+		assert.equal(list.ok, true);
+		if (list.ok && list.action === "list") {
+			assert.deepEqual(list.agents.map((a) => a.name), ["reviewer", "worker", "worker"]);
+			assert.deepEqual(list.chains.map((c) => c.name), ["flow"]);
+		}
+		assert.equal(warningCalls, 0);
+
+		const get = planManagementAction("get", { agent: "worker", chainName: "missing" }, facts({ warnings: () => { warningCalls++; return { models: [], skills: [] }; } }));
+		assert.equal(get.ok, true);
+		if (get.ok && get.action === "get") {
+			assert.equal(get.anyFound, true);
+			assert.deepEqual(get.items.map((item) => item.kind), ["agent", "agent", "message"]);
+		}
+		assert.equal(warningCalls, 0);
 	});
 });

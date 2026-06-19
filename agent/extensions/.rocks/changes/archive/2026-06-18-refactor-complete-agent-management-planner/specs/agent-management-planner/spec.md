@@ -1,6 +1,4 @@
-# Agent Management Planner Specification
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Pure Agent Management Planner
 
