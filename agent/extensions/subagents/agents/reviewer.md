@@ -1,6 +1,7 @@
 ---
 name: reviewer
 description: Versatile review specialist for code diffs, plans, proposed solutions, codebase health, and PR/issue validation
+model: openai-codex/gpt-5.5
 tools: read, grep, find, ls, bash, edit, write, intercom
 thinking: high
 systemPromptMode: replace

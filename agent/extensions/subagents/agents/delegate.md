@@ -1,6 +1,7 @@
 ---
 name: delegate
-description: Lightweight subagent that inherits the parent model with no default reads
+description: Lightweight subagent that uses GPT-5.5 with no default reads
+model: openai-codex/gpt-5.5
 systemPromptMode: append
 inheritProjectContext: true
 tools: read, grep, find, ls, bash, edit, write, contact_supervisor

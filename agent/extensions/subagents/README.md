@@ -117,24 +117,23 @@ A simple rule of thumb: use `scout` before you understand the code, `researcher`
 
 ## Changing a builtin agent's model
 
-Builtin agents inherit your current Pi default model by default. This keeps new installs from depending on a provider you may not have configured. If you want a role to use a specific model, set an override instead of copying the bundled agent file.
+Builtin agents use `openai-codex/gpt-5.5` by default. If you want a role to use a different model, set an override instead of copying the bundled agent file.
 
 For one run, put the override in the command:
 
 ```text
-/run reviewer[model=anthropic/claude-sonnet-4:high] "Review this diff"
+/run reviewer[model=openai-codex/gpt-5.5:high] "Review this diff"
 ```
 
-For a persistent override, edit settings. This example pins the reviewer everywhere, adds a backup model for provider failures, and keeps the other builtins on your normal default model:
+For a persistent override, edit settings. This example pins the reviewer everywhere:
 
 ```json
 {
   "subagents": {
     "agentOverrides": {
       "reviewer": {
-        "model": "anthropic/claude-sonnet-4",
-        "thinking": "high",
-        "fallbackModels": ["openai/gpt-5-mini"]
+        "model": "openai-codex/gpt-5.5",
+        "thinking": "high"
       }
     }
   }
@@ -286,8 +285,8 @@ Append `[key=value,...]` to an agent name to override defaults for that step:
 
 ```text
 /chain scout[output=context.md] "scan code" -> planner[reads=context.md] "analyze auth"
-/run scout[model=anthropic/claude-sonnet-4] summarize this codebase
-/parallel reviewer[skills=code-review+security] "review backend" -> reviewer[model=openai/gpt-5-mini] "review frontend"
+/run scout[model=openai-codex/gpt-5.5] summarize this codebase
+/parallel reviewer[skills=code-review+security] "review backend" -> reviewer[model=openai-codex/gpt-5.5] "review frontend"
 ```
 
 | Key | Example | Description |
@@ -295,7 +294,7 @@ Append `[key=value,...]` to an agent name to override defaults for that step:
 | `output` | `output=context.md` | Write results to a file. For `/chain` and `/parallel`, relative paths live under the chain directory; for `/run`, relative paths resolve against cwd. |
 | `outputMode` | `outputMode=file-only` | Return only a concise file reference for saved output instead of the full saved content. Requires `output`; default is `inline`. |
 | `reads` | `reads=a.md+b.md` | Read files before executing. `+` separates multiple paths. |
-| `model` | `model=anthropic/claude-sonnet-4` | Override model for this step. |
+| `model` | `model=openai-codex/gpt-5.5` | Override model for this step. |
 | `skills` | `skills=planning+review` | Override injected skills. `+` separates multiple skills. |
 | `progress` | `progress` | Enable progress tracking. |
 
@@ -363,7 +362,7 @@ Agent locations, lowest to highest priority:
 
 Project discovery also reads legacy `.agents/**/*.md` files. Nested subdirectories are discovered recursively. `.chain.md` files do not define agents. If both `.agents/` and `.pi/agents/` define the same parsed runtime agent name, `.pi/agents/` wins. Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 
-Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Pi default model unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
+Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They use `openai-codex/gpt-5.5` unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
 
 The `researcher` builtin uses `web_search`, `fetch_content`, and `get_search_content`; those require [pi-web-access](https://github.com/nicobailon/pi-web-access):
 
@@ -423,8 +422,7 @@ package: code-analysis
 description: Fast codebase recon
 tools: read, grep, find, ls, bash, mcp:chrome-devtools
 extensions:
-model: claude-haiku-4-5
-fallbackModels: openai/gpt-5-mini, anthropic/claude-sonnet-4
+model: openai-codex/gpt-5.5
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: false
@@ -516,7 +514,7 @@ Analyze the codebase for {task}
 
 ## planner
 reads: context.md
-model: anthropic/claude-sonnet-4-5:high
+model: openai-codex/gpt-5.5:high
 progress: true
 
 Create an implementation plan based on {previous}
@@ -669,8 +667,7 @@ Agent definitions are not loaded into context by default. Management actions let
   systemPromptMode: "replace",
   inheritProjectContext: false,
   inheritSkills: false,
-  model: "anthropic/claude-sonnet-4",
-  fallbackModels: ["openai/gpt-5-mini", "anthropic/claude-haiku-4-5"],
+  model: "openai-codex/gpt-5.5",
   tools: "read, bash, mcp:github/search_repositories",
   extensions: "",
   skills: "parallel-scout",
@@ -690,7 +687,7 @@ Agent definitions are not loaded into context by default. Management actions let
   ]
 }}
 
-{ action: "update", agent: "code-analysis.scout", config: { model: "openai/gpt-4o" } }
+{ action: "update", agent: "code-analysis.scout", config: { model: "openai-codex/gpt-5.5" } }
 { action: "update", chainName: "review-pipeline", config: { steps: [...] } }
 { action: "delete", agent: "scout" }
 { action: "delete", chainName: "review-pipeline" }
@@ -967,14 +964,14 @@ Example:
 ```md
 ---
 description: Take a screenshot
-model: claude-sonnet-4-20250514
+model: openai-codex/gpt-5.5
 subagent: browser-screenshoter
 cwd: /tmp/screenshots
 ---
 Use url in the prompt to take screenshot: $@
 ```
 
-Then `/take-screenshot https://example.com` switches to Sonnet, delegates to `browser-screenshoter` with `/tmp/screenshots` as cwd, and restores your model when done. Runtime overrides like `--cwd=<path>` and `--subagent=<name>` work too.
+Then `/take-screenshot https://example.com` switches to GPT-5.5, delegates to `browser-screenshoter` with `/tmp/screenshots` as cwd, and restores your model when done. Runtime overrides like `--cwd=<path>` and `--subagent=<name>` work too.
 
 For more reusable workflows on top of subagents, including `/chain-prompts` and compare-style prompts such as `/best-of-n`, install `pi-prompt-template-model` separately and copy the examples you want into `~/.pi/agent/prompts/`.
 

@@ -148,28 +148,28 @@ and user/project agents override builtins with the same name.
 
 | Agent | Purpose | Model | Typical output / role |
 |-------|---------|-------|------------------------|
-| `scout` | Fast codebase recon | inherits default | Writes `context.md` handoff material |
-| `planner` | Creates implementation plans | inherits default | Writes `plan.md` |
-| `worker` | Implementation and approved oracle handoffs | inherits default | Single-writer implementation with decision escalation |
-| `reviewer` | Review-and-fix specialist | inherits default | Can edit/fix reviewed code |
-| `context-builder` | Requirements/codebase handoff builder | inherits default | Writes structured context files |
-| `researcher` | Web research brief generator | inherits default | Writes `research.md` |
-| `delegate` | Lightweight generic delegate | inherits default | No fixed output; generic delegated work |
-| `oracle` | Decision-consistency advisory review | inherits default | Advisory review, intercom coordination |
+| `scout` | Fast codebase recon | `openai-codex/gpt-5.5` | Writes `context.md` handoff material |
+| `planner` | Creates implementation plans | `openai-codex/gpt-5.5` | Writes `plan.md` |
+| `worker` | Implementation and approved oracle handoffs | `openai-codex/gpt-5.5` | Single-writer implementation with decision escalation |
+| `reviewer` | Review-and-fix specialist | `openai-codex/gpt-5.5` | Can edit/fix reviewed code |
+| `context-builder` | Requirements/codebase handoff builder | `openai-codex/gpt-5.5` | Writes structured context files |
+| `researcher` | Web research brief generator | `openai-codex/gpt-5.5` | Writes `research.md` |
+| `delegate` | Lightweight generic delegate | `openai-codex/gpt-5.5` | No fixed output; generic delegated work |
+| `oracle` | Decision-consistency advisory review | `openai-codex/gpt-5.5` | Advisory review, intercom coordination |
 
-Builtin agents inherit the current Pi default model unless a run, user setting, or project setting overrides `model`. Override builtin defaults before copying full agent files when a small tweak is enough.
+Builtin agents use `openai-codex/gpt-5.5` unless a run, user setting, or project setting overrides `model`. Override builtin defaults before copying full agent files when a small tweak is enough.
 
 For one run, use inline config:
 
 ```text
-/run reviewer[model=anthropic/claude-sonnet-4] "Review this diff"
+/run reviewer[model=openai-codex/gpt-5.5] "Review this diff"
 ```
 
 For persistent tweaks, edit `subagents.agentOverrides` in user or project settings. User overrides apply everywhere. Project overrides apply only in that repo and win over user overrides.
 
 ## Prompting role subagents
 
-Builtin role agents inherit the current Pi default model unless you override them. When launching them, write the task prompt as a compact contract, not a long procedural script. Define the destination and let the role choose the efficient path.
+Builtin role agents use `openai-codex/gpt-5.5` unless you override them. When launching them, write the task prompt as a compact contract, not a long procedural script. Define the destination and let the role choose the efficient path.
 
 A strong subagent prompt usually includes:
 - **Goal**: the concrete outcome the child should produce.
@@ -195,9 +195,8 @@ Direct settings example:
   "subagents": {
     "agentOverrides": {
       "reviewer": {
-        "model": "anthropic/claude-sonnet-4",
-        "thinking": "high",
-        "fallbackModels": ["openai/gpt-5-mini"]
+        "model": "openai-codex/gpt-5.5",
+        "thinking": "high"
       }
     }
   }
@@ -270,7 +269,7 @@ subagent({
   tasks: [
     { agent: "scout", task: "Map auth", output: "auth-context.md", progress: true },
     { agent: "researcher", task: "Research OAuth best practices", output: "oauth-research.md" },
-    { agent: "reviewer", task: "Review auth tests", model: "anthropic/claude-sonnet-4" }
+    { agent: "reviewer", task: "Review auth tests", model: "openai-codex/gpt-5.5" }
   ],
   concurrency: 3
 })
@@ -520,7 +519,7 @@ subagent({
     description: "Project-specific implementation helper",
     systemPrompt: "Your system prompt here.",
     systemPromptMode: "replace",
-    model: "openai-codex/gpt-5.4",
+    model: "openai-codex/gpt-5.5",
     tools: "read,grep,find,ls,bash"
   }
 })
@@ -558,7 +557,7 @@ A minimal agent file looks like this:
 name: my-agent
 package: code-analysis
 description: What this agent does
-model: openai-codex/gpt-5.4
+model: openai-codex/gpt-5.5
 thinking: high
 tools: read, grep, find, ls, bash
 systemPromptMode: replace
@@ -666,7 +665,7 @@ subagent({
 
 When you are the orchestrating agent for a new feature or non-trivial change, factor in the packaged prompt workflows without literally invoking slash commands. Use the same patterns through tools and subagents.
 
-Keep builtin agent defaults unless the user explicitly asks for a different model, thinking level, skills, output behavior, context mode, or other override. Do not add overrides just because you are orchestrating; the defaults encode the intended role behavior. In particular, packaged `planner`, `worker`, and `oracle` default to forked context.
+Keep builtin agent defaults unless the user explicitly asks for a different model, thinking level, skills, output behavior, context mode, or other override. Do not add overrides just because you are orchestrating; the defaults encode GPT-5.5 and the intended role behavior. In particular, packaged `planner`, `worker`, and `oracle` default to forked context.
 
 When the user approves launching a subagent to carry out a plan or workflow, treat that as approval to generate a proper role-specific meta prompt for that subagent. Include the approved plan path or summary, clarified requirements, non-goals, relevant context, role boundaries, files or areas to inspect, acceptance criteria, expected output, and validation expectations. Do not pass vague instructions like “implement the plan fully” or “review this” by themselves.
 

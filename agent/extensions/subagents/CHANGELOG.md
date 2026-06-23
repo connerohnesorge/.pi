@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Pin bundled builtin agents to `openai-codex/gpt-5.5` by default.
+
 ## [0.25.0] - 2026-05-21
 
 ### Added

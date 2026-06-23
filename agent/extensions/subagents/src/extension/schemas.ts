@@ -44,7 +44,7 @@ const TaskItem = Type.Object({
 	outputMode: Type.Optional(OutputModeOverride),
 	reads: Type.Optional(ReadsOverride),
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for this task" })),
-	model: Type.Optional(Type.String({ description: "Override model for this task (e.g. 'google/gemini-3-pro')" })),
+	model: Type.Optional(Type.String({ description: "Override model for this task (e.g. 'openai-codex/gpt-5.5')" })),
 	skill: Type.Optional(SkillOverride),
 });
 
@@ -132,7 +132,7 @@ export const SubagentExecutionParams = Type.Object({
 	})),
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
-	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
+	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'openai-codex/gpt-5.5')" })),
 });
 
 export const SubagentManagementParams = Type.Object({
@@ -235,5 +235,5 @@ export const SubagentParams = Type.Object({
 	})),
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
-	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
+	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'openai-codex/gpt-5.5')" })),
 });

@@ -39,13 +39,15 @@ describe("builtin agent overrides", () => {
 		fs.rmSync(tempProject, { recursive: true, force: true });
 	});
 
-	it("bundled builtin agents inherit the default model", () => {
+	it("bundled builtin agents pin GPT-5.5", () => {
 		const builtins = discoverAgentsAll(tempProject).builtin;
 		assert.ok(builtins.length > 0);
 		assert.deepEqual(
-			builtins
-				.filter((agent) => agent.model !== undefined || agent.fallbackModels !== undefined)
-				.map((agent) => agent.name),
+			builtins.filter((agent) => agent.model !== "openai-codex/gpt-5.5").map((agent) => agent.name),
+			[],
+		);
+		assert.deepEqual(
+			builtins.filter((agent) => agent.fallbackModels !== undefined).map((agent) => agent.name),
 			[],
 		);
 	});
