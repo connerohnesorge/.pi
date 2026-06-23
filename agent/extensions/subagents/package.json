@@ -43,9 +43,8 @@
 		"test:unit": "node --experimental-strip-types --test test/unit/*.test.ts",
 		"test:integration": "node --experimental-transform-types --import ./test/support/register-loader.mjs --test test/integration/*.test.ts",
 		"test:all": "npm run test:unit && npm run test:integration",
-		"build": "node -e \"console.log('source-first pi extension; no build step')\"",
 		"pack:dry": "npm pack --dry-run",
-		"check": "npm run build && npm run test && npm run pack:dry"
+		"check": "npm run test && npm run pack:dry"
 	},
 	"pi": {
 		"extensions": [

@@ -1,7 +1,6 @@
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { SettingItem } from "@earendil-works/pi-tui";
+import { getSettingsListTheme, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { SettingsList, truncateToWidth, visibleWidth, type SettingItem } from "@earendil-works/pi-tui";
 import { toOnOff } from "./boolean-format.js";
-import { ZellijModal, ZellijSettingsModal } from "./zellij-modal.js";
 import {
 	DEFAULT_RTK_INTEGRATION_CONFIG,
 	type RtkIntegrationConfig,
@@ -11,6 +10,112 @@ import {
 
 interface SettingValueSyncTarget {
 	updateValue(id: string, value: string): void;
+}
+
+interface SettingsTab {
+	label: string;
+	settings: SettingItem[];
+}
+
+interface RtkSettingsOverlayOptions {
+	title: string;
+	tabs: SettingsTab[];
+	activeTabIndex: number;
+	onChange: (id: string, value: string) => void;
+	onClose: () => void;
+	helpText: string;
+	enableSearch: boolean;
+}
+
+export class RtkSettingsOverlay implements SettingValueSyncTarget {
+	private readonly tabLists: SettingsList[];
+	private activeTabIndex: number;
+
+	constructor(
+		private readonly options: RtkSettingsOverlayOptions,
+		private readonly theme: Theme,
+	) {
+		this.tabLists = options.tabs.map((tab) => this.createSettingsList(tab.settings));
+		this.activeTabIndex = this.normalizeActiveTabIndex(options.activeTabIndex);
+	}
+
+	updateValue(id: string, value: string): void {
+		for (const list of this.tabLists) {
+			list.updateValue(id, value);
+		}
+	}
+
+	invalidate(): void {
+		for (const list of this.tabLists) {
+			list.invalidate();
+		}
+	}
+
+	handleInput(data: string): void {
+		if (data === "\x1b[D") {
+			this.switchTab(-1);
+			return;
+		}
+		if (data === "\x1b[C") {
+			this.switchTab(1);
+			return;
+		}
+
+		this.activeSettingsList().handleInput(data);
+	}
+
+	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
+		const lines = [
+			truncateToWidth(this.theme.fg("accent", this.theme.bold(this.options.title)), safeWidth),
+			"",
+			this.renderTabBar(safeWidth),
+			"",
+			...this.activeSettingsList().render(safeWidth),
+			this.theme.fg("border", "─".repeat(safeWidth)),
+			truncateToWidth(this.theme.fg("dim", this.options.helpText), safeWidth),
+		];
+		return lines.map((line) => truncateToWidth(line, safeWidth, ""));
+	}
+
+	private createSettingsList(settings: SettingItem[]): SettingsList {
+		return new SettingsList(
+			settings,
+			Math.min(Math.max(settings.length + 2, 6), 18),
+			getSettingsListTheme(),
+			this.options.onChange,
+			this.options.onClose,
+			{ enableSearch: this.options.enableSearch },
+		);
+	}
+
+	private activeSettingsList(): SettingsList {
+		return this.tabLists[this.activeTabIndex] ?? this.tabLists[0]!;
+	}
+
+	private switchTab(direction: number): void {
+		this.activeTabIndex = this.normalizeActiveTabIndex(this.activeTabIndex + direction);
+	}
+
+	private normalizeActiveTabIndex(index: number): number {
+		const count = this.tabLists.length;
+		if (count === 0) return 0;
+		const normalized = Number.isFinite(index) ? Math.floor(index) : 0;
+		return ((normalized % count) + count) % count;
+	}
+
+	private renderTabBar(width: number): string {
+		const parts = this.options.tabs.map((tab, index) => {
+			const text = index === this.activeTabIndex ? `[ ${tab.label} ]` : `  ${tab.label}  `;
+			return this.theme.fg(index === this.activeTabIndex ? "accent" : "muted", text);
+		});
+		let rendered = "";
+		for (const part of parts) {
+			if (visibleWidth(rendered + part) > width) break;
+			rendered += part;
+		}
+		return truncateToWidth(rendered, width, "");
+	}
 }
 
 const ON_OFF = ["on", "off"];
@@ -235,11 +340,11 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: RtkIn
 	await ctx.ui.custom<void>(
 		(tui, theme, _keybindings, done) => {
 			let current = controller.getConfig();
-			let settingsModal: ZellijSettingsModal | null = null;
+			let settingsOverlay: RtkSettingsOverlay | null = null;
 			const allSettings = buildSettingItems(current);
 			const tabs = buildTabbedSettingGroups(allSettings);
 
-			settingsModal = new ZellijSettingsModal(
+			settingsOverlay = new RtkSettingsOverlay(
 				{
 					title: "Pi RTK Optimizer",
 					tabs,
@@ -248,8 +353,8 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: RtkIn
 						current = applySetting(current, id, newValue);
 						controller.setConfig(current, ctx);
 						current = controller.getConfig();
-						if (settingsModal) {
-							syncSettingValues(settingsModal, current);
+						if (settingsOverlay) {
+							syncSettingValues(settingsOverlay, current);
 						}
 					},
 					onClose: () => done(),
@@ -259,35 +364,15 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: RtkIn
 				theme,
 			);
 
-			const modal = new ZellijModal(
-				settingsModal,
-				{
-					borderStyle: "rounded",
-					titleBar: {
-						left: "Pi RTK Optimizer",
-					},
-					helpUndertitle: {
-						variants: [
-							"←/→ tabs • Type to search • Enter/Space change • Esc close",
-							"←/→ tabs • Type to search • Esc close",
-							"←/→ tabs • Esc close",
-						],
-						color: "dim",
-					},
-					overlay: overlayOptions,
-				},
-				theme,
-			);
-
 			return {
 				render(width: number) {
-					return modal.renderModal(width).lines;
+					return settingsOverlay.render(width);
 				},
 				invalidate() {
-					modal.invalidate();
+					settingsOverlay.invalidate();
 				},
 				handleInput(data: string) {
-					modal.handleInput(data);
+					settingsOverlay.handleInput(data);
 					tui.requestRender();
 				},
 			};
@@ -372,4 +457,3 @@ export async function handleRtkIntegrationCommand(
 
 	await openSettingsModal(ctx, controller);
 }
-

@@ -45,7 +45,7 @@ function stripAnsi(text: string): string {
 }
 
 const { registerRtkIntegrationCommand } = await import("./command-register.ts");
-const { ZellijModal, ZellijSettingsModal } = await import("./zellij-modal.ts");
+const { RtkSettingsOverlay } = await import("./config-modal.ts");
 const { getRtkArgumentCompletions } = await import("./command-completions.ts");
 
 type Notification = { message: string; level: "info" | "warning" | "error" };
@@ -87,50 +87,43 @@ function createThemeStub(): { fg: (_name: string, text: string) => string; bold:
 	};
 }
 
-runTest("zellij settings modal renders overlay frame and delegates non-enter input", () => {
+runTest("RTK settings overlay renders tabs and delegates input", () => {
 	settingsListInputs.length = 0;
 	settingsListUpdates.length = 0;
-	const settingsModal = new ZellijSettingsModal(
+	const overlay = new RtkSettingsOverlay(
 		{
-			title: "RTK Integration Settings",
-			settings: [
+			title: "Pi RTK Optimizer",
+			tabs: [
 				{
-					id: "enabled",
-					label: "Enabled",
-					description: "Enable integration",
-					currentValue: "on",
-					values: ["on", "off"],
+					label: "General",
+					settings: [
+						{
+							id: "enabled",
+							label: "Enabled",
+							description: "Enable integration",
+							currentValue: "on",
+							values: ["on", "off"],
+						},
+					],
 				},
 			],
+			activeTabIndex: 0,
 			onChange: () => { },
 			onClose: () => { },
-			helpText: "Esc: close",
+			helpText: "Config: /tmp/rtk.json",
+			enableSearch: true,
 		},
 		createThemeStub() as never,
 	);
-	const modal = new ZellijModal(settingsModal, {
-		titleBar: {
-			left: { text: "RTK Integration Settings", maxWidth: 30, color: "accent" },
-			right: { text: "pi-rtk", maxWidth: 20, color: "dim" },
-		},
-		helpUndertitle: { text: "Esc: close", color: "dim" },
-		overlay: { anchor: "center", width: 86, maxHeight: "85%", margin: 1 },
-	});
+	const rendered = overlay.render(86);
+	overlay.handleInput("\r");
+	overlay.handleInput("j");
+	overlay.updateValue("enabled", "off");
 
-	const rendered = modal.renderModal(86);
-	settingsModal.handleInput("\r");
-	settingsModal.handleInput("j");
-	settingsModal.updateValue("enabled", "off");
-
-	assert.equal(rendered.visibleWidth, 86);
-	assert.equal(rendered.contentWidth, 82);
-	assert.ok(stripAnsi(rendered.lines[0] ?? "").includes("RTK Integration Settings"));
-	assert.ok(stripAnsi(rendered.lines[rendered.lines.length - 1] ?? "").includes("Esc: close"));
-	assert.deepEqual(modal.getOverlayOptions(), {
-		overlay: true,
-		overlayOptions: { anchor: "center", width: 86, maxHeight: "85%", margin: 1 },
-	});
-	assert.deepEqual(settingsListInputs, ["j"]);
+	assert.ok(stripAnsi(rendered[0] ?? "").includes("Pi RTK Optimizer"));
+	assert.ok(stripAnsi(rendered[2] ?? "").includes("General"));
+	assert.ok(stripAnsi(rendered[rendered.length - 1] ?? "").includes("Config: /tmp/rtk.json"));
+	assert.deepEqual(settingsListInputs, ["\r", "j"]);
 	assert.deepEqual(settingsListUpdates, [{ id: "enabled", value: "off" }]);
 });
 

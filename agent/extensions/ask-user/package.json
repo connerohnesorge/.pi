@@ -43,8 +43,7 @@
 	],
 	"scripts": {
 		"test": "bun test",
-		"check": "npm run build && npm run test && npm run pack:dry",
-		"build": "node -e \"console.log('source-first pi extension; no build step')\"",
+		"check": "npm run test && npm run pack:dry",
 		"pack:dry": "npm pack --dry-run"
 	},
 	"peerDependencies": {

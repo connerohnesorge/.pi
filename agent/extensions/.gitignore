@@ -3,4 +3,5 @@
 
 # workspace tooling
 node_modules/
+*/node_modules/
 .turbo/
