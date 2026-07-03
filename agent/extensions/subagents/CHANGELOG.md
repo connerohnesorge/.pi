@@ -3,7 +3,12 @@
 ## [Unreleased]
 
 ### Changed
-- Pin bundled builtin agents to `openai-codex/gpt-5.5` by default.
+- BREAKING: Replaced the old subagent/chain runtime with a dynamic workflow runtime centered on the `workflow` tool and `/workflows` commands.
+- Added a prominent bordered workflow panel and bordered `/workflows` navigator.
+- Default workflow model tiers now use `openai-codex/gpt-5.5` with low/medium/high reasoning levels.
+
+### Removed
+- Removed the old `subagent`, `subagent_manage`, `subagent_control`, `/run`, `/chain`, and `/parallel` APIs.
 
 ## [0.25.0] - 2026-05-21
 

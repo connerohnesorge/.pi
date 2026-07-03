@@ -1,28 +1,22 @@
 #!/usr/bin/env node
 
-/**
- * pi-subagents installer
- * 
- * Usage:
- *   npx pi-subagents          # Install to ~/.pi/agent/extensions/subagent
- *   npx pi-subagents --remove # Remove the extension
- */
+/** Install this packaged workflow extension into Pi's local extensions dir. */
 
-import { execSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const EXTENSION_DIR = path.join(os.homedir(), ".pi", "agent", "extensions", "subagent");
-const REPO_URL = "https://github.com/nicobailon/pi-subagents.git";
+const PACKAGE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const EXTENSION_DIR = path.join(os.homedir(), ".pi", "agent", "extensions", "subagents");
 
 const args = process.argv.slice(2);
 const isRemove = args.includes("--remove") || args.includes("-r");
 const isHelp = args.includes("--help") || args.includes("-h");
 
 if (isHelp) {
-	console.log(`
-pi-subagents - Pi extension for delegating tasks to subagents
+  console.log(`
+pi-subagents - Pi dynamic workflows extension
 
 Usage:
   npx pi-subagents          Install the extension
@@ -31,62 +25,33 @@ Usage:
 
 Installation directory: ${EXTENSION_DIR}
 `);
-	process.exit(0);
+  process.exit(0);
 }
 
 if (isRemove) {
-	if (fs.existsSync(EXTENSION_DIR)) {
-		console.log(`Removing ${EXTENSION_DIR}...`);
-		fs.rmSync(EXTENSION_DIR, { recursive: true });
-		console.log("pi-subagents removed");
-	} else {
-		console.log("pi-subagents is not installed");
-	}
-	process.exit(0);
+  fs.rmSync(EXTENSION_DIR, { recursive: true, force: true });
+  console.log("pi-subagents removed");
+  process.exit(0);
 }
 
-// Install
-console.log("Installing pi-subagents...\n");
-
-// Ensure parent directory exists
-const parentDir = path.dirname(EXTENSION_DIR);
-if (!fs.existsSync(parentDir)) {
-	fs.mkdirSync(parentDir, { recursive: true });
-}
-
-// Check if already installed
-if (fs.existsSync(EXTENSION_DIR)) {
-	const isGitRepo = fs.existsSync(path.join(EXTENSION_DIR, ".git"));
-	if (isGitRepo) {
-		console.log("Updating existing installation...");
-		try {
-			execSync("git pull", { cwd: EXTENSION_DIR, stdio: "inherit" });
-			console.log("\npi-subagents updated");
-		} catch (err) {
-			console.error("Failed to update. Try removing and reinstalling:");
-			console.error("  npx pi-subagents --remove && npx pi-subagents");
-			process.exit(1);
-		}
-	} else {
-		console.log(`Directory exists but is not a git repo: ${EXTENSION_DIR}`);
-		console.log("Remove it first with: npx pi-subagents --remove");
-		process.exit(1);
-	}
-} else {
-	// Fresh install
-	console.log(`Cloning to ${EXTENSION_DIR}...`);
-	try {
-		execSync(`git clone ${REPO_URL} "${EXTENSION_DIR}"`, { stdio: "inherit" });
-		console.log("\npi-subagents installed");
-	} catch (err) {
-		console.error("Failed to clone repository");
-		process.exit(1);
-	}
+if (path.resolve(PACKAGE_DIR) !== path.resolve(EXTENSION_DIR)) {
+  fs.mkdirSync(path.dirname(EXTENSION_DIR), { recursive: true });
+  fs.rmSync(EXTENSION_DIR, { recursive: true, force: true });
+  fs.cpSync(PACKAGE_DIR, EXTENSION_DIR, {
+    recursive: true,
+    filter: (src) => !/[\\/]node_modules[\\/]|[\\/]\.git[\\/]/.test(src),
+  });
 }
 
 console.log(`
-The extension is now available in pi. Tool added:
-  • subagent - Delegate tasks to agents and inspect run status
+Installed pi dynamic workflows at ${EXTENSION_DIR}
 
-Documentation: ${EXTENSION_DIR}/README.md
+Tool added:
+  • workflow - Run deterministic JavaScript workflows with isolated agents
+
+Commands added:
+  • /workflows, /workflows-models, /deep-research, /adversarial-review
+  • /multi-perspective, /codebase-audit, /effort, /ultracode
+
+Run /reload in Pi to load the extension.
 `);

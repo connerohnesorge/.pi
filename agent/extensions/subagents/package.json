@@ -1,7 +1,7 @@
 {
 	"name": "pi-subagents",
-	"version": "0.25.0",
-	"description": "Pi extension for delegating tasks to subagents with chains, parallel execution, and TUI clarification",
+	"version": "0.26.0",
+	"description": "Pi extension for dynamic workflow orchestration with isolated subagents and a bordered TUI",
 	"author": "Conner Ohnesorge",
 	"license": "MIT",
 	"type": "module",
@@ -21,10 +21,12 @@
 		"pi-package",
 		"pi",
 		"pi-coding-agent",
+		"workflow",
+		"workflows",
+		"dynamic-workflows",
 		"subagents",
-		"ai",
-		"agents",
-		"cli"
+		"orchestration",
+		"multi-agent"
 	],
 	"bin": {
 		"pi-subagents": "install.mjs"
@@ -32,54 +34,42 @@
 	"files": [
 		"src/**/*.ts",
 		"*.mjs",
-		"agents/",
-		"skills/**/*",
-		"prompts/**/*",
 		"README.md",
-		"CHANGELOG.md"
+		"CHANGELOG.md",
+		"THIRD_PARTY_NOTICES.md"
 	],
 	"scripts": {
-		"test": "npm run test:unit",
-		"test:unit": "node --experimental-strip-types --test test/unit/*.test.ts",
-		"test:integration": "node --experimental-transform-types --import ./test/support/register-loader.mjs --test test/integration/*.test.ts",
-		"test:all": "npm run test:unit && npm run test:integration",
+		"test": "node --experimental-transform-types --test tests/*.test.ts",
 		"pack:dry": "npm pack --dry-run",
 		"check": "npm run test && npm run pack:dry"
 	},
 	"pi": {
 		"extensions": [
 			"./src/extension/index.ts"
-		],
-		"skills": [
-			"./skills"
-		],
-		"prompts": [
-			"./prompts"
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-agent-core": "*",
 		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*"
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
 	},
 	"peerDependenciesMeta": {
-		"@earendil-works/pi-agent-core": {
-			"optional": true
-		},
 		"@earendil-works/pi-ai": {
 			"optional": true
 		},
 		"@earendil-works/pi-coding-agent": {
 			"optional": true
+		},
+		"@earendil-works/pi-tui": {
+			"optional": true
 		}
 	},
 	"dependencies": {
+		"acorn": "^8.16.0",
 		"@earendil-works/pi-tui": "^0.74.0",
-		"jiti": "^2.7.0",
 		"typebox": "^1.1.24"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-agent-core": "^0.74.0",
 		"@earendil-works/pi-ai": "^0.74.0",
 		"@earendil-works/pi-coding-agent": "^0.74.0"
 	}
