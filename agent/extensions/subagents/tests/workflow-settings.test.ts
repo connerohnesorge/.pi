@@ -13,6 +13,17 @@ import {
 } from "../src/workflow-settings.ts";
 import { withFakeHome } from "./helpers/fake-home.ts";
 
+function withProjectSettingsPath(fn: (cwd: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
+  const cwd = join(dir, "project");
+  const fakeHome = join(dir, "home");
+  try {
+    withFakeHome(fakeHome, () => fn(cwd));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function withSettingsPath(fn: (settingsPath: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-settings-"));
   try {
@@ -85,65 +96,44 @@ describe("workflow settings", () => {
   });
 
   it("merges project settings over global settings when cwd is provided", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
-    const cwd = join(dir, "project");
-    const fakeHome = join(dir, "home");
-    try {
-      withFakeHome(fakeHome, () => {
-        const globalPath = getWorkflowSettingsPath();
-        const projectPath = getWorkflowProjectSettingsPath(cwd);
-        saveWorkflowSettings({ keywordTriggerEnabled: true, defaultAgentTimeoutMs: 600000 }, globalPath);
-        saveWorkflowSettings({ keywordTriggerEnabled: false }, { cwd, settingsPath: globalPath, scope: "project" });
+    withProjectSettingsPath((cwd) => {
+      const globalPath = getWorkflowSettingsPath();
+      const projectPath = getWorkflowProjectSettingsPath(cwd);
+      saveWorkflowSettings({ keywordTriggerEnabled: true, defaultAgentTimeoutMs: 600000 }, globalPath);
+      saveWorkflowSettings({ keywordTriggerEnabled: false }, { cwd, settingsPath: globalPath, scope: "project" });
 
-        assert.deepEqual(loadWorkflowSettings(globalPath), {
-          keywordTriggerEnabled: true,
-          defaultAgentTimeoutMs: 600000,
-        });
-        assert.deepEqual(loadWorkflowSettings({ cwd, settingsPath: globalPath, projectSettingsPath: projectPath }), {
-          keywordTriggerEnabled: false,
-          defaultAgentTimeoutMs: 600000,
-        });
+      assert.deepEqual(loadWorkflowSettings(globalPath), {
+        keywordTriggerEnabled: true,
+        defaultAgentTimeoutMs: 600000,
       });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      assert.deepEqual(loadWorkflowSettings({ cwd, settingsPath: globalPath, projectSettingsPath: projectPath }), {
+        keywordTriggerEnabled: false,
+        defaultAgentTimeoutMs: 600000,
+      });
+    });
   });
 
   it("saves cwd preferences globally without creating a project override", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
-    const cwd = join(dir, "project");
-    const fakeHome = join(dir, "home");
-    try {
-      withFakeHome(fakeHome, () => {
-        saveWorkflowSettingsForCwd({ keywordTriggerEnabled: false }, cwd);
+    withProjectSettingsPath((cwd) => {
+      saveWorkflowSettingsForCwd({ keywordTriggerEnabled: false }, cwd);
 
-        assert.deepEqual(loadWorkflowSettings({ cwd }), { keywordTriggerEnabled: false });
-        assert.equal(existsSync(getWorkflowProjectSettingsPath(cwd)), false);
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      assert.deepEqual(loadWorkflowSettings({ cwd }), { keywordTriggerEnabled: false });
+      assert.equal(existsSync(getWorkflowProjectSettingsPath(cwd)), false);
+    });
   });
 
   it("saves cwd preferences into an existing project override", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
-    const cwd = join(dir, "project");
-    const fakeHome = join(dir, "home");
-    try {
-      withFakeHome(fakeHome, () => {
-        saveWorkflowSettings({ keywordTriggerEnabled: false }, { cwd, scope: "project" });
+    withProjectSettingsPath((cwd) => {
+      saveWorkflowSettings({ keywordTriggerEnabled: false }, { cwd, scope: "project" });
 
-        saveWorkflowSettingsForCwd({ keywordTriggerEnabled: true }, cwd);
+      saveWorkflowSettingsForCwd({ keywordTriggerEnabled: true }, cwd);
 
-        assert.deepEqual(loadWorkflowSettings(), { keywordTriggerEnabled: true });
-        assert.deepEqual(loadWorkflowSettings({ cwd }), { keywordTriggerEnabled: true });
-        assert.deepEqual(loadWorkflowSettings({ projectSettingsPath: getWorkflowProjectSettingsPath(cwd) }), {
-          keywordTriggerEnabled: true,
-        });
+      assert.deepEqual(loadWorkflowSettings(), { keywordTriggerEnabled: true });
+      assert.deepEqual(loadWorkflowSettings({ cwd }), { keywordTriggerEnabled: true });
+      assert.deepEqual(loadWorkflowSettings({ projectSettingsPath: getWorkflowProjectSettingsPath(cwd) }), {
+        keywordTriggerEnabled: true,
       });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   });
 
   it("preserves unknown settings when saving known settings", () => {

@@ -373,15 +373,29 @@ class CallRecordingAgent {
   }
 }
 
-test("agent() in workflow passes prompt and label to runner", async () => {
+async function runRecordedAgent(scriptBody: string, options: Record<string, unknown> = {}) {
   const rec = new CallRecordingAgent();
   await runWorkflow(
     `export const meta = { name: 'test', description: 't' }
-     const r = await agent('analyze this', { label: 'analyzer' })
-     return r`,
-    { agent: rec, persistLogs: false },
+     ${scriptBody}`,
+    { agent: rec, persistLogs: false, ...options },
   );
   assert.equal(rec.calls.length, 1);
+  return rec;
+}
+
+function slowAgent(delayMs = 25) {
+  return {
+    async run() {
+      await new Promise((r) => setTimeout(r, delayMs));
+      return "slow";
+    },
+  };
+}
+
+test("agent() in workflow passes prompt and label to runner", async () => {
+  const rec = await runRecordedAgent(`const r = await agent('analyze this', { label: 'analyzer' })
+     return r`);
   assert.equal(rec.calls[0].prompt, "analyze this");
 });
 
@@ -399,14 +413,8 @@ test("agent() in workflow forwards modelRegistry to the runner", async () => {
 });
 
 test("agent() in workflow passes model spec to runner", async () => {
-  const rec = new CallRecordingAgent();
-  await runWorkflow(
-    `export const meta = { name: 'test', description: 't' }
-     const r = await agent('task', { label: 't', model: 'fast-llm/model' })
-     return r`,
-    { agent: rec, persistLogs: false },
-  );
-  assert.equal(rec.calls.length, 1);
+  const rec = await runRecordedAgent(`const r = await agent('task', { label: 't', model: 'fast-llm/model' })
+     return r`);
   assert.equal((rec.calls[0].options as { model?: string }).model, "fast-llm/model");
 });
 
@@ -647,12 +655,7 @@ test("agent() with timeout should handle gracefully (timeout returns null)", asy
 });
 
 test("agent() default timeout is unbounded", async () => {
-  const slow = {
-    async run() {
-      await new Promise((r) => setTimeout(r, 25));
-      return "slow";
-    },
-  };
+  const slow = slowAgent();
   const result = await runWorkflow<{ val: string }>(
     `export const meta = { name: 'test', description: 't' }
      const val = await agent('slow', { label: 's' })
@@ -664,12 +667,7 @@ test("agent() default timeout is unbounded", async () => {
 });
 
 test("agent() timeoutMs null overrides a run-level timeout", async () => {
-  const slow = {
-    async run() {
-      await new Promise((r) => setTimeout(r, 25));
-      return "slow";
-    },
-  };
+  const slow = slowAgent();
   const result = await runWorkflow<{ val: string }>(
     `export const meta = { name: 'test', description: 't' }
      const val = await agent('slow', { label: 's', timeoutMs: null })

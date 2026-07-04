@@ -13,8 +13,24 @@ import {
   parseAgentDefinition,
   resolveAgentType,
 } from "../src/agent-registry.ts";
-import { runWorkflow } from "../src/workflow.ts";
+import { runWorkflow, type JournalEntry } from "../src/workflow.ts";
 import { withTempGitRepo } from "./helpers/git-repo.ts";
+
+
+async function journalSecurityAuditorRun(agentRegistry: AgentRegistry) {
+  const journal: JournalEntry[] = [];
+  const first = capturingAgent();
+  const script = `export const meta = { name: 'at', description: 'agentType' }
+const r = await agent('audit', { label: 'a', agentType: 'security-auditor' })
+return r`;
+  await runWorkflow(script, {
+    agent: first.runner,
+    persistLogs: false,
+    agentRegistry,
+    onAgentJournal: (e) => journal.push(e),
+  });
+  return { first, journal, script };
+}
 
 // ── parseAgentDefinition ───────────────────────────────────────────────────
 
@@ -320,17 +336,7 @@ return {}`;
 
   it("editing a definition invalidates the resume cache for that call", async () => {
     // First run journals the call under the original definition's hash.
-    const journal: import("../src/workflow.ts").JournalEntry[] = [];
-    const first = capturingAgent();
-    const script = `export const meta = { name: 'at', description: 'agentType' }
-const r = await agent('audit', { label: 'a', agentType: 'security-auditor' })
-return r`;
-    await runWorkflow(script, {
-      agent: first.runner,
-      persistLogs: false,
-      agentRegistry: registry,
-      onAgentJournal: (e) => journal.push(e),
-    });
+    const { first, journal, script } = await journalSecurityAuditorRun(registry);
     assert.equal(first.seen.length, 1);
 
     // Resume with an EDITED definition (different model) → cache must miss → re-run.
@@ -351,17 +357,7 @@ return r`;
   });
 
   it("resume cache HITS when the definition is unchanged", async () => {
-    const journal: import("../src/workflow.ts").JournalEntry[] = [];
-    const first = capturingAgent();
-    const script = `export const meta = { name: 'at', description: 'agentType' }
-const r = await agent('audit', { label: 'a', agentType: 'security-auditor' })
-return r`;
-    await runWorkflow(script, {
-      agent: first.runner,
-      persistLogs: false,
-      agentRegistry: registry,
-      onAgentJournal: (e) => journal.push(e),
-    });
+    const { journal, script } = await journalSecurityAuditorRun(registry);
     const second = capturingAgent();
     await runWorkflow(script, {
       agent: second.runner,

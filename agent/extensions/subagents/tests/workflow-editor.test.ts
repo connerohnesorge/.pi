@@ -124,6 +124,20 @@ type WorkflowCommand = { handler: (args: string, ctx: unknown) => Promise<void> 
 type CapturedHandler = { event: string; handler: (...args: unknown[]) => unknown };
 type InputHandler = (event: { source?: string; text?: string }) => { action: string; text?: string };
 
+function commandPiHarness() {
+  const commands = new Map<string, WorkflowCommand>();
+  const sent: Array<{ content?: string }> = [];
+  const pi = {
+    registerCommand: (name: string, command: WorkflowCommand) => {
+      commands.set(name, command);
+    },
+    sendMessage: (message: { content?: string }) => {
+      sent.push(message);
+    },
+  } as unknown as ExtensionAPI;
+  return { commands, sent, pi };
+}
+
 function noopUi() {
   return { setEditorComponent: () => {} } as unknown as ExtensionUIContext;
 }
@@ -133,16 +147,10 @@ function installTriggerCommandHarness(
   store = memorySettingsOptions(),
   overrides: Partial<ExtensionAPI> = {},
 ) {
-  const commands = new Map<string, WorkflowCommand>();
-  const sent: Array<{ content?: string }> = [];
+  const { commands, sent, pi: basePi } = commandPiHarness();
   const pi = {
+    ...basePi,
     on: () => {},
-    registerCommand: (name: string, command: WorkflowCommand) => {
-      commands.set(name, command);
-    },
-    sendMessage: (message: { content?: string }) => {
-      sent.push(message);
-    },
     getActiveTools: () => [],
     setActiveTools: () => {},
     ...overrides,
@@ -152,6 +160,22 @@ function installTriggerCommandHarness(
   const command = commands.get("workflows-trigger");
   assert.ok(command, "should register /workflows-trigger");
   return { command, commands, sent, state, store };
+}
+
+function assertTriggerOnSaved(
+  state: { keywordTriggerEnabled?: boolean },
+  settings: unknown,
+  sent: Array<{ content?: string }>,
+) {
+  assert.equal(state.keywordTriggerEnabled, true);
+  assert.deepEqual(settings, { keywordTriggerEnabled: true });
+  assert.match(sent.at(-1)?.content ?? "", /keyword trigger on/i);
+  assert.match(sent.at(-1)?.content ?? "", /saved for new sessions/i);
+}
+
+function assertTriggerOnSaveFailed(state: { keywordTriggerEnabled?: boolean }, sent: Array<{ content?: string }>) {
+  assert.equal(state.keywordTriggerEnabled, true);
+  assert.match(sent.at(-1)?.content ?? "", /could not be saved/i);
 }
 
 function installInputHarness(
@@ -713,10 +737,7 @@ describe("installWorkflowEditor", () => {
     assert.match(sent.at(-1)?.content ?? "", /saved for new sessions/i);
 
     await command.handler("on", {});
-    assert.equal(state.keywordTriggerEnabled, true);
-    assert.deepEqual(store.settings, { keywordTriggerEnabled: true });
-    assert.match(sent.at(-1)?.content ?? "", /keyword trigger on/i);
-    assert.match(sent.at(-1)?.content ?? "", /saved for new sessions/i);
+    assertTriggerOnSaved(state, store.settings, sent);
   });
 
   it("/workflows-trigger sets and reports the keyword trigger word", async () => {
@@ -738,17 +759,8 @@ describe("installWorkflowEditor", () => {
 
   it("supports legacy WorkflowModeState objects without keywordTriggerWord", async () => {
     const mod = await load();
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
-    const sent: Array<{ content?: string }> = [];
+    const { commands, sent, pi } = commandPiHarness();
     const state = { active: false, keywordTriggerEnabled: true };
-    const pi = {
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
-      sendMessage: (message: { content?: string }) => {
-        sent.push(message);
-      },
-    } as unknown as ExtensionAPI;
 
     mod.registerWorkflowTriggerCommand(pi, state, {
       load: () => ({}),
@@ -827,8 +839,7 @@ describe("installWorkflowEditor", () => {
 
     await command.handler("on", {});
 
-    assert.equal(state.keywordTriggerEnabled, true);
-    assert.match(sent.at(-1)?.content ?? "", /could not be saved/i);
+    assertTriggerOnSaveFailed(state, sent);
   });
 
   it("saves active tools and adds WORKFLOW_TOOL_NAME on triggered input", async () => {
@@ -990,17 +1001,8 @@ describe("installWorkflowEditor", () => {
 
 describe("registerWorkflowProgressCommands", () => {
   function setup() {
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
-    const sent: Array<{ content?: string }> = [];
+    const { commands, sent, pi } = commandPiHarness();
     let settings: Record<string, unknown> = {};
-    const pi = {
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
-      sendMessage: (message: { content?: string }) => {
-        sent.push(message);
-      },
-    } as unknown as ExtensionAPI;
     const settingsStore = {
       load: () => ({ ...settings }),
       save: (next: Record<string, unknown>) => {
