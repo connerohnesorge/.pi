@@ -1681,6 +1681,71 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		},
 	}));
 
+
+	function applyGoalObjectiveUpdate(params: any, ctx: ExtensionContext): any | null {
+		if (params.updatedObjective === undefined) return null;
+		const newObjective = params.updatedObjective.trim();
+		if (!newObjective) throw new Error("update_goal requires a non-empty updatedObjective.");
+		const updateGate = validateGoalUpdate({ goal: state.goal });
+		if (!updateGate.ok) {
+			return {
+				content: [{ type: "text", text: updateGate.message }],
+				details: goalDetails(state.goal),
+			};
+		}
+		if (!state.goal) throw new Error("Goal disappeared during objective update.");
+		objectiveRuntime.applyObjectiveUpdate(ctx, state.goal, {
+			newObjective,
+			changeSummary: "Objective updated via update_goal",
+		});
+		if (params.status !== COMPLETE_STATUS) {
+			return {
+				content: [{ type: "text", text: `Goal objective updated.` }],
+				details: goalDetails(state.goal),
+			};
+		}
+		return null;
+	}
+
+	function completeGoalWithDisabledAuditor(ctx: ExtensionContext, auditTarget: GoalRecord, params: any, auditorConfig: GoalAuditorConfig, auditorLabel: string): any | null {
+		if (auditorConfig.disabled !== true) return null;
+		if (params.confirmBypassAuditor !== true) {
+			return {
+				content: [{ type: "text", text: [
+					"The completion auditor is disabled in settings.",
+					"",
+					`Use \`goal_question\` to ask the user: "The independent completion auditor is disabled. Bypass independent verification and mark the goal complete?"`,
+					"If the user confirms, call update_goal again with confirmBypassAuditor: true.",
+				].join("\n") }],
+				details: goalDetails(state.goal),
+			};
+		}
+		pi.sendMessage<GoalAuditEventDetails>({
+			customType: GOAL_AUDIT_ENTRY,
+			content: `Goal completed — auditor disabled in settings.`,
+			display: true,
+			details: { phase: "skipped", goalId: auditTarget.id, auditor: auditorLabel },
+		});
+		try {
+			appendGoalEvent(ctx, {
+				type: "audit_skipped",
+				goalId: auditTarget.id,
+				reason: "disabled",
+				provider: auditorConfig.provider,
+				model: auditorConfig.model,
+				thinkingLevel: auditorConfig.thinkingLevel,
+				at: nowIso(),
+			});
+		} catch {
+			// Ledger append failure should not block completion
+		}
+		return completionRuntime.finalizeGoalCompletion(ctx, {
+			goal: auditTarget,
+			completionSummary: params.completionSummary,
+			variant: { auditSkippedReason: "auditor disabled in settings" },
+		});
+	}
+
 	pi.registerTool(defineTool({
 		name: "update_goal",
 		label: "Update Goal",
@@ -1705,34 +1770,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			reconcileFocusedGoalFromDisk(ctx);
 
-			// -- Phase 1: Objective update (quick sync) --
-			// Apply updatedObjective before any completion logic so the completion
-			// flow (if status=complete is also set) reads the latest objective.
-			if (params.updatedObjective !== undefined) {
-				const newObjective = params.updatedObjective.trim();
-				if (!newObjective) throw new Error("update_goal requires a non-empty updatedObjective.");
-				const updateGate = validateGoalUpdate({ goal: state.goal });
-				if (!updateGate.ok) {
-					return {
-						content: [{ type: "text", text: updateGate.message }],
-						details: goalDetails(state.goal),
-					};
-				}
-				if (!state.goal) throw new Error("Goal disappeared during objective update.");
-				objectiveRuntime.applyObjectiveUpdate(ctx, state.goal, {
-					newObjective,
-					changeSummary: "Objective updated via update_goal",
-				});
-
-				// Quick sync only (no status=complete) — return without terminating
-				if (params.status !== COMPLETE_STATUS) {
-					return {
-						content: [{ type: "text", text: `Goal objective updated.` }],
-						details: goalDetails(state.goal),
-					};
-				}
-				// Fall through: status=complete also set, proceed with completion below
-			}
+			// Apply updatedObjective before completion so the audit reads the latest objective.
+			const objectiveUpdateResult = applyGoalObjectiveUpdate(params, ctx);
+			if (objectiveUpdateResult) return objectiveUpdateResult;
 
 			// -- Phase 2: Status validation --
 			if (params.status !== COMPLETE_STATUS) {
@@ -1769,48 +1809,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				: "default";
 
 			// Check if auditor is disabled
-			if (auditorConfig.disabled === true) {
-				if (params.confirmBypassAuditor !== true) {
-					return {
-						content: [{ type: "text", text: [
-							"The completion auditor is disabled in settings.",
-							"",
-							`Use \`goal_question\` to ask the user: "The independent completion auditor is disabled. Bypass independent verification and mark the goal complete?"`,  
-							"If the user confirms, call update_goal again with confirmBypassAuditor: true.",
-						].join("\n") }],
-						details: goalDetails(state.goal),
-					};
-				}
-				// Auditor disabled and confirmed — skip audit.
-				// Defer archival: set goal complete in-memory + write active file WITHOUT
-				// archiving. Archival happens at turn_end so the agent has a chance to
-				// recognise the skipped audit before the goal is archived.
-				pi.sendMessage<GoalAuditEventDetails>({
-					customType: GOAL_AUDIT_ENTRY,
-					content: `Goal completed — auditor disabled in settings.`,
-					display: true,
-					details: { phase: "skipped", goalId: auditTarget.id, auditor: auditorLabel },
-				});
-				try {
-					appendGoalEvent(ctx, {
-						type: "audit_skipped",
-						goalId: auditTarget.id,
-						reason: "disabled",
-						provider: auditorConfig.provider,
-						model: auditorConfig.model,
-						thinkingLevel: auditorConfig.thinkingLevel,
-						at: nowIso(),
-					});
-				} catch {
-					// Ledger append failure should not block completion
-				}
-				// Set goal complete in memory (defer archival to turn_end)
-				return completionRuntime.finalizeGoalCompletion(ctx, {
-					goal: auditTarget,
-					completionSummary: params.completionSummary,
-					variant: { auditSkippedReason: "auditor disabled in settings" },
-				});
-			}
+			const disabledAuditorResult = completeGoalWithDisabledAuditor(ctx, auditTarget, params, auditorConfig, auditorLabel);
+			if (disabledAuditorResult) return disabledAuditorResult;
 
 			// Auditor is enabled — run the normal audit flow
 			await pi.sendMessage<GoalAuditEventDetails>({
