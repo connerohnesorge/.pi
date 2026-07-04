@@ -116,40 +116,44 @@ export function readGoalLedger(ctx: GoalLedgerContext): GoalLedgerReadResult {
   return { events, malformed };
 }
 
+type LedgerEventValidator = (obj: Record<string, unknown>) => boolean;
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function hasGoalId(obj: Record<string, unknown>): boolean {
+  return isString(obj.goalId);
+}
+
+function hasGoalIdAndReason(obj: Record<string, unknown>): boolean {
+  return hasGoalId(obj) && isString(obj.reason);
+}
+
+const ledgerEventValidators: Record<GoalLedgerEvent["type"], LedgerEventValidator> = {
+  goal_created: (obj) => hasGoalId(obj) && isString(obj.objective) && typeof obj.sisyphus === "boolean" && typeof obj.autoContinue === "boolean",
+  goal_focused: hasGoalIdAndReason,
+  goal_unfocused: (obj) => isString(obj.reason),
+  goal_paused: (obj) => hasGoalIdAndReason(obj) && isOptionalString(obj.suggestedAction) && (obj.status === undefined || obj.status === "paused"),
+  goal_resumed: hasGoalIdAndReason,
+  goal_tweaked: (obj) => hasGoalId(obj) && isString(obj.changeSummary),
+  completion_requested: (obj) => hasGoalId(obj) && isOptionalString(obj.summary),
+  audit_started: (obj) => hasGoalId(obj) && isOptionalString(obj.provider) && isOptionalString(obj.model) && isOptionalString(obj.thinkingLevel),
+  audit_result: (obj) => hasGoalId(obj) && (obj.verdict === "approved" || obj.verdict === "disapproved" || obj.verdict === "error") && isString(obj.report),
+  audit_skipped: (obj) => hasGoalId(obj) && (obj.reason === "disabled" || obj.reason === "user_aborted") && isOptionalString(obj.provider) && isOptionalString(obj.model) && isOptionalString(obj.thinkingLevel),
+  goal_completed: (obj) => hasGoalId(obj) && isOptionalString(obj.archivePath),
+  goal_aborted: (obj) => hasGoalIdAndReason(obj) && isOptionalString(obj.archivePath),
+};
+
 function isValidLedgerEvent(value: unknown): value is GoalLedgerEvent {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const obj = value as Record<string, unknown>;
-  if (typeof obj.type !== "string") return false;
-  if (typeof obj.at !== "string") return false;
-  const type = obj.type as GoalLedgerEvent["type"];
-  switch (type) {
-    case "goal_created":
-      return typeof obj.goalId === "string" && typeof obj.objective === "string" && typeof obj.sisyphus === "boolean" && typeof obj.autoContinue === "boolean";
-    case "goal_focused":
-      return typeof obj.goalId === "string" && typeof obj.reason === "string";
-    case "goal_unfocused":
-      return typeof obj.reason === "string";
-    case "goal_paused":
-      return typeof obj.goalId === "string" && typeof obj.reason === "string" && (obj.suggestedAction === undefined || typeof obj.suggestedAction === "string") && (obj.status === undefined || obj.status === "paused");
-    case "goal_resumed":
-      return typeof obj.goalId === "string" && typeof obj.reason === "string";
-    case "goal_tweaked":
-      return typeof obj.goalId === "string" && typeof obj.changeSummary === "string";
-    case "completion_requested":
-      return typeof obj.goalId === "string" && (obj.summary === undefined || typeof obj.summary === "string");
-    case "audit_started":
-      return typeof obj.goalId === "string" && (obj.provider === undefined || typeof obj.provider === "string") && (obj.model === undefined || typeof obj.model === "string") && (obj.thinkingLevel === undefined || typeof obj.thinkingLevel === "string");
-    case "audit_result":
-      return typeof obj.goalId === "string" && (obj.verdict === "approved" || obj.verdict === "disapproved" || obj.verdict === "error") && typeof obj.report === "string";
-    case "audit_skipped":
-      return typeof obj.goalId === "string" && (obj.reason === "disabled" || obj.reason === "user_aborted") && (obj.provider === undefined || typeof obj.provider === "string") && (obj.model === undefined || typeof obj.model === "string") && (obj.thinkingLevel === undefined || typeof obj.thinkingLevel === "string");
-    case "goal_completed":
-      return typeof obj.goalId === "string" && (obj.archivePath === undefined || typeof obj.archivePath === "string");
-    case "goal_aborted":
-      return typeof obj.goalId === "string" && typeof obj.reason === "string" && (obj.archivePath === undefined || typeof obj.archivePath === "string");
-    default:
-      return false;
-  }
+  if (typeof obj.type !== "string" || typeof obj.at !== "string") return false;
+  return ledgerEventValidators[obj.type as GoalLedgerEvent["type"]]?.(obj) ?? false;
 }
 
 function sanitizeEvent(event: GoalLedgerEvent): GoalLedgerEvent {
@@ -181,6 +185,20 @@ function sanitizeEvent(event: GoalLedgerEvent): GoalLedgerEvent {
   }
 }
 
+function clearGoalFocus(goals: Map<string, ReconstructedGoalState>, terminalGoals: Map<string, ReconstructedGoalState>): void {
+  for (const g of goals.values()) g.latestFocus = false;
+  for (const g of terminalGoals.values()) g.latestFocus = false;
+}
+
+function moveGoalToTerminal(goals: Map<string, ReconstructedGoalState>, terminalGoals: Map<string, ReconstructedGoalState>, goalId: string, status: "complete" | "aborted", at: string): void {
+  const state = goals.get(goalId) ?? { goalId, latestStatus: status, latestFocus: false };
+  state.latestStatus = status;
+  if (status === "complete") state.completedAt = at;
+  else state.abortedAt = at;
+  terminalGoals.set(goalId, state);
+  goals.delete(goalId);
+}
+
 export function reconstructGoalLedger(events: GoalLedgerEvent[]): ReconstructedLedgerState {
   const goals = new Map<string, ReconstructedGoalState>();
   const terminalGoals = new Map<string, ReconstructedGoalState>();
@@ -200,16 +218,14 @@ export function reconstructGoalLedger(events: GoalLedgerEvent[]): ReconstructedL
       }
       case "goal_focused": {
         focusedGoalId = event.goalId;
-        for (const g of goals.values()) g.latestFocus = false;
-        for (const g of terminalGoals.values()) g.latestFocus = false;
+        clearGoalFocus(goals, terminalGoals);
         const state = goals.get(event.goalId) ?? terminalGoals.get(event.goalId);
         if (state) state.latestFocus = true;
         break;
       }
       case "goal_unfocused": {
         focusedGoalId = null;
-        for (const g of goals.values()) g.latestFocus = false;
-        for (const g of terminalGoals.values()) g.latestFocus = false;
+        clearGoalFocus(goals, terminalGoals);
         break;
       }
       case "goal_paused": {
@@ -256,23 +272,11 @@ export function reconstructGoalLedger(events: GoalLedgerEvent[]): ReconstructedL
         break;
       }
       case "goal_completed": {
-        let state = goals.get(event.goalId);
-        if (!state) {
-          state = { goalId: event.goalId, latestStatus: "complete", latestFocus: false };        }
-        state.latestStatus = "complete";
-        state.completedAt = event.at;
-        terminalGoals.set(event.goalId, state);
-        goals.delete(event.goalId);
+        moveGoalToTerminal(goals, terminalGoals, event.goalId, "complete", event.at);
         break;
       }
       case "goal_aborted": {
-        let state = goals.get(event.goalId);
-        if (!state) {
-          state = { goalId: event.goalId, latestStatus: "aborted", latestFocus: false };        }
-        state.latestStatus = "aborted";
-        state.abortedAt = event.at;
-        terminalGoals.set(event.goalId, state);
-        goals.delete(event.goalId);
+        moveGoalToTerminal(goals, terminalGoals, event.goalId, "aborted", event.at);
         break;
       }
     }
