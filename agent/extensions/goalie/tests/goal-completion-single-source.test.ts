@@ -76,17 +76,25 @@ function createRuntimeHarness(ctx: TestContext, initial: GoalRecord | null): Run
 	return harness;
 }
 
-test("completion runtime finalizer marks complete, writes active file, and does not archive", () => {
+type CompletionOptions = Parameters<RuntimeHarness["runtime"]["finalizeGoalCompletion"]>[1];
+type CompletionResult = ReturnType<RuntimeHarness["runtime"]["finalizeGoalCompletion"]>;
+
+function withFinalizedGoal(options: Omit<CompletionOptions, "goal">, check: (ctx: TestContext, harness: RuntimeHarness, result: CompletionResult) => void): void {
 	const ctx = createTempGoalContext("goal-completion-runtime-test-");
 	try {
 		const active = writeActiveGoalFile(ctx, makeGoal());
 		const harness = createRuntimeHarness(ctx, active);
-		const result = harness.runtime.finalizeGoalCompletion(ctx as any, {
-			goal: active,
-			completionSummary: "Done.",
-			variant: { auditSkippedReason: "auditor disabled in settings" },
-		});
+		check(ctx, harness, harness.runtime.finalizeGoalCompletion(ctx as any, { goal: active, ...options }));
+	} finally {
+		cleanupGoalContext(ctx);
+	}
+}
 
+test("completion runtime finalizer marks complete, writes active file, and does not archive", () => {
+	withFinalizedGoal({
+		completionSummary: "Done.",
+		variant: { auditSkippedReason: "auditor disabled in settings" },
+	}, (ctx, harness, result) => {
 		const completed = harness.stateGoal;
 		assert.equal(completed?.status, "complete");
 		assert.equal(completed?.stopReason, "agent");
@@ -104,28 +112,19 @@ test("completion runtime finalizer marks complete, writes active file, and does 
 		assert.match(completed?.activePath ?? "", /^\.pi\/goals\/active_goal_/);
 		assert.equal(completed?.archivedPath, undefined);
 		assert.ok(existsSync(path.join(ctx.cwd, completed?.activePath ?? "missing")), "complete goal remains in active file before turn_end");
-	} finally {
-		cleanupGoalContext(ctx);
-	}
+	});
 });
 
 test("completion runtime report variant carries auditor approval output", () => {
-	const ctx = createTempGoalContext("goal-completion-runtime-test-");
-	try {
-		const active = writeActiveGoalFile(ctx, makeGoal());
-		const harness = createRuntimeHarness(ctx, active);
-		const result = harness.runtime.finalizeGoalCompletion(ctx as any, {
-			goal: active,
-			completionSummary: "All done.",
-			variant: { auditorReport: "Verified everything.\n\n<approved/>" },
-		});
+	withFinalizedGoal({
+		completionSummary: "All done.",
+		variant: { auditorReport: "Verified everything.\n\n<approved/>" },
+	}, (_ctx, _harness, result) => {
 		const text = (result.content[0] as { text?: string } | undefined)?.text ?? "";
 		assert.match(text, /Goal audit approved/);
 		assert.match(text, /Verified everything/);
 		assert.match(text, /<approved\/>/);
-	} finally {
-		cleanupGoalContext(ctx);
-	}
+	});
 });
 
 test("completion runtime archives a deferred completed goal exactly once at turn_end", () => {
