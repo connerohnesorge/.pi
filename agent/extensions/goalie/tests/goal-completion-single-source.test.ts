@@ -90,28 +90,49 @@ function withFinalizedGoal(options: Omit<CompletionOptions, "goal">, check: (ctx
 	}
 }
 
+function assertCompletedGoal(harness: RuntimeHarness): GoalRecord {
+	const completed = harness.stateGoal;
+	assert.equal(completed?.status, "complete");
+	assert.equal(completed?.stopReason, "agent");
+	return completed as GoalRecord;
+}
+
+function assertCompletionSideEffects(harness: RuntimeHarness, completed: GoalRecord): void {
+	assert.equal(harness.turnStoppedFor, completed.id);
+	assert.equal(harness.accounted, 1);
+	assert.equal(harness.clearedAudit, 1);
+	assert.equal(harness.invalidated, 1);
+	assert.equal(harness.syncedTools, 1);
+	assert.equal(harness.updatedUi, 1);
+	assert.equal(harness.stateEntries.at(-1)?.goal?.status, "complete");
+}
+
+function resultText(result: CompletionResult): string {
+	return (result.content[0] as { text?: string } | undefined)?.text ?? "";
+}
+
+function assertSkippedAuditResponse(result: CompletionResult): void {
+	assert.equal(result.terminate, true);
+	const text = resultText(result);
+	assert.match(text, /Goal audit skipped/);
+	assert.match(text, /auditor disabled in settings/);
+}
+
+function assertActiveCompletionFile(ctx: TestContext, completed: GoalRecord): void {
+	assert.match(completed.activePath ?? "", /^\.pi\/goals\/active_goal_/);
+	assert.equal(completed.archivedPath, undefined);
+	assert.ok(existsSync(path.join(ctx.cwd, completed.activePath ?? "missing")), "complete goal remains in active file before turn_end");
+}
+
 test("completion runtime finalizer marks complete, writes active file, and does not archive", () => {
 	withFinalizedGoal({
 		completionSummary: "Done.",
 		variant: { auditSkippedReason: "auditor disabled in settings" },
 	}, (ctx, harness, result) => {
-		const completed = harness.stateGoal;
-		assert.equal(completed?.status, "complete");
-		assert.equal(completed?.stopReason, "agent");
-		assert.equal(harness.turnStoppedFor, completed?.id);
-		assert.equal(harness.accounted, 1);
-		assert.equal(harness.clearedAudit, 1);
-		assert.equal(harness.invalidated, 1);
-		assert.equal(harness.syncedTools, 1);
-		assert.equal(harness.updatedUi, 1);
-		assert.equal(harness.stateEntries.at(-1)?.goal?.status, "complete");
-		assert.equal(result.terminate, true);
-		const text = (result.content[0] as { text?: string } | undefined)?.text ?? "";
-		assert.match(text, /Goal audit skipped/);
-		assert.match(text, /auditor disabled in settings/);
-		assert.match(completed?.activePath ?? "", /^\.pi\/goals\/active_goal_/);
-		assert.equal(completed?.archivedPath, undefined);
-		assert.ok(existsSync(path.join(ctx.cwd, completed?.activePath ?? "missing")), "complete goal remains in active file before turn_end");
+		const completed = assertCompletedGoal(harness);
+		assertCompletionSideEffects(harness, completed);
+		assertSkippedAuditResponse(result);
+		assertActiveCompletionFile(ctx, completed);
 	});
 });
 
