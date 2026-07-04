@@ -1,70 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import type { AgentUsage } from "../src/agent.ts";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.ts";
 import { WorkflowManager } from "../src/workflow-manager.ts";
-import { withFakeHomeAsync } from "./helpers/fake-home.ts";
+import { deferredAgent, fakeAgent, oneAgentScript, withTempCwd } from "./helpers/workflow-manager-fixtures.ts";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Agent runner that reports fixed usage so token accounting is exercised. */
-function fakeAgent(usage: Partial<AgentUsage> = {}, result: unknown = "ok") {
-  return {
-    async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }) {
-      options.onUsage?.({
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        total: 0,
-        cost: 0,
-        ...usage,
-      });
-      return result;
-    },
-  };
-}
-
-/** Agent that stays running until a deferred resolve is called externally. */
-function deferredAgent() {
-  let deferredResolve: ((value: unknown) => void) | null = null;
-  let deferredReject: ((err: Error) => void) | null = null;
-  const promise = new Promise((resolve, reject) => {
-    deferredResolve = resolve;
-    deferredReject = reject;
-  });
-  return {
-    resolve: (value: unknown = "done") => deferredResolve?.(value),
-    reject: (err: Error) => deferredReject?.(err),
-    runner: {
-      async run(_prompt: string, _options?: { onUsage?: (u: AgentUsage) => void }) {
-        return promise;
-      },
-    },
-  };
-}
-
-const oneAgentScript = `export const meta = { name: 'tracked_demo', description: 'one agent' }
-phase('Work')
-const a = await agent('do it', { label: 'a' })
-return { a }`;
-
-/** Run each manager test with isolated cwd and HOME so workflow state is isolated. */
-function withTempCwd(fn: (cwd: string) => Promise<void>) {
-  return async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-dw-abort-"));
-    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
-    try {
-      await withFakeHomeAsync(fakeHome, () => fn(cwd));
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
-  };
-}
 
 // ─── Abort Propagation (3 tests) ───────────────────────────────────────────────
 
