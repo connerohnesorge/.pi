@@ -109,7 +109,10 @@ export class SharedStore {
  * the given agent (via a run-unique deltaKey) so the write can be replayed
  * correctly on resume.
  */
-function createSharedStoreTools(store: SharedStore): ToolDefinition[] {
+function createStoreTools(
+  store: SharedStore,
+  put: (key: string, value: unknown) => void,
+): ToolDefinition[] {
   const storePut = defineTool({
     name: "store_put",
     label: "Store Put",
@@ -121,7 +124,7 @@ function createSharedStoreTools(store: SharedStore): ToolDefinition[] {
       value: Type.Any({ description: "The value to store (any JSON-serializable value)." }),
     }),
     async execute(_id: string, params: { key: string; value: unknown }) {
-      store.put(params.key, params.value);
+      put(params.key, params.value);
       return {
         content: [{ type: "text", text: `Stored value under key "${params.key}".` }],
         details: { key: params.key },
@@ -154,6 +157,10 @@ function createSharedStoreTools(store: SharedStore): ToolDefinition[] {
   return [storePut, storeGet];
 }
 
+function createSharedStoreTools(store: SharedStore): ToolDefinition[] {
+  return createStoreTools(store, (key, value) => store.put(key, value));
+}
+
 /**
  * Create per-agent store tools that attribute writes to `deltaKey`, a
  * run-unique `${runId}:${callIndex}` string (see the `SharedStore` class doc
@@ -163,46 +170,5 @@ function createSharedStoreTools(store: SharedStore): ToolDefinition[] {
  * store's delta journal and can be replayed additively on resume.
  */
 export function createAgentStoreTools(store: SharedStore, deltaKey: string): ToolDefinition[] {
-  const storePut = defineTool({
-    name: "store_put",
-    label: "Store Put",
-    description:
-      "Write a value to the shared run store. Any other agent in this workflow run can read it with store_get. Overwrites any existing value for the key. Note: when two parallel agents write the same key, the last write wins — no merge is performed.",
-    promptSnippet: "Write a value to the shared store",
-    parameters: Type.Object({
-      key: Type.String({ description: "The key to store the value under." }),
-      value: Type.Any({ description: "The value to store (any JSON-serializable value)." }),
-    }),
-    async execute(_id: string, params: { key: string; value: unknown }) {
-      store.trackPut(params.key, params.value, deltaKey);
-      return {
-        content: [{ type: "text", text: `Stored value under key "${params.key}".` }],
-        details: { key: params.key },
-      };
-    },
-  }) as unknown as ToolDefinition;
-
-  const storeGet = defineTool({
-    name: "store_get",
-    label: "Store Get",
-    description:
-      "Read a value from the shared run store previously written by store_put. Returns the stored value, or null when the key does not exist.",
-    promptSnippet: "Read a value from the shared store",
-    parameters: Type.Object({
-      key: Type.String({ description: "The key to read." }),
-    }),
-    async execute(_id: string, params: { key: string }) {
-      const found = store.has(params.key);
-      const value = store.get(params.key);
-      const text = found
-        ? `Value for key "${params.key}": ${JSON.stringify(value)}`
-        : `Key "${params.key}" not found in store.`;
-      return {
-        content: [{ type: "text", text }],
-        details: { key: params.key, value: found ? value : null, found },
-      };
-    },
-  }) as unknown as ToolDefinition;
-
-  return [storePut, storeGet];
+  return createStoreTools(store, (key, value) => store.trackPut(key, value, deltaKey));
 }
