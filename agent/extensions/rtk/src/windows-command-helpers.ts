@@ -9,6 +9,11 @@ interface LeadingCdSlashDParse {
 	tail: string;
 }
 
+interface CdSlashDScanState {
+	quote: '"' | "'" | null;
+	escaped: boolean;
+}
+
 const PYTHON_UTF8_ENV_PREFIX = "PYTHONIOENCODING=utf-8";
 
 function normalizeWindowsPathForBash(rawPath: string): string {
@@ -26,6 +31,48 @@ function quoteForBash(value: string): string {
 	return `"${escaped}"`;
 }
 
+function advanceCdSlashDScanner(state: CdSlashDScanState, character: string): boolean {
+	if (state.escaped) {
+		state.escaped = false;
+		return true;
+	}
+
+	if (state.quote !== null) {
+		if (character === "\\" && state.quote !== "'") {
+			state.escaped = true;
+		} else if (character === state.quote) {
+			state.quote = null;
+		}
+		return true;
+	}
+
+	if (character === "\\") {
+		state.escaped = true;
+		return true;
+	}
+
+	if (character === '"' || character === "'") {
+		state.quote = character;
+		return true;
+	}
+
+	return false;
+}
+
+function readCdSlashDOperator(command: string, index: number): { operator: string; tailStart: number } | null {
+	const pair = command.slice(index, index + 2);
+	if (pair === "&&" || pair === "||") {
+		return { operator: pair, tailStart: index + 2 };
+	}
+
+	const character = command[index] ?? "";
+	if (character === "|" || character === ";") {
+		return { operator: character, tailStart: index + 1 };
+	}
+
+	return null;
+}
+
 function parseLeadingCdSlashD(command: string): LeadingCdSlashDParse | null {
 	const prefixMatch = command.match(/^\s*cd\s+\/d\s+/i);
 	if (!prefixMatch) {
@@ -33,60 +80,20 @@ function parseLeadingCdSlashD(command: string): LeadingCdSlashDParse | null {
 	}
 
 	const pathStart = prefixMatch[0].length;
-	let quote: '"' | "'" | null = null;
-	let escaped = false;
+	const state: CdSlashDScanState = { quote: null, escaped: false };
 
 	for (let index = pathStart; index < command.length; index += 1) {
 		const character = command[index] ?? "";
-		const nextCharacter = command[index + 1] ?? "";
-
-		if (escaped) {
-			escaped = false;
+		if (advanceCdSlashDScanner(state, character)) {
 			continue;
 		}
 
-		if (quote !== null) {
-			if (character === "\\" && quote !== "'") {
-				escaped = true;
-				continue;
-			}
-			if (character === quote) {
-				quote = null;
-			}
-			continue;
-		}
-
-		if (character === "\\") {
-			escaped = true;
-			continue;
-		}
-
-		if (character === '"' || character === "'") {
-			quote = character;
-			continue;
-		}
-
-		if (character === "&" && nextCharacter === "&") {
+		const parsedOperator = readCdSlashDOperator(command, index);
+		if (parsedOperator) {
 			return {
 				rawPath: command.slice(pathStart, index),
-				operator: "&&",
-				tail: command.slice(index + 2),
-			};
-		}
-
-		if (character === "|" && nextCharacter === "|") {
-			return {
-				rawPath: command.slice(pathStart, index),
-				operator: "||",
-				tail: command.slice(index + 2),
-			};
-		}
-
-		if (character === "|" || character === ";") {
-			return {
-				rawPath: command.slice(pathStart, index),
-				operator: character,
-				tail: command.slice(index + 1),
+				operator: parsedOperator.operator,
+				tail: command.slice(parsedOperator.tailStart),
 			};
 		}
 	}
