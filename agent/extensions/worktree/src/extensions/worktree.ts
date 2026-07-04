@@ -70,7 +70,7 @@ interface WorktreeState {
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
-export type RedirectResult = { path: string } | { block: string };
+type RedirectResult = { path: string } | { block: string };
 
 function normalizePathInput(p: string): string {
 	const normalized = p.replace(UNICODE_SPACES, " ");

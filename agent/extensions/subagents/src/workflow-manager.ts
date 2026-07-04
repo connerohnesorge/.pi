@@ -178,7 +178,6 @@ export class WorkflowManager extends EventEmitter {
    * taken at tool-creation time would miss it.
    */
   // Used lazily by workflow-tool prompt guidelines.
-  // fallow-ignore-next-line unused-class-member
   getModelRegistry(): ModelRegistry | undefined {
     return this.modelRegistry;
   }
