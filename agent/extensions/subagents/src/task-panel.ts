@@ -12,7 +12,7 @@ import { shorten, statusIcon, type WorkflowAgentSnapshot, type WorkflowSnapshot 
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.ts";
 import type { WorkflowStorage } from "./workflow-saved.ts";
 import type { WorkflowSettings } from "./workflow-settings.ts";
-import { shortModel } from "./workflow-ui.ts";
+import { shortModel, workflowPhaseCounts, workflowPhaseGroups } from "./workflow-ui.ts";
 
 // `tokenUsage` is included so the detailed panel's live token/s counter refreshes
 // as tokens accrue (not only on agent start/end). It is harmless in compact mode —
@@ -179,9 +179,14 @@ export function installResultDelivery(pi: ExtensionAPI, manager: WorkflowManager
   );
 }
 
-export function renderPanel(manager: WorkflowManager, theme: Theme, width?: number): string[] {
+function panelRuns(manager: WorkflowManager) {
   const all = manager.listRuns();
   const active = all.filter((r) => r.status === "running" || r.status === "paused");
+  return { active, finished: all.length - active.length };
+}
+
+export function renderPanel(manager: WorkflowManager, theme: Theme, width?: number): string[] {
+  const { active, finished } = panelRuns(manager);
   if (!active.length) return [];
   const rows = active.map((r) => {
     const live = manager.getRun(r.runId);
@@ -193,7 +198,6 @@ export function renderPanel(manager: WorkflowManager, theme: Theme, width?: numb
   });
   // Finished runs leave this live panel but are kept in the navigator. Tell the
   // user so a completed run doesn't look like it vanished.
-  const finished = all.filter((r) => r.status !== "running" && r.status !== "paused").length;
   const hint = theme.fg(
     "dim",
     finished > 0
@@ -256,55 +260,52 @@ function clampMaxAgents(value: number | undefined): number {
 }
 
 /** Per-phase + per-agent body for one run in detailed mode (mirrors renderWorkflowLines). */
+function renderPhaseHeader(
+  title: string,
+  agents: WorkflowAgentSnapshot[],
+  currentPhase: string | undefined,
+  theme: Theme,
+): string {
+  const dim = (t: string) => theme.fg("dim", t);
+  const counts = workflowPhaseCounts(agents);
+  const complete = counts.done + counts.errors + counts.skipped === agents.length;
+  const marker = counts.running > 0 || (!complete && currentPhase === title) ? "▶" : complete ? "✓" : " ";
+  const meta = [
+    `${counts.done}/${agents.length} agents`,
+    counts.running ? `${counts.running} running` : "",
+    counts.errors ? `${counts.errors} errors` : "",
+    counts.tokens > 0 ? `${fmtTokensShort(counts.tokens)} tok` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return theme.fg("accent", `  ${marker} ${title}`) + dim(`  ${meta}`);
+}
+
+function renderAgentRows(agents: WorkflowAgentSnapshot[], maxAgents: number, theme: Theme): string[] {
+  const dim = (t: string) => theme.fg("dim", t);
+  const visible = agents.slice(-maxAgents);
+  const rows = visible.map((a) => {
+    const tok = a.tokens ? dim(` ${fmtTokensShort(a.tokens)} tok`) : "";
+    const mdl = shortModel(a.model);
+    const model = mdl ? dim(` · ${mdl}`) : "";
+    return `    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}`;
+  });
+  if (agents.length > visible.length) rows.push(dim(`    … ${agents.length - visible.length} earlier agents`));
+  return rows;
+}
+
+/** Per-phase + per-agent body for one run in detailed mode (mirrors renderWorkflowLines). */
 function renderRunBody(
   snap: WorkflowSnapshot,
   agents: WorkflowAgentSnapshot[],
   maxAgents: number,
   theme: Theme,
 ): string[] {
-  const dim = (t: string) => theme.fg("dim", t);
-  const lines: string[] = [];
-  // Group agents by phase, declared order first then discovery order (as the navigator does).
-  const order = snap.phases.length ? [...snap.phases] : [];
-  const byPhase = new Map<string, WorkflowAgentSnapshot[]>();
-  for (const a of agents) {
-    const key = a.phase ?? "(no phase)";
-    if (!byPhase.has(key)) byPhase.set(key, []);
-    byPhase.get(key)?.push(a);
-    if (!order.includes(key)) order.push(key);
-  }
-  for (const title of order) {
-    const phaseAgents = byPhase.get(title) ?? [];
-    if (!phaseAgents.length) continue;
-    const done = phaseAgents.filter((a) => a.status === "done").length;
-    const running = phaseAgents.filter((a) => a.status === "running").length;
-    const errors = phaseAgents.filter((a) => a.status === "error").length;
-    const skipped = phaseAgents.filter((a) => a.status === "skipped").length;
-    const complete = done + errors + skipped === phaseAgents.length;
-    const marker = running > 0 || (!complete && snap.currentPhase === title) ? "▶" : complete ? "✓" : " ";
-    const phaseTokens = phaseAgents.reduce((n, a) => n + (a.tokens ?? 0), 0);
-    const phaseMeta = [
-      `${done}/${phaseAgents.length} agents`,
-      running ? `${running} running` : "",
-      errors ? `${errors} errors` : "",
-      phaseTokens > 0 ? `${fmtTokensShort(phaseTokens)} tok` : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    lines.push(theme.fg("accent", `  ${marker} ${title}`) + dim(`  ${phaseMeta}`));
-
-    const visible = phaseAgents.slice(-maxAgents);
-    for (const a of visible) {
-      const tok = a.tokens ? dim(` ${fmtTokensShort(a.tokens)} tok`) : "";
-      const mdl = shortModel(a.model);
-      const model = mdl ? dim(` · ${mdl}`) : "";
-      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}`);
-    }
-    if (phaseAgents.length > visible.length) {
-      lines.push(dim(`    … ${phaseAgents.length - visible.length} earlier agents`));
-    }
-  }
-  return lines;
+  return workflowPhaseGroups(snap.phases, agents).flatMap(({ title, agents: phaseAgents }) =>
+    phaseAgents.length
+      ? [renderPhaseHeader(title, phaseAgents, snap.currentPhase, theme), ...renderAgentRows(phaseAgents, maxAgents, theme)]
+      : [],
+  );
 }
 
 /**
@@ -312,6 +313,30 @@ function renderRunBody(
  * cost, and a live token/s rate, followed by per-phase progress and per-agent rows
  * (capped at `maxAgents` per phase). `now` is injected for testability.
  */
+function renderDetailedRun(r: ReturnType<WorkflowManager["listRuns"]>[number], manager: WorkflowManager, theme: Theme, maxAgents: number, now: number): string[] {
+  const live = manager.getRun(r.runId);
+  const snap = live?.snapshot;
+  const agents = (snap?.agents ?? r.agents) as WorkflowAgentSnapshot[];
+  const done = agents.filter((a) => a.status === "done").length;
+  const total = agents.reduce((n, a) => n + (a.tokens ?? 0), 0);
+  const usage = snap?.tokenUsage ?? r.tokenUsage;
+  const dim = (t: string) => theme.fg("dim", t);
+
+  sampleTokens(r.runId, total, now);
+  const rate = r.status === "running" ? tokensPerSecond(r.runId) : 0;
+  const meta = [
+    `${done}/${agents.length} agents`,
+    snap?.currentPhase || "",
+    total > 0 ? `${fmtTokensShort(total)} tok` : "",
+    usage?.cost ? `$${usage.cost.toFixed(usage.cost >= 0.01 ? 2 : 4)}` : "",
+    rate > 0 ? `${Math.round(rate)} tok/s` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const icon = r.status === "paused" ? "⏸" : "◆";
+  return [`  ${icon} ${theme.bold(r.workflowName)}  ${dim(meta)}`, ...(snap ? renderRunBody(snap, agents, maxAgents, theme) : [])];
+}
+
 export function renderPanelDetailed(
   manager: WorkflowManager,
   theme: Theme,
@@ -319,54 +344,18 @@ export function renderPanelDetailed(
   maxAgents: number,
   now: number,
 ): string[] {
-  const all = manager.listRuns();
-  const active = all.filter((r) => r.status === "running" || r.status === "paused");
+  const { active, finished } = panelRuns(manager);
   if (!active.length) return [];
   const dim = (t: string) => theme.fg("dim", t);
-  const out: string[] = [theme.bold(`Workflows running (${active.length}):`)];
-
-  for (const r of active) {
-    const live = manager.getRun(r.runId);
-    const snap = live?.snapshot;
-    const agents = (snap?.agents ?? r.agents) as WorkflowAgentSnapshot[];
-    const done = agents.filter((a) => a.status === "done").length;
-    const icon = r.status === "paused" ? "⏸" : "◆";
-    const usage = snap?.tokenUsage ?? r.tokenUsage;
-    // The run-level tokenUsage aggregate is only finalized when the run ends, so
-    // it reads 0 for the whole live run. Per-agent `tokens` update on each agent
-    // completion, so sum those for a live total (and keep the header consistent
-    // with the per-phase subtotals). Note: tokens land at agent-completion
-    // granularity, so the rate reflects completion throughput — it decays to 0
-    // during a single long-running agent or a stall (which is the intended signal).
-    const total = agents.reduce((n, a) => n + (a.tokens ?? 0), 0);
-    // Sample the running total and derive the rolling token/s. Paused runs don't
-    // accrue tokens, so their rate is suppressed (a stalled rate would mislead).
-    sampleTokens(r.runId, total, now);
-    const rate = r.status === "running" ? tokensPerSecond(r.runId) : 0;
-    const meta = [
-      `${done}/${agents.length} agents`,
-      snap?.currentPhase || "",
-      total > 0 ? `${fmtTokensShort(total)} tok` : "",
-      // 2 decimals for ≥1¢, 4 for sub-cent so a real cost never shows as "$0.00".
-      // (cost is only known once the run finalizes its usage.)
-      usage?.cost ? `$${usage.cost.toFixed(usage.cost >= 0.01 ? 2 : 4)}` : "",
-      rate > 0 ? `${Math.round(rate)} tok/s` : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    out.push(`  ${icon} ${theme.bold(r.workflowName)}  ${dim(meta)}`);
-    if (snap) out.push(...renderRunBody(snap, agents, maxAgents, theme));
-  }
-
-  const finished = all.filter((r) => r.status !== "running" && r.status !== "paused").length;
-  out.push(
+  const body = active.flatMap((r) => renderDetailedRun(r, manager, theme, maxAgents, now));
+  body.push(
     dim(
       finished > 0
         ? `  /workflows — open navigator (${finished} finished kept in history)`
         : "  /workflows — open navigator",
     ),
   );
-  return borderedPanel(`Workflows running (${active.length})`, out.slice(1), theme, width);
+  return borderedPanel(`Workflows running (${active.length})`, body, theme, width);
 }
 
 /**

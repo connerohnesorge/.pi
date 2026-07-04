@@ -70,6 +70,34 @@ interface AgentRow {
   model?: string;
 }
 
+export interface WorkflowPhaseGroup<T extends { phase?: string }> {
+  title: string;
+  agents: T[];
+}
+
+export function workflowPhaseGroups<T extends { phase?: string }>(phases: string[], agents: T[]): WorkflowPhaseGroup<T>[] {
+  const order = phases.length ? [...phases] : [];
+  const byPhase = new Map<string, T[]>();
+  for (const agent of agents) {
+    const key = agent.phase ?? "(no phase)";
+    if (!byPhase.has(key)) byPhase.set(key, []);
+    byPhase.get(key)?.push(agent);
+    if (!order.includes(key)) order.push(key);
+  }
+  return order.map((title) => ({ title, agents: byPhase.get(title) ?? [] }));
+}
+
+export function workflowPhaseCounts(agents: Array<{ status: string; tokens?: number }>) {
+  const count = (status: string) => agents.filter((agent) => agent.status === status).length;
+  return {
+    done: count("done"),
+    running: count("running"),
+    errors: count("error"),
+    skipped: count("skipped"),
+    tokens: agents.reduce((n, agent) => n + (agent.tokens ?? 0), 0),
+  };
+}
+
 /** Short, human-friendly model label: drop the provider prefix for display. */
 export function shortModel(model: string | undefined): string | undefined {
   if (!model) return undefined;
@@ -131,22 +159,9 @@ export class NavigatorModel {
   phases(runId: string): PhaseRow[] {
     const snap = this.snapshot(runId)?.snapshot;
     if (!snap) return [];
-    const order = snap.phases.length ? [...snap.phases] : [];
-    const byPhase = new Map<string, AgentRow[]>();
-    for (const a of snap.agents) {
-      const key = a.phase ?? "(no phase)";
-      if (!byPhase.has(key)) byPhase.set(key, []);
-      byPhase.get(key)?.push(a);
-      if (!order.includes(key)) order.push(key);
-    }
-    return order.map((title) => {
-      const agents = byPhase.get(title) ?? [];
-      return {
-        title,
-        done: agents.filter((a) => a.status === "done").length,
-        total: agents.length,
-        tokens: agents.reduce((n, a) => n + (a.tokens ?? 0), 0),
-      };
+    return workflowPhaseGroups<AgentRow>(snap.phases, snap.agents).map(({ title, agents }) => {
+      const counts = workflowPhaseCounts(agents);
+      return { title, done: counts.done, total: agents.length, tokens: counts.tokens };
     });
   }
 
