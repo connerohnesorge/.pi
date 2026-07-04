@@ -840,78 +840,56 @@ class WrappedSingleSelectList extends SelectionListBase<string> {
       return visibleLines;
    }
 
+   private moveSelection(delta: -1 | 1, count: number): void {
+      this.selectedIndex = delta < 0
+         ? (this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1)
+         : (this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1);
+      this.invalidate();
+   }
+
+   private selectNumberedOption(data: string, filteredOptions: QuestionOption[]): boolean {
+      const numMatch = data.match(/^[1-9]$/);
+      if (!numMatch || filteredOptions.length === 0) return false;
+
+      const idx = Number.parseInt(numMatch[0], 10) - 1;
+      if (idx < 0 || idx >= filteredOptions.length) return false;
+
+      this.selectedIndex = idx;
+      this.invalidate();
+      return true;
+   }
+
+   private confirmSelectedOption(filteredOptions: QuestionOption[]): void {
+      const result = filteredOptions[this.selectedIndex]?.title;
+      if (result) this.onSubmit?.(result);
+      else this.onCancel?.();
+   }
+
    handleInput(data: string): void {
-      if (this.searchQuery && matchesKey(data, Key.escape)) {
-         this.setSearchQuery("");
-         return;
-      }
-
-      if (this.keybindings.matches(data, "tui.select.cancel")) {
-         this.onCancel?.();
-         return;
-      }
-
-      if (this.allowComment && !this.commentToggle.disabled && this.commentToggle.matches(data)) {
-         this.toggleComment();
-         return;
-      }
+      if (this.searchQuery && matchesKey(data, Key.escape)) return this.setSearchQuery("");
+      if (this.keybindings.matches(data, "tui.select.cancel")) return this.onCancel?.();
+      if (this.allowComment && !this.commentToggle.disabled && this.commentToggle.matches(data)) return this.toggleComment();
 
       const filteredOptions = this.getFilteredOptions();
       const rowModel = this.getRowModel(filteredOptions);
       const count = rowModel.count;
 
-      if (matchesSelectUp(data, this.keybindings) && count > 0) {
-         this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
-         this.invalidate();
-         return;
-      }
+      if (matchesSelectUp(data, this.keybindings) && count > 0) return this.moveSelection(-1, count);
+      if (matchesSelectDown(data, this.keybindings) && count > 0) return this.moveSelection(1, count);
+      if (this.selectNumberedOption(data, filteredOptions)) return;
 
-      if (matchesSelectDown(data, this.keybindings) && count > 0) {
-         this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
-         this.invalidate();
-         return;
-      }
-
-      const numMatch = data.match(/^[1-9]$/);
-      if (numMatch && filteredOptions.length > 0) {
-         const idx = Number.parseInt(numMatch[0], 10) - 1;
-         if (idx >= 0 && idx < filteredOptions.length) {
-            this.selectedIndex = idx;
-            this.invalidate();
-            return;
-         }
-      }
-
-      if (matchesKey(data, Key.space) && count > 0 && rowModel.isCommentToggleRow(this.selectedIndex)) {
-         this.toggleComment();
-         return;
-      }
+      if (matchesKey(data, Key.space) && count > 0 && rowModel.isCommentToggleRow(this.selectedIndex)) return this.toggleComment();
 
       if (this.keybindings.matches(data, "tui.select.confirm") && count > 0) {
-         if (rowModel.isCommentToggleRow(this.selectedIndex)) {
-            this.toggleComment();
-            return;
-         }
-         if (rowModel.isFreeformRow(this.selectedIndex)) {
-            this.onEnterFreeform?.();
-            return;
-         }
-
-         const result = filteredOptions[this.selectedIndex]?.title;
-         if (result) this.onSubmit?.(result);
-         else this.onCancel?.();
-         return;
+         if (rowModel.isCommentToggleRow(this.selectedIndex)) return this.toggleComment();
+         if (rowModel.isFreeformRow(this.selectedIndex)) return this.onEnterFreeform?.();
+         return this.confirmSelectedOption(filteredOptions);
       }
 
-      if (this.keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) {
-         this.popSearchCharacter();
-         return;
-      }
+      if (this.keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) return this.popSearchCharacter();
 
       const printableInput = this.getPrintableInput(data);
-      if (printableInput) {
-         this.setSearchQuery(this.searchQuery + printableInput);
-      }
+      if (printableInput) this.setSearchQuery(this.searchQuery + printableInput);
    }
 
    render(width: number): string[] {
