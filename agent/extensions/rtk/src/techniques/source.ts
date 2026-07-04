@@ -112,20 +112,47 @@ function handlePythonDocstring(line: string, trimmed: string, language: Language
 	return true;
 }
 
-function handleBlockOrDocLine(
-	line: string,
-	trimmed: string,
-	language: Language,
-	patterns: CommentPatterns,
-	state: MinimalFilterState,
-	result: string[],
-): boolean {
+interface MinimalLineContext {
+	line: string;
+	trimmed: string;
+	language: Language;
+	patterns: CommentPatterns;
+	state: MinimalFilterState;
+	result: string[];
+}
+
+type MinimalLineHandler = (context: MinimalLineContext) => boolean;
+
+function handleBlockOrDocLine({ line, trimmed, language, patterns, state, result }: MinimalLineContext): boolean {
 	return handleDelimitedComment(trimmed, patterns, state) || handlePythonDocstring(line, trimmed, language, state, result);
 }
 
+function handleLineComment({ line, trimmed, patterns, result }: MinimalLineContext): boolean {
+	if (trimmed.startsWith(patterns.docLine ?? "\0")) result.push(line);
+	return trimmed.startsWith(patterns.line ?? "\0");
+}
+
+function preserveBlankLine({ trimmed, result }: MinimalLineContext): boolean {
+	if (trimmed.length !== 0) return false;
+	result.push("");
+	return true;
+}
+
+function preserveContentLine({ line, result }: MinimalLineContext): boolean {
+	result.push(line);
+	return true;
+}
+
+const MINIMAL_LINE_HANDLERS: MinimalLineHandler[] = [
+	({ line, trimmed, state, result }) => preserveUserscriptMetadata(line, trimmed, state, result),
+	handleBlockOrDocLine,
+	handleLineComment,
+	preserveBlankLine,
+	preserveContentLine,
+];
+
 function filterMinimal(content: string, language: Language): string {
 	const patterns = COMMENT_PATTERNS[language];
-	const lines = content.split("\n");
 	const result: string[] = [];
 	const state: MinimalFilterState = {
 		inBlockComment: false,
@@ -133,30 +160,9 @@ function filterMinimal(content: string, language: Language): string {
 		inUserscriptMetadataBlock: false,
 	};
 
-	for (const line of lines) {
-		const trimmed = line.trim();
-
-		if (preserveUserscriptMetadata(line, trimmed, state, result)) {
-			continue;
-		}
-
-		if (handleBlockOrDocLine(line, trimmed, language, patterns, state, result)) {
-			continue;
-		}
-
-		if (patterns.line && trimmed.startsWith(patterns.line)) {
-			if (patterns.docLine && trimmed.startsWith(patterns.docLine)) {
-				result.push(line);
-			}
-			continue;
-		}
-
-		if (trimmed.length === 0) {
-			result.push("");
-			continue;
-		}
-
-		result.push(line);
+	for (const line of content.split("\n")) {
+		const context = { line, trimmed: line.trim(), language, patterns, state, result };
+		MINIMAL_LINE_HANDLERS.some((handleLine) => handleLine(context));
 	}
 
 	return result
