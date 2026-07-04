@@ -59,6 +59,11 @@ interface MinimalFilterState {
 	inUserscriptMetadataBlock: boolean;
 }
 
+interface AggressiveFilterState {
+	braceDepth: number;
+	inImplementation: boolean;
+}
+
 export function detectLanguage(filePath: string): Language {
 	const lastDot = filePath.lastIndexOf(".");
 	if (lastDot === -1) {
@@ -86,6 +91,27 @@ function preserveUserscriptMetadata(line: string, trimmed: string, state: Minima
 	return true;
 }
 
+function handleDelimitedComment(trimmed: string, patterns: CommentPatterns, state: MinimalFilterState): boolean {
+	if (!patterns.blockStart || !patterns.blockEnd) return false;
+	if (!state.inDocstring && trimmed.includes(patterns.blockStart) && !trimmed.startsWith(patterns.docBlockStart ?? "\0")) {
+		state.inBlockComment = true;
+	}
+	if (!state.inBlockComment) return false;
+	if (trimmed.includes(patterns.blockEnd)) state.inBlockComment = false;
+	return true;
+}
+
+function handlePythonDocstring(line: string, trimmed: string, language: Language, state: MinimalFilterState, result: string[]): boolean {
+	if (language === "python" && trimmed.startsWith('"""')) {
+		state.inDocstring = !state.inDocstring;
+		result.push(line);
+		return true;
+	}
+	if (!state.inDocstring) return false;
+	result.push(line);
+	return true;
+}
+
 function handleBlockOrDocLine(
 	line: string,
 	trimmed: string,
@@ -94,35 +120,7 @@ function handleBlockOrDocLine(
 	state: MinimalFilterState,
 	result: string[],
 ): boolean {
-	if (patterns.blockStart && patterns.blockEnd) {
-		if (
-			!state.inDocstring &&
-			trimmed.includes(patterns.blockStart) &&
-			!(patterns.docBlockStart && trimmed.startsWith(patterns.docBlockStart))
-		) {
-			state.inBlockComment = true;
-		}
-
-		if (state.inBlockComment) {
-			if (trimmed.includes(patterns.blockEnd)) {
-				state.inBlockComment = false;
-			}
-			return true;
-		}
-	}
-
-	if (language === "python" && trimmed.startsWith('"""')) {
-		state.inDocstring = !state.inDocstring;
-		result.push(line);
-		return true;
-	}
-
-	if (state.inDocstring) {
-		result.push(line);
-		return true;
-	}
-
-	return false;
+	return handleDelimitedComment(trimmed, patterns, state) || handlePythonDocstring(line, trimmed, language, state, result);
 }
 
 function filterMinimal(content: string, language: Language): string {
@@ -167,96 +165,89 @@ function filterMinimal(content: string, language: Language): string {
 		.trim();
 }
 
+function countBraces(trimmed: string): number {
+	return (trimmed.match(/\{/g) ?? []).length - (trimmed.match(/\}/g) ?? []).length;
+}
+
+function shouldKeepImplementationLine(trimmed: string, state: AggressiveFilterState): boolean {
+	state.braceDepth += countBraces(trimmed);
+	return state.braceDepth <= 1 && (trimmed === "{" || trimmed === "}" || trimmed.endsWith("{"));
+}
+
+function finishImplementationIfNeeded(trimmed: string, state: AggressiveFilterState, result: string[]): void {
+	if (state.braceDepth > 0) return;
+	state.inImplementation = false;
+	if (trimmed.length > 0 && trimmed !== "}") result.push("    // ... implementation");
+}
+
+function handleAggressiveImplementation(line: string, trimmed: string, state: AggressiveFilterState, result: string[]): boolean {
+	if (!state.inImplementation) return false;
+	if (shouldKeepImplementationLine(trimmed, state)) result.push(line);
+	finishImplementationIfNeeded(trimmed, state, result);
+	return true;
+}
+
 function filterAggressive(content: string, language: Language): string {
-	const minimal = filterMinimal(content, language);
-	const lines = minimal.split("\n");
 	const result: string[] = [];
-	let braceDepth = 0;
-	let inImplementation = false;
+	const state: AggressiveFilterState = { braceDepth: 0, inImplementation: false };
 
-	for (const line of lines) {
+	for (const line of filterMinimal(content, language).split("\n")) {
 		const trimmed = line.trim();
-
 		if (IMPORT_PATTERN.test(trimmed)) {
 			result.push(line);
 			continue;
 		}
-
 		if (SIGNATURE_PATTERN.test(trimmed)) {
 			result.push(line);
-			inImplementation = true;
-			braceDepth = 0;
+			state.inImplementation = true;
+			state.braceDepth = 0;
 			continue;
 		}
-
-		const openBraces = (trimmed.match(/\{/g) ?? []).length;
-		const closeBraces = (trimmed.match(/\}/g) ?? []).length;
-
-		if (inImplementation) {
-			braceDepth += openBraces;
-			braceDepth -= closeBraces;
-
-			if (braceDepth <= 1 && (trimmed === "{" || trimmed === "}" || trimmed.endsWith("{"))) {
-				result.push(line);
-			}
-
-			if (braceDepth <= 0) {
-				inImplementation = false;
-				if (trimmed.length > 0 && trimmed !== "}") {
-					result.push("    // ... implementation");
-				}
-			}
-			continue;
-		}
-
-		if (CONST_PATTERN.test(trimmed)) {
-			result.push(line);
-		}
+		if (handleAggressiveImplementation(line, trimmed, state, result)) continue;
+		if (CONST_PATTERN.test(trimmed)) result.push(line);
 	}
 
 	return result.join("\n").trim();
 }
 
+function isImportantTruncateLine(trimmed: string): boolean {
+	return (
+		SIGNATURE_PATTERN.test(trimmed) ||
+		IMPORT_PATTERN.test(trimmed) ||
+		trimmed.startsWith("pub ") ||
+		trimmed.startsWith("export ") ||
+		trimmed === "}" ||
+		trimmed === "{"
+	);
+}
+
+function pushSkippedSectionNotice(result: string[], totalLines: number, keptLines: number): void {
+	result.push(`    // ... ${totalLines - keptLines} lines omitted`);
+}
+
 export function smartTruncate(content: string, maxLines: number, _language: Language): string {
 	const lines = content.split("\n");
-	if (lines.length <= maxLines) {
-		return content;
-	}
+	if (lines.length <= maxLines) return content;
 
 	const result: string[] = [];
 	let keptLines = 0;
 	let skippedSection = false;
 
 	for (const line of lines) {
-		const trimmed = line.trim();
-		const isImportant =
-			SIGNATURE_PATTERN.test(trimmed) ||
-			IMPORT_PATTERN.test(trimmed) ||
-			trimmed.startsWith("pub ") ||
-			trimmed.startsWith("export ") ||
-			trimmed === "}" ||
-			trimmed === "{";
-
-		if (isImportant || keptLines < maxLines / 2) {
-			if (skippedSection) {
-				result.push(`    // ... ${lines.length - keptLines} lines omitted`);
-				skippedSection = false;
-			}
+		if (isImportantTruncateLine(line.trim()) || keptLines < maxLines / 2) {
+			if (skippedSection) pushSkippedSectionNotice(result, lines.length, keptLines);
+			skippedSection = false;
 			result.push(line);
 			keptLines += 1;
 		} else {
 			skippedSection = true;
 		}
-
-		if (keptLines >= maxLines - 1) {
-			break;
-		}
+		if (keptLines >= maxLines - 1) break;
 	}
 
 	if (skippedSection || keptLines < lines.length) {
 		result.push(`// ... ${lines.length - keptLines} more lines (total: ${lines.length})`);
 	}
-
 	return result.join("\n");
 }
 

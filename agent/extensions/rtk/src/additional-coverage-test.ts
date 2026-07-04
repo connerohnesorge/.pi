@@ -7,7 +7,9 @@ import { clearOutputMetrics, getOutputMetricsSummary, trackOutputSavings } from 
 import { runTest } from "./test-helpers.ts";
 import { matchesCommandPatterns, normalizeCommandForDetection } from "./techniques/command-detection.ts";
 import { compactPath } from "./techniques/path-utils.ts";
-import { filterSourceCode } from "./techniques/source.ts";
+import { groupSearchResults } from "./techniques/search.ts";
+import { filterSourceCode, smartTruncate } from "./techniques/source.ts";
+import { aggregateLinterOutput } from "./techniques/linter.ts";
 import { applyWindowsBashCompatibilityFixes } from "./windows-command-helpers.ts";
 import { applyRewrittenCommandShellSafetyFixups } from "./rewrite-pipeline-safety.ts";
 import { applyRtkCommandEnvironment } from "./rtk-command-environment.ts";
@@ -178,6 +180,39 @@ const kept = true;
 // ==/UserScript==
 
 const kept = true;`,
+	);
+});
+
+runTest("search output groups matches by compacted file path", () => {
+	assert.equal(
+		groupSearchResults("src/b.ts:2:beta\nsrc/a.ts:1:alpha", 50),
+		"2 matches in 2 files:\n\n> src/a.ts (1 matches):\n    1: alpha\n\n> src/b.ts (1 matches):\n    2: beta\n\n",
+	);
+	assert.equal(groupSearchResults("not a match"), null);
+});
+
+runTest("linter aggregation preserves eslint summary shape", () => {
+	assert.equal(
+		aggregateLinterOutput(
+			"src/a.ts:3:5: error no semicolon [semi]\nsrc/a.ts:4:1: warning unused [no-unused-vars]",
+			"pnpm eslint src",
+		),
+		"ESLint: 1 errors, 1 warnings in 1 files\n═══════════════════════════════════════\nTop rules:\n  semi (1x)\n  no-unused-vars (1x)\n\nTop files:\n  src/a.ts (2 issues)\n    semi (1)\n    no-unused-vars (1)\n",
+	);
+});
+
+runTest("source aggressive filter and smart truncate keep structural lines", () => {
+	const source = `import x from "x";\n\nfunction demo() {\n\tconst hidden = call();\n\treturn hidden;\n}\n\nconst kept = true;`;
+	assert.equal(
+		filterSourceCode(source, "typescript", "aggressive"),
+		`import x from "x";
+function demo() {
+    // ... implementation
+const kept = true;`,
+	);
+	assert.equal(
+		smartTruncate("import x\nkeep\nskip\nexport function demo() {}\n}", 4, "typescript"),
+		"import x\nkeep\n    // ... 3 lines omitted\nexport function demo() {}\n// ... 2 more lines (total: 5)",
 	);
 });
 

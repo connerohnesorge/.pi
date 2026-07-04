@@ -217,12 +217,26 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	const unavailableRuntimeStatus = (
+		executableResolution: RtkExecutableResolution | undefined,
+		lastError: string,
+	): RuntimeStatus => ({
+		rtkAvailable: false,
+		lastCheckedAt: Date.now(),
+		lastError,
+		rtkExecutablePath: executableResolution?.resolvedPath,
+		rtkExecutableCommand: executableResolution?.command,
+		rtkExecutableResolver: executableResolution?.resolver,
+		rtkExecutableResolutionWarning: executableResolution?.warning,
+	});
+
 	const refreshRuntimeStatus = async (): Promise<RuntimeStatus> => {
 		let executableResolution: RtkExecutableResolution | undefined;
 		try {
 			executableResolution = await resolveRtkExecutable(pi);
 			const result = await pi.exec(executableResolution.command, ["--version"], { timeout: 5000 });
 			if (result.code === 0) {
+				missingRtkWarningShown = false;
 				runtimeStatus = {
 					rtkAvailable: true,
 					lastCheckedAt: Date.now(),
@@ -231,36 +245,18 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 					rtkExecutableResolver: executableResolution.resolver,
 					rtkExecutableResolutionWarning: executableResolution.warning,
 				};
-				missingRtkWarningShown = false;
 				return runtimeStatus;
 			}
 
 			const detail = trimMessage(
 				`${result.stderr || ""} ${result.stdout || ""} ${result.code ? `(exit ${result.code})` : ""}`,
 			);
-			runtimeStatus = {
-				rtkAvailable: false,
-				lastCheckedAt: Date.now(),
-				lastError: detail || `exit ${result.code}`,
-				rtkExecutablePath: executableResolution.resolvedPath,
-				rtkExecutableCommand: executableResolution.command,
-				rtkExecutableResolver: executableResolution.resolver,
-				rtkExecutableResolutionWarning: executableResolution.warning,
-			};
-			return runtimeStatus;
+			runtimeStatus = unavailableRuntimeStatus(executableResolution, detail || `exit ${result.code}`);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			runtimeStatus = {
-				rtkAvailable: false,
-				lastCheckedAt: Date.now(),
-				lastError: trimMessage(message),
-				rtkExecutablePath: executableResolution?.resolvedPath,
-				rtkExecutableCommand: executableResolution?.command,
-				rtkExecutableResolver: executableResolution?.resolver,
-				rtkExecutableResolutionWarning: executableResolution?.warning,
-			};
-			return runtimeStatus;
+			runtimeStatus = unavailableRuntimeStatus(executableResolution, trimMessage(message));
 		}
+		return runtimeStatus;
 	};
 
 	const maybeWarnRtkMissing = (ctx: ExtensionContext): void => {
@@ -378,63 +374,56 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 		};
 	});
 
-	pi.on("tool_call", async (event, ctx) => {
-		if (!config.enabled) {
-			return {};
-		}
+	const currentExecutableResolution = (): RtkExecutableResolution | undefined => {
+		if (!runtimeStatus.rtkExecutableCommand) return undefined;
+		return {
+			command: runtimeStatus.rtkExecutableCommand,
+			resolvedPath: runtimeStatus.rtkExecutablePath,
+			resolver: runtimeStatus.rtkExecutableResolver === "where" ? "where" : "which",
+			warning: runtimeStatus.rtkExecutableResolutionWarning,
+		};
+	};
 
-		if (!isToolCallEventType("bash", event)) {
-			return {};
+	const applyRewriteMode = (event: { input: { command: string } }, originalCommand: string, rewrittenCommand: string, ctx: ExtensionContext): void => {
+		if (config.showRewriteNotifications && ctx.hasUI) {
+			ctx.ui.notify(formatRewriteNotice(originalCommand, rewrittenCommand), "info");
 		}
+		const envScopedRewrittenCommand = applyRtkCommandEnvironment(rewrittenCommand);
+		event.input.command = applyRewrittenCommandShellSafetyFixups(envScopedRewrittenCommand);
+	};
 
+	const applySuggestMode = (originalCommand: string, rewrittenCommand: string, ctx: ExtensionContext): void => {
+		const suggestionKey = `${originalCommand}:${rewrittenCommand}`;
+		if (suggestionNotices.remember(suggestionKey) && ctx.hasUI) {
+			ctx.ui.notify(`RTK suggestion: ${rewrittenCommand}`, "info");
+		}
+	};
+
+	const handleBashToolCall = async (event: { input: { command: string } }, ctx: ExtensionContext): Promise<Record<string, never>> => {
 		if (config.mode === "rewrite") {
 			const compatibility = applyWindowsBashCompatibilityFixes(event.input.command);
-			if (compatibility.command !== event.input.command) {
-				event.input.command = compatibility.command;
-			}
+			event.input.command = compatibility.command;
 		}
 
 		await ensureRuntimeStatusFresh();
-		if (shouldSkipCommandHandlingWhenRtkMissing(config, runtimeStatus)) {
-			return {};
-		}
+		if (shouldSkipCommandHandlingWhenRtkMissing(config, runtimeStatus)) return {};
 
-		let executableResolution: RtkExecutableResolution | undefined;
-		if (runtimeStatus.rtkExecutableCommand) {
-			const resolver: RtkExecutableResolution["resolver"] =
-				runtimeStatus.rtkExecutableResolver === "where" ? "where" : "which";
-			executableResolution = {
-				command: runtimeStatus.rtkExecutableCommand,
-				resolvedPath: runtimeStatus.rtkExecutablePath,
-				resolver,
-				warning: runtimeStatus.rtkExecutableResolutionWarning,
-			};
-		}
-		const decision = await computeRewriteDecision(event.input.command, config, pi, { executableResolution });
+		const decision = await computeRewriteDecision(event.input.command, config, pi, {
+			executableResolution: currentExecutableResolution(),
+		});
 		if (!decision.changed) {
-			if (decision.warning) {
-				warnOnce(ctx, formatRewriteWarning(decision.originalCommand, decision.warning));
-			}
+			if (decision.warning) warnOnce(ctx, formatRewriteWarning(decision.originalCommand, decision.warning));
 			return {};
 		}
 
-		if (config.mode === "rewrite") {
-			if (config.showRewriteNotifications && ctx.hasUI) {
-				ctx.ui.notify(formatRewriteNotice(decision.originalCommand, decision.rewrittenCommand), "info");
-			}
-			const envScopedRewrittenCommand = applyRtkCommandEnvironment(decision.rewrittenCommand);
-			event.input.command = applyRewrittenCommandShellSafetyFixups(envScopedRewrittenCommand);
-			return {};
-		}
-
-		if (config.mode === "suggest") {
-			const suggestionKey = `${decision.originalCommand}:${decision.rewrittenCommand}`;
-			if (suggestionNotices.remember(suggestionKey) && ctx.hasUI) {
-				ctx.ui.notify(`RTK suggestion: ${decision.rewrittenCommand}`, "info");
-			}
-		}
-
+		if (config.mode === "rewrite") applyRewriteMode(event, decision.originalCommand, decision.rewrittenCommand, ctx);
+		if (config.mode === "suggest") applySuggestMode(decision.originalCommand, decision.rewrittenCommand, ctx);
 		return {};
+	};
+
+	pi.on("tool_call", async (event, ctx) => {
+		if (!config.enabled || !isToolCallEventType("bash", event)) return {};
+		return handleBashToolCall(event, ctx);
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
