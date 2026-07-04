@@ -83,18 +83,17 @@ function sourceKey(source: PromptSourceInfo): string {
 	return source.sessionPath ?? source.cwd ?? source.sessionName ?? source.source;
 }
 
-function promptFromSessionEntry(entry: unknown, source: PromptSourceInfo, ordinal = 0): PromptHistoryItem | null {
+function userMessageEntry(entry: unknown): LooseEntry | null {
 	if (!entry || typeof entry !== "object") return null;
 	const candidate = entry as LooseEntry;
-	if (candidate.type !== "message" || candidate.message?.role !== "user") return null;
+	return candidate.type === "message" && candidate.message?.role === "user" ? candidate : null;
+}
 
-	const text = extractPromptTextFromMessageContent(candidate.message.content);
-	if (!text) return null;
-
+function buildPromptItem(candidate: LooseEntry, source: PromptSourceInfo, ordinal: number, text: string): PromptHistoryItem | null {
 	const normalizedText = normalizeSearchText(text);
 	if (!normalizedText) return null;
 
-	const timestampMs = timestampToMs(candidate.message.timestamp) ?? timestampToMs(candidate.timestamp) ?? source.modifiedMs ?? 0;
+	const timestampMs = timestampToMs(candidate.message?.timestamp) ?? timestampToMs(candidate.timestamp) ?? source.modifiedMs ?? 0;
 	const entryId = typeof candidate.id === "string" ? candidate.id : `line-${ordinal}`;
 
 	return {
@@ -109,6 +108,14 @@ function promptFromSessionEntry(entry: unknown, source: PromptSourceInfo, ordina
 		sessionName: source.sessionName,
 		entryId,
 	};
+}
+
+function promptFromSessionEntry(entry: unknown, source: PromptSourceInfo, ordinal = 0): PromptHistoryItem | null {
+	const candidate = userMessageEntry(entry);
+	if (!candidate) return null;
+
+	const text = extractPromptTextFromMessageContent(candidate.message?.content);
+	return text ? buildPromptItem(candidate, source, ordinal, text) : null;
 }
 
 export function extractPromptsFromEntries(entries: unknown[], source: PromptSourceInfo): PromptHistoryItem[] {
