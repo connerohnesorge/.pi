@@ -31,32 +31,62 @@ function quoteForBash(value: string): string {
 	return `"${escaped}"`;
 }
 
+function clearCdSlashDEscape(state: CdSlashDScanState): boolean {
+	if (!state.escaped) {
+		return false;
+	}
+
+	state.escaped = false;
+	return true;
+}
+
+function isCdSlashDQuoted(state: CdSlashDScanState): boolean {
+	return state.quote !== null;
+}
+
+function escapesCdSlashDQuote(state: CdSlashDScanState, character: string): boolean {
+	return character === "\\" && state.quote !== "'";
+}
+
+function closeCdSlashDQuote(state: CdSlashDScanState, character: string): void {
+	state.quote = character === state.quote ? null : state.quote;
+}
+
+function scanQuotedCdSlashDCharacter(state: CdSlashDScanState, character: string): boolean {
+	if (!isCdSlashDQuoted(state)) {
+		return false;
+	}
+
+	state.escaped = escapesCdSlashDQuote(state, character);
+	closeCdSlashDQuote(state, character);
+	return true;
+}
+
+function openCdSlashDEscape(state: CdSlashDScanState, character: string): boolean {
+	if (character !== "\\") {
+		return false;
+	}
+
+	state.escaped = true;
+	return true;
+}
+
+function openCdSlashDQuote(state: CdSlashDScanState, character: string): boolean {
+	if (character !== '"' && character !== "'") {
+		return false;
+	}
+
+	state.quote = character;
+	return true;
+}
+
 function advanceCdSlashDScanner(state: CdSlashDScanState, character: string): boolean {
-	if (state.escaped) {
-		state.escaped = false;
-		return true;
-	}
-
-	if (state.quote !== null) {
-		if (character === "\\" && state.quote !== "'") {
-			state.escaped = true;
-		} else if (character === state.quote) {
-			state.quote = null;
-		}
-		return true;
-	}
-
-	if (character === "\\") {
-		state.escaped = true;
-		return true;
-	}
-
-	if (character === '"' || character === "'") {
-		state.quote = character;
-		return true;
-	}
-
-	return false;
+	return (
+		clearCdSlashDEscape(state) ||
+		scanQuotedCdSlashDCharacter(state, character) ||
+		openCdSlashDEscape(state, character) ||
+		openCdSlashDQuote(state, character)
+	);
 }
 
 function readCdSlashDOperator(command: string, index: number): { operator: string; tailStart: number } | null {
