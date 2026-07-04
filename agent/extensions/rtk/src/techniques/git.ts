@@ -8,14 +8,59 @@ function isGitCommand(command: string | undefined | null): boolean {
 	return matchesCommandPatterns(command, GIT_COMMAND_PATTERNS);
 }
 
+interface DiffCompactionState {
+	currentFile: string;
+	added: number;
+	removed: number;
+	inHunk: boolean;
+	hunkLines: number;
+}
+
+function flushDiffFileSummary(result: string[], state: DiffCompactionState): void {
+	if (state.currentFile && (state.added > 0 || state.removed > 0)) {
+		result.push(`  +${state.added} -${state.removed}`);
+	}
+}
+
+function startDiffFile(result: string[], state: DiffCompactionState, line: string): void {
+	flushDiffFileSummary(result, state);
+
+	const match = line.match(/diff --git a\/(.+) b\/(.+)/);
+	state.currentFile = match?.[2] ?? "unknown";
+	result.push(`\n> ${state.currentFile}`);
+	state.added = 0;
+	state.removed = 0;
+	state.inHunk = false;
+}
+
+function appendLimitedHunkLine(result: string[], state: DiffCompactionState, line: string, maxHunkLines: number): void {
+	if (state.hunkLines < maxHunkLines) {
+		result.push(`  ${line}`);
+		state.hunkLines++;
+	}
+
+	if (state.hunkLines === maxHunkLines) {
+		result.push("  ... (truncated)");
+		state.hunkLines++;
+	}
+}
+
+function appendDiffHunkLine(result: string[], state: DiffCompactionState, line: string, maxHunkLines: number): void {
+	if (line.startsWith("+") && !line.startsWith("+++")) {
+		state.added++;
+		appendLimitedHunkLine(result, state, line, maxHunkLines);
+	} else if (line.startsWith("-") && !line.startsWith("---")) {
+		state.removed++;
+		appendLimitedHunkLine(result, state, line, maxHunkLines);
+	} else if (state.hunkLines > 0 && !line.startsWith("\\")) {
+		appendLimitedHunkLine(result, state, line, maxHunkLines);
+	}
+}
+
 function compactDiff(output: string, maxLines = 50): string {
 	const lines = output.split("\n");
 	const result: string[] = [];
-	let currentFile = "";
-	let added = 0;
-	let removed = 0;
-	let inHunk = false;
-	let hunkLines = 0;
+	const state: DiffCompactionState = { currentFile: "", added: 0, removed: 0, inHunk: false, hunkLines: 0 };
 	const maxHunkLines = 10;
 
 	for (const line of lines) {
@@ -25,59 +70,24 @@ function compactDiff(output: string, maxLines = 50): string {
 		}
 
 		if (line.startsWith("diff --git")) {
-			if (currentFile && (added > 0 || removed > 0)) {
-				result.push(`  +${added} -${removed}`);
-			}
-
-			const match = line.match(/diff --git a\/(.+) b\/(.+)/);
-			currentFile = match?.[2] ?? "unknown";
-			result.push(`\n> ${currentFile}`);
-			added = 0;
-			removed = 0;
-			inHunk = false;
+			startDiffFile(result, state, line);
 			continue;
 		}
 
 		if (line.startsWith("@@")) {
-			inHunk = true;
-			hunkLines = 0;
+			state.inHunk = true;
+			state.hunkLines = 0;
 			const hunkInfo = line.match(/@@ .+ @@/)?.[0] ?? "@@";
 			result.push(`  ${hunkInfo}`);
 			continue;
 		}
 
-		if (!inHunk) {
-			continue;
-		}
-
-		if (line.startsWith("+") && !line.startsWith("+++")) {
-			added++;
-			if (hunkLines < maxHunkLines) {
-				result.push(`  ${line}`);
-				hunkLines++;
-			}
-		} else if (line.startsWith("-") && !line.startsWith("---")) {
-			removed++;
-			if (hunkLines < maxHunkLines) {
-				result.push(`  ${line}`);
-				hunkLines++;
-			}
-		} else if (hunkLines < maxHunkLines && !line.startsWith("\\")) {
-			if (hunkLines > 0) {
-				result.push(`  ${line}`);
-				hunkLines++;
-			}
-		}
-
-		if (hunkLines === maxHunkLines) {
-			result.push("  ... (truncated)");
-			hunkLines++;
+		if (state.inHunk) {
+			appendDiffHunkLine(result, state, line, maxHunkLines);
 		}
 	}
 
-	if (currentFile && (added > 0 || removed > 0)) {
-		result.push(`  +${added} -${removed}`);
-	}
+	flushDiffFileSummary(result, state);
 
 	return result.join("\n");
 }
