@@ -432,15 +432,17 @@ interface MultiSelectRenderRowParams {
 function renderMultiSelectRow(params: MultiSelectRenderRowParams): string[] {
    const { index, selectedIndex, rowModel, options, checked, commentEnabled, theme, width } = params;
    const isSelected = index === selectedIndex;
-   const prefix = isSelected ? theme.fg("accent", "→") : " ";
+   const prefix = renderMultiSelectPrefix(isSelected, theme);
 
    if (rowModel.isCommentToggleRow(index)) {
       return renderMultiSelectCommentToggleRow({ commentEnabled, isSelected, prefix, theme, width });
    }
    if (rowModel.isFreeformRow(index)) return renderMultiSelectFreeformRow(prefix, theme, width);
+   return renderMaybeMultiSelectOptionRow({ index, option: options[index], checked, isSelected, prefix, theme, width });
+}
 
-   const option = options[index];
-   return option ? renderMultiSelectOptionRow({ index, option, checked, isSelected, prefix, theme, width }) : [];
+function renderMultiSelectPrefix(isSelected: boolean, theme: Theme): string {
+   return isSelected ? theme.fg("accent", "→") : " ";
 }
 
 function renderMultiSelectCommentToggleRow(params: {
@@ -461,6 +463,18 @@ function renderMultiSelectFreeformRow(prefix: string, theme: Theme, width: numbe
    const label = theme.fg("text", theme.bold("Type something."));
    const desc = theme.fg("muted", "Enter a custom response");
    return [truncateToWidth(`${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`, width, "")];
+}
+
+function renderMaybeMultiSelectOptionRow(params: {
+   index: number;
+   option: QuestionOption | undefined;
+   checked: ReadonlySet<number>;
+   isSelected: boolean;
+   prefix: string;
+   theme: Theme;
+   width: number;
+}): string[] {
+   return params.option ? renderMultiSelectOptionRow({ ...params, option: params.option }) : [];
 }
 
 function renderMultiSelectOptionRow(params: {
@@ -1823,20 +1837,39 @@ async function askWithOptions(pi: ExtensionAPI, args: NormalizedAskToolArgs, sig
 
 async function executeAskTool(pi: ExtensionAPI, params: unknown, signal: AbortSignal | undefined, onUpdate: Function | undefined, ctx: any) {
    const parsed = params as AskParams;
-   if (signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { question: parsed.question, options: [], response: null, cancelled: true } as AskToolDetails };
+   if (signal?.aborted) return cancelledSignalAskResult(parsed);
 
    const args = normalizeAskToolArgs(parsed);
-   const { question, context, options, allowFreeform, allowComment } = args;
-   if (!ctx.hasUI || !ctx.ui) return noUiAskResult({ question, context, options, allowFreeform, allowComment });
+   if (!hasAskUi(ctx)) return noUiAskResultFromArgs(args);
 
+   return runAskToolWithUi(pi, ctx, args, signal, onUpdate);
+}
+
+function hasAskUi(ctx: any): boolean {
+   return Boolean(ctx.hasUI && ctx.ui);
+}
+
+function cancelledSignalAskResult(params: AskParams) {
+   return { content: [{ type: "text", text: "Cancelled" }], details: { question: params.question, options: [], response: null, cancelled: true } as AskToolDetails };
+}
+
+function noUiAskResultFromArgs(args: NormalizedAskToolArgs) {
+   const { question, context, options, allowFreeform, allowComment } = args;
+   return noUiAskResult({ question, context, options, allowFreeform, allowComment });
+}
+
+async function runAskToolWithUi(pi: ExtensionAPI, ctx: any, args: NormalizedAskToolArgs, signal: AbortSignal | undefined, onUpdate: Function | undefined) {
    try {
-      return options.length === 0
-         ? await askFreeformOnly(pi, ctx, args)
-         : await askWithOptions(pi, args, signal, onUpdate, ctx);
+      if (args.options.length === 0) return await askFreeformOnly(pi, ctx, args);
+      return await askWithOptions(pi, args, signal, onUpdate, ctx);
    } catch (error) {
-      const message = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
-      return { content: [{ type: "text", text: `Ask tool failed: ${message}` }], isError: true, details: { error: message } };
+      return failedAskResult(error);
    }
+}
+
+function failedAskResult(error: unknown) {
+   const message = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
+   return { content: [{ type: "text", text: `Ask tool failed: ${message}` }], isError: true, details: { error: message } };
 }
 
 export default function(pi: ExtensionAPI) {
