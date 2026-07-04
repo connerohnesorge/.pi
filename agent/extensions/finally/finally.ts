@@ -1,5 +1,5 @@
 export const FINALLY_CUSTOM_TYPE = "finally-queue";
-export const FINALLY_SNAPSHOT_VERSION = 1;
+const FINALLY_SNAPSHOT_VERSION = 1;
 export const FINALLY_USAGE = "Usage: /finally <message> | /finally --status | /finally --clear";
 
 export interface FinallyQueueItem {
@@ -29,7 +29,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-export function normalizeFinallyMessage(text: string): string {
+function normalizeFinallyMessage(text: string): string {
   return text.replace(/\r\n?/g, "\n").trim();
 }
 
