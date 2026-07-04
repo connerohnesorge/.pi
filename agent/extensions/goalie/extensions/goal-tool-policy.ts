@@ -11,7 +11,7 @@ import {
 	lifecycleToolNamesForGoalStatus,
 } from "./goal-tool-names.ts";
 
-export const GOAL_EXECUTION_WORK_TOOLS = ["read", "bash", "edit", "write"] as const;
+const GOAL_EXECUTION_WORK_TOOLS = ["read", "bash", "edit", "write"] as const;
 
 const GOAL_PROGRESS_TOOL_SET = new Set<string>(GOAL_PROGRESS_TOOL_NAMES);
 const POST_STOP_ALLOWED_TOOL_SET = new Set<string>(POST_STOP_ALLOWED_TOOLS);
