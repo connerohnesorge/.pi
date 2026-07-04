@@ -11,36 +11,17 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import { WorkflowAgent } from "../src/agent.ts";
 import { WorkflowErrorCode } from "../src/errors.ts";
 import { WorkflowManager } from "../src/workflow-manager.ts";
 import { withFakeHomeAsync } from "./helpers/fake-home.ts";
 
 const USAGE_LIMIT_MSG = "Codex usage limit reached (plus plan). Resets in ~3h.";
-
-/**
- * Load the faux provider from the SAME pi-ai instance that pi-coding-agent's
- * createAgentSession dispatches through. pi-coding-agent ships its own nested
- * pi-ai copy; registering on a different instance would be invisible to the
- * session ("No API provider registered"). Prefer the nested copy when present,
- * else fall back to the bare specifier — which, when npm has deduped to a single
- * copy, resolves to that same shared instance. Robust to both layouts.
- */
-async function loadFaux(): Promise<typeof import("@earendil-works/pi-ai")> {
-  const nested = fileURLToPath(
-    new URL(
-      "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.ts",
-      import.meta.url,
-    ),
-  );
-  const entry = existsSync(nested) ? nested : "@earendil-works/pi-ai";
-  return import(entry) as Promise<typeof import("@earendil-works/pi-ai")>;
-}
 
 /**
  * Run `fn` with an isolated HOME and a dummy provider key so hasConfiguredAuth()
@@ -56,7 +37,6 @@ async function withFauxSession(
     fauxAssistantMessage: typeof import("@earendil-works/pi-ai").fauxAssistantMessage;
   }) => Promise<void>,
 ): Promise<void> {
-  const { registerFauxProvider, fauxAssistantMessage } = await loadFaux();
   const home = mkdtempSync(join(tmpdir(), "pi-dw-i26-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-i26-cwd-"));
   const prevKey = process.env.DEEPSEEK_API_KEY;
