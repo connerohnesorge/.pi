@@ -1072,13 +1072,35 @@ function handleWrappedSingleSelectListInput(
    rowModel: SelectionRowModel,
    count: number,
 ): boolean {
-   if (matchesSelectUp(data, list.keybindings) && count > 0) return callAndHandle(() => list.moveSelection(-1, count));
-   if (matchesSelectDown(data, list.keybindings) && count > 0) return callAndHandle(() => list.moveSelection(1, count));
+   if (handleWrappedSingleSelectMovement(list, data, count)) return true;
    if (list.selectNumberedOption(data, filteredOptions)) return true;
-   if (matchesKey(data, Key.space) && count > 0 && rowModel.isCommentToggleRow(list.selectedIndex)) return callAndHandle(() => list.toggleComment());
-   if (list.keybindings.matches(data, "tui.select.confirm") && count > 0) return callAndHandle(() => confirmWrappedSingleSelect(list, rowModel, filteredOptions));
-   if (list.keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) return callAndHandle(() => list.popSearchCharacter());
+   if (handleWrappedSingleSelectActivation(list, data, rowModel, filteredOptions, count)) return true;
+   if (matchesBackspace(data, list.keybindings)) return callAndHandle(() => list.popSearchCharacter());
    return false;
+}
+
+function handleWrappedSingleSelectMovement(list: any, data: string, count: number): boolean {
+   if (count <= 0) return false;
+   if (matchesSelectUp(data, list.keybindings)) return callAndHandle(() => list.moveSelection(-1, count));
+   if (matchesSelectDown(data, list.keybindings)) return callAndHandle(() => list.moveSelection(1, count));
+   return false;
+}
+
+function handleWrappedSingleSelectActivation(
+   list: any,
+   data: string,
+   rowModel: SelectionRowModel,
+   filteredOptions: QuestionOption[],
+   count: number,
+): boolean {
+   if (count <= 0) return false;
+   if (matchesKey(data, Key.space) && rowModel.isCommentToggleRow(list.selectedIndex)) return callAndHandle(() => list.toggleComment());
+   if (list.keybindings.matches(data, "tui.select.confirm")) return callAndHandle(() => confirmWrappedSingleSelect(list, rowModel, filteredOptions));
+   return false;
+}
+
+function matchesBackspace(data: string, keybindings: KeybindingsManager): boolean {
+   return keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace);
 }
 
 function handleWrappedSingleSelectSearchInput(list: any, data: string): void {

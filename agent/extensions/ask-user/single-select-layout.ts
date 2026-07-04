@@ -75,24 +75,33 @@ export interface RenderSingleSelectRowsParams {
 	hideDescriptions?: boolean;
 }
 
+function splitLongWord(word: string, width: number): { lines: string[]; remainder: string } {
+	const lines: string[] = [];
+	let remainder = "";
+	for (let i = 0; i < word.length; i += width) {
+		const chunk = word.slice(i, i + width);
+		if (chunk.length === width || i + width < word.length) lines.push(chunk);
+		else remainder = chunk;
+	}
+	return { lines, remainder };
+}
+
+function startWrappedLine(word: string, width: number, lines: string[]): string {
+	if (word.length <= width) return word;
+	lines.push(...splitLongWord(word, width).lines);
+	return "";
+}
+
 function wrapText(text: string, width: number): string[] {
 	const normalized = text.replace(/\s+/g, " ").trim();
 	if (!normalized) return [""];
 	if (width <= 1) return normalized.split("");
 
-	const words = normalized.split(" ");
 	const lines: string[] = [];
 	let current = "";
-
-	for (const word of words) {
+	for (const word of normalized.split(" ")) {
 		if (!current) {
-			if (word.length <= width) {
-				current = word;
-			} else {
-				for (let i = 0; i < word.length; i += width) {
-					lines.push(word.slice(i, i + width));
-				}
-			}
+			current = startWrappedLine(word, width, lines);
 			continue;
 		}
 
@@ -103,15 +112,11 @@ function wrapText(text: string, width: number): string[] {
 		}
 
 		lines.push(current);
-		if (word.length <= width) {
-			current = word;
-		} else {
-			current = "";
-			for (let i = 0; i < word.length; i += width) {
-				const chunk = word.slice(i, i + width);
-				if (chunk.length === width || i + width < word.length) lines.push(chunk);
-				else current = chunk;
-			}
+		if (word.length <= width) current = word;
+		else {
+			const split = splitLongWord(word, width);
+			lines.push(...split.lines);
+			current = split.remainder;
 		}
 	}
 

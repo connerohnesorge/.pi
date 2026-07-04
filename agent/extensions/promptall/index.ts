@@ -107,6 +107,37 @@ function clampSelectedIndex(index: number, filteredLength: number): number {
 	return Math.max(0, Math.min(index, filteredLength - 1));
 }
 
+type PromptPickerInputActions = {
+	move(delta: number): void;
+	appendQuery(text: string): void;
+	backspaceQuery(): void;
+	clearQuery(): void;
+	confirm(): void;
+	cancel(): void;
+};
+
+type PromptPickerInputResult = "render" | "done";
+
+function handlePromptPickerInput(data: string, keybindings: PickerKeybindings, pageSize: number, actions: PromptPickerInputActions): PromptPickerInputResult {
+	if (keybindings.matches(data, "tui.select.up")) return runInputAction(() => actions.move(-1), "render");
+	if (keybindings.matches(data, "tui.select.down")) return runInputAction(() => actions.move(1), "render");
+	if (keybindings.matches(data, "tui.select.pageUp")) return runInputAction(() => actions.move(-pageSize), "render");
+	if (keybindings.matches(data, "tui.select.pageDown")) return runInputAction(() => actions.move(pageSize), "render");
+	if (keybindings.matches(data, "tui.select.confirm")) return runInputAction(actions.confirm, "done");
+	if (keybindings.matches(data, "tui.select.cancel")) return runInputAction(actions.cancel, "done");
+	if (keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) return runInputAction(actions.backspaceQuery, "render");
+	if (keybindings.matches(data, "tui.editor.deleteToLineStart")) return runInputAction(actions.clearQuery, "render");
+
+	const printable = decodePrintableInput(data);
+	if (printable) actions.appendQuery(printable);
+	return "render";
+}
+
+function runInputAction(action: () => void, result: PromptPickerInputResult): PromptPickerInputResult {
+	action();
+	return result;
+}
+
 export async function selectPromptWithTui(
 	ctx: ExtensionContext,
 	prompts: PromptHistoryItem[],
@@ -175,34 +206,24 @@ export async function selectPromptWithTui(
 			},
 			invalidate() { },
 			handleInput(data: string) {
-				if (keybindings.matches(data, "tui.select.up")) {
-					move(-1);
-				} else if (keybindings.matches(data, "tui.select.down")) {
-					move(1);
-				} else if (keybindings.matches(data, "tui.select.pageUp")) {
-					move(-maxVisible);
-				} else if (keybindings.matches(data, "tui.select.pageDown")) {
-					move(maxVisible);
-				} else if (keybindings.matches(data, "tui.select.confirm")) {
-					done(filtered[selectedIndex] ?? null);
-					return;
-				} else if (keybindings.matches(data, "tui.select.cancel")) {
-					done(null);
-					return;
-				} else if (keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) {
-					query = query.slice(0, -1);
-					refilter();
-				} else if (keybindings.matches(data, "tui.editor.deleteToLineStart")) {
-					query = "";
-					refilter();
-				} else {
-					const printable = decodePrintableInput(data);
-					if (printable) {
-						query += printable;
+				const result = handlePromptPickerInput(data, keybindings, maxVisible, {
+					move,
+					appendQuery(text: string) {
+						query += text;
 						refilter();
-					}
-				}
-				tui.requestRender();
+					},
+					backspaceQuery() {
+						query = query.slice(0, -1);
+						refilter();
+					},
+					clearQuery() {
+						query = "";
+						refilter();
+					},
+					confirm: () => done(filtered[selectedIndex] ?? null),
+					cancel: () => done(null),
+				});
+				if (result === "render") tui.requestRender();
 			},
 		};
 	});
