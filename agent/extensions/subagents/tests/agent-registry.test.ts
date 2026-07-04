@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +14,7 @@ import {
   resolveAgentType,
 } from "../src/agent-registry.ts";
 import { runWorkflow } from "../src/workflow.ts";
+import { withTempGitRepo } from "./helpers/git-repo.ts";
 
 // ── parseAgentDefinition ───────────────────────────────────────────────────
 
@@ -264,16 +264,7 @@ return {}`;
   });
 
   it("agentType isolation: worktree runs the agent in an isolated cwd", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "pi-agent-isolation-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
-    try {
-      git("init", "-q");
-      git("config", "user.email", "t@t.t");
-      git("config", "user.name", "t");
-      writeFileSync(join(repo, "file.txt"), "base\n");
-      git("add", ".");
-      git("commit", "-q", "-m", "init");
-
+    await withTempGitRepo("pi-agent-isolation-", async ({ repo }) => {
       const isolatedRegistry: AgentRegistry = new Map([
         [
           "isolated-auditor",
@@ -303,9 +294,7 @@ return {}`;
       assert.notEqual(seen[0].cwd, repo, "agent cwd should not be the base repo");
       assert.equal(seen[0].cwdExists, true, "worktree cwd should exist while the agent runs");
       assert.ok(seen[0].instructions?.includes("Requested isolation: worktree"));
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
+    });
   });
 
   it("unknown agentType logs a fallback and binds no tools/model", async () => {

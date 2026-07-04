@@ -9,6 +9,14 @@ import type { WorkflowManager } from "../src/workflow-manager.ts";
 
 type Handler = (args: string, ctx: any) => Promise<void>;
 
+type WarningHarness = { notified: Array<{ message: string; type?: string }> };
+
+function assertWorkflowWarning(h: WarningHarness, pattern: RegExp) {
+  assert.equal(h.notified.length, 1);
+  assert.equal(h.notified[0].type, "warning");
+  assert.match(h.notified[0].message, pattern);
+}
+
 /** Capture the registered command + outputs for assertions. */
 function harness(
   managerOverrides: Record<string, any> = {},
@@ -98,9 +106,7 @@ test("/workflows run without prompt warns usage", async () => {
   const h = harness();
   await h.run("run");
   assert.equal(h.sent.length, 0);
-  assert.equal(h.notified.length, 1);
-  assert.equal(h.notified[0].type, "warning");
-  assert.match(h.notified[0].message, /Usage: \/workflows run <prompt>/);
+  assertWorkflowWarning(h, /Usage: \/workflows run <prompt>/);
 });
 
 test("/workflows run <prompt> sends a forced workflow follow-up turn", async () => {
@@ -245,9 +251,7 @@ test("/workflows pause <id> calls manager.pause and notifies Paused", async () =
 test("/workflows pause without id warns usage", async () => {
   const h = harness();
   await h.run("pause");
-  assert.equal(h.notified.length, 1);
-  assert.equal(h.notified[0].type, "warning");
-  assert.match(h.notified[0].message, /Usage/);
+  assertWorkflowWarning(h, /Usage/);
 });
 
 test("/workflows pause <id> warns when manager.pause returns false", async () => {
@@ -284,9 +288,7 @@ test("/workflows resume <id> calls manager.resume and notifies Resumed", async (
 test("/workflows resume without id warns usage", async () => {
   const h = harness();
   await h.run("resume");
-  assert.equal(h.notified.length, 1);
-  assert.equal(h.notified[0].type, "warning");
-  assert.match(h.notified[0].message, /Usage/);
+  assertWorkflowWarning(h, /Usage/);
 });
 
 test("/workflows resume <id> warns when resume returns false", async () => {
@@ -316,9 +318,7 @@ test("/workflows rm <id> calls manager.deleteRun and notifies Removed", async ()
 test("/workflows rm without id warns usage", async () => {
   const h = harness();
   await h.run("rm");
-  assert.equal(h.notified.length, 1);
-  assert.equal(h.notified[0].type, "warning");
-  assert.match(h.notified[0].message, /Usage/);
+  assertWorkflowWarning(h, /Usage/);
 });
 
 test("/workflows rm <id> warns when deleteRun returns false", async () => {
@@ -337,9 +337,7 @@ test("/workflows rm <id> warns when deleteRun returns false", async () => {
 test("/workflows stop without id warns usage", async () => {
   const h = harness();
   await h.run("stop");
-  assert.equal(h.notified.length, 1);
-  assert.equal(h.notified[0].type, "warning");
-  assert.match(h.notified[0].message, /Usage/);
+  assertWorkflowWarning(h, /Usage/);
 });
 
 test("/workflows stop <id> shows Cannot stop when manager returns false", async () => {
@@ -367,9 +365,7 @@ test("/workflows stop <id> notifies info (not warning) when stopped a real run",
 test("/workflows save without name warns usage", async () => {
   const h = harness();
   await h.run("save");
-  assert.equal(h.notified.length, 1);
-  assert.equal(h.notified[0].type, "warning");
-  assert.match(h.notified[0].message, /Usage/);
+  assertWorkflowWarning(h, /Usage/);
 });
 
 test("/workflows save <name> warns when no storage configured", async () => {
