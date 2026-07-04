@@ -1721,17 +1721,23 @@ function renderExpandedSelectionDetails(details: AskToolDetails, response: Extra
    return `\n${theme.fg("dim", "Options:")}\n${optionLines.join("\n")}${comment}`;
 }
 
+function renderEarlyAskResult(result: any, details: (AskToolDetails & { error?: string }) | undefined, isPartial: boolean | undefined, theme: Theme): Text | null {
+   if (details?.error) return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
+   if (isPartial) return renderWaitingResult(result, theme);
+   if (!details || details.cancelled || !details.response) return new Text(theme.fg("warning", "Cancelled"), 0, 0);
+   return null;
+}
+
 function renderAskResult(result: any, options: { isPartial?: boolean; expanded?: boolean }, theme: Theme): Text {
    const details = result.details as (AskToolDetails & { error?: string }) | undefined;
-   if (details?.error) return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
-   if (options.isPartial) return renderWaitingResult(result, theme);
-   if (!details || details.cancelled || !details.response) return new Text(theme.fg("warning", "Cancelled"), 0, 0);
+   const earlyResult = renderEarlyAskResult(result, details, options.isPartial, theme);
+   if (earlyResult) return earlyResult;
 
-   const response = details.response;
+   const response = details!.response!;
    let text = theme.fg("success", "✓ ");
    if (response.kind === "freeform") text += theme.fg("muted", "(wrote) ");
    text += theme.fg("accent", formatResponseSummary(response));
-   if (options.expanded) text = appendExpandedResultDetails(text, details, response, theme);
+   if (options.expanded) text = appendExpandedResultDetails(text, details!, response, theme);
    return new Text(text, 0, 0);
 }
 
