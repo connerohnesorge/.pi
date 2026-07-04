@@ -99,38 +99,43 @@ export function isTimeoutError(error: unknown): boolean {
  */
 export function wrapError(error: unknown, context?: { agentLabel?: string }): WorkflowError {
   if (isWorkflowError(error)) return error;
+  return classifyWrappedError(error, context) ?? executionError(error, context);
+}
 
-  if (isAbortError(error)) {
-    return new WorkflowError(
-      error instanceof Error ? error.message : "Workflow was aborted",
-      WorkflowErrorCode.WORKFLOW_ABORTED,
-      { recoverable: true },
-    );
-  }
+function classifyWrappedError(error: unknown, context?: { agentLabel?: string }): WorkflowError | undefined {
+  if (isAbortError(error)) return simpleWorkflowError(error, "Workflow was aborted", WorkflowErrorCode.WORKFLOW_ABORTED);
+  if (isTimeoutError(error)) return simpleWorkflowError(error, "Agent timed out", WorkflowErrorCode.AGENT_TIMEOUT, context);
+  return providerLimitError(error, context);
+}
 
-  if (isTimeoutError(error)) {
-    return new WorkflowError(
-      error instanceof Error ? error.message : "Agent timed out",
-      WorkflowErrorCode.AGENT_TIMEOUT,
-      { recoverable: true, agentLabel: context?.agentLabel },
-    );
-  }
+function simpleWorkflowError(
+  error: unknown,
+  fallback: string,
+  code: WorkflowErrorCode,
+  context?: { agentLabel?: string },
+): WorkflowError {
+  return new WorkflowError(error instanceof Error ? error.message : fallback, code, {
+    recoverable: true,
+    agentLabel: context?.agentLabel,
+  });
+}
 
+function providerLimitError(error: unknown, context?: { agentLabel?: string }): WorkflowError | undefined {
   // Defense-in-depth: today the SDK buries provider usage/quota limits in an
   // assistant message (detected in agent.ts), but a future SDK might throw them.
   // Classify a thrown limit here too — recoverable:false so the run checkpoints
   // (paused) instead of being retried into the same wall or silently nulled.
-  if (error instanceof Error) {
-    const limit = classifyProviderLimit(error.message);
-    if (limit.matched) {
-      return new WorkflowError(error.message, WorkflowErrorCode.PROVIDER_USAGE_LIMIT, {
-        recoverable: false,
-        agentLabel: context?.agentLabel,
-        resetHint: limit.resetHint,
-      });
-    }
-  }
+  if (!(error instanceof Error)) return undefined;
+  const limit = classifyProviderLimit(error.message);
+  if (!limit.matched) return undefined;
+  return new WorkflowError(error.message, WorkflowErrorCode.PROVIDER_USAGE_LIMIT, {
+    recoverable: false,
+    agentLabel: context?.agentLabel,
+    resetHint: limit.resetHint,
+  });
+}
 
+function executionError(error: unknown, context?: { agentLabel?: string }): WorkflowError {
   return new WorkflowError(
     error instanceof Error ? error.message : String(error),
     WorkflowErrorCode.AGENT_EXECUTION_ERROR,

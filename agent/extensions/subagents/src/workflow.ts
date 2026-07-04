@@ -824,30 +824,40 @@ interface CheckpointFunctionContext {
 function createCheckpointFunction(ctx: CheckpointFunctionContext) {
   return async function workflowCheckpoint(promptText: string, checkpointOptions: CheckpointOptions = {}) {
     ctx.throwIfAborted();
-    if (typeof promptText !== "string") throw new TypeError("checkpoint(promptText, options?) needs a prompt string");
-    if (ctx.shared.agentCount >= ctx.maxAgents) {
-      throw new WorkflowError(
-        `Agent limit exceeded (${ctx.maxAgents}). Use maxAgents option to increase the limit.`,
-        WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
-        { recoverable: false },
-      );
-    }
+    assertCheckpointCanStart(ctx, promptText);
 
     const callIndex = ctx.state.callSeq++;
     const callHash = hashCheckpoint(promptText, checkpointOptions);
-    const cached = ctx.options.resumeJournal?.get(callIndex);
-    if (cached != null && cached.hash === callHash && callIndex < ctx.state.firstMiss) {
-      ctx.shared.agentCount++;
-      return cached.result;
-    }
-    if (cached == null || cached.hash !== callHash) ctx.state.firstMiss = Math.min(ctx.state.firstMiss, callIndex);
+    const cached = checkpointCacheHit(ctx, callIndex, callHash);
     ctx.shared.agentCount++;
+    if (cached) return cached.result;
 
     const reply = await resolveCheckpointReply(promptText, checkpointOptions, ctx.options);
     ctx.throwIfAborted();
     ctx.options.onAgentJournal?.({ index: callIndex, hash: callHash, result: reply });
     return reply;
   };
+}
+
+function assertCheckpointCanStart(ctx: CheckpointFunctionContext, promptText: string) {
+  if (typeof promptText !== "string") throw new TypeError("checkpoint(promptText, options?) needs a prompt string");
+  if (ctx.shared.agentCount < ctx.maxAgents) return;
+  throw new WorkflowError(
+    `Agent limit exceeded (${ctx.maxAgents}). Use maxAgents option to increase the limit.`,
+    WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
+    { recoverable: false },
+  );
+}
+
+function checkpointCacheHit(
+  ctx: CheckpointFunctionContext,
+  callIndex: number,
+  callHash: string,
+): JournalEntry | undefined {
+  const cached = ctx.options.resumeJournal?.get(callIndex);
+  if (cached != null && cached.hash === callHash && callIndex < ctx.state.firstMiss) return cached;
+  if (cached == null || cached.hash !== callHash) ctx.state.firstMiss = Math.min(ctx.state.firstMiss, callIndex);
+  return undefined;
 }
 
 async function resolveCheckpointReply(
@@ -1083,9 +1093,7 @@ interface LiveAgentRunState {
 
 async function prepareLiveAgentRun(call: LiveAgentCallContext): Promise<LiveAgentRunState> {
   const resolvedIsolation = call.agentOptions.isolation ?? call.agentDef?.isolation;
-  const worktree = resolvedIsolation === "worktree" ? await createWorktree(call.baseCwd, `${call.runId}-${call.callIndex}-${call.label}`) : undefined;
-  if (worktree && !worktree.isolated) call.log(`isolation ignored for "${call.label}" (${worktree.reason})`);
-
+  const worktree = await prepareAgentWorktree(call, resolvedIsolation);
   return {
     timeout: call.agentOptions.timeoutMs !== undefined ? call.agentOptions.timeoutMs : call.agentTimeoutMs,
     resolvedIsolation,
@@ -1094,6 +1102,13 @@ async function prepareLiveAgentRun(call: LiveAgentCallContext): Promise<LiveAgen
     usage: undefined,
     displayModel: call.displayModel,
   };
+}
+
+async function prepareAgentWorktree(call: LiveAgentCallContext, isolation: "worktree" | undefined): Promise<Worktree | undefined> {
+  if (isolation !== "worktree") return undefined;
+  const worktree = await createWorktree(call.baseCwd, `${call.runId}-${call.callIndex}-${call.label}`);
+  if (!worktree.isolated) call.log(`isolation ignored for "${call.label}" (${worktree.reason})`);
+  return worktree;
 }
 
 function createTokenRecorder(call: LiveAgentCallContext, run: LiveAgentRunState) {
@@ -1339,16 +1354,19 @@ function evaluateLiteralObject(node: AnyNode, path: string): Record<string, unkn
 }
 
 function literalPropertyKey(prop: AnyNode, path: string): string {
+  assertPlainLiteralProperty(prop, path);
+  const key = propertyKey(prop.key as AnyNode, path);
+  if (RESERVED_LITERAL_KEYS.has(key)) throw new Error(`reserved key name not allowed in ${path}: ${key}`);
+  return key;
+}
+
+const RESERVED_LITERAL_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function assertPlainLiteralProperty(prop: AnyNode, path: string): asserts prop is AnyNode {
   if (prop.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
   if (prop.type !== "Property") throw new Error(`only plain properties allowed in ${path}`);
   if (prop.computed) throw new Error(`computed keys not allowed in ${path}`);
   if (prop.kind !== "init" || prop.method) throw new Error(`methods/accessors not allowed in ${path}`);
-
-  const key = propertyKey(prop.key as AnyNode, path);
-  if (key === "__proto__" || key === "constructor" || key === "prototype") {
-    throw new Error(`reserved key name not allowed in ${path}: ${key}`);
-  }
-  return key;
 }
 
 function evaluateLiteralArray(node: AnyNode, path: string): unknown[] {
