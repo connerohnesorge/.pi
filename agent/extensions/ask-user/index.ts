@@ -28,7 +28,12 @@ import {
    truncateToWidth,
    wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { buildSelectionRowModel, renderSingleSelectRows } from "./single-select-layout";
+import {
+   buildSelectionRowModel,
+   type QuestionOption,
+   renderSingleSelectRows,
+   type SelectionRowModel,
+} from "./single-select-layout";
 
 import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
@@ -393,6 +398,200 @@ function matchesSelectDown(data: string, keybindings: KeybindingsManager): boole
    );
 }
 
+
+function numberedInputIndex(data: string, optionCount: number): number | null {
+   const numMatch = data.match(/^[1-9]$/);
+   if (!numMatch) return null;
+
+   const index = Number.parseInt(numMatch[0], 10) - 1;
+   return index >= 0 && index < optionCount ? index : null;
+}
+
+function wrapSelectionIndex(index: number, delta: -1 | 1, count: number): number {
+   if (count <= 0) return 0;
+   if (delta < 0) return index === 0 ? count - 1 : index - 1;
+   return index === count - 1 ? 0 : index + 1;
+}
+
+function centeredVisibleRange(selectedIndex: number, count: number, maxVisible: number): { start: number; end: number } {
+   const start = Math.max(0, Math.min(selectedIndex - Math.floor(maxVisible / 2), count - maxVisible));
+   return { start, end: Math.min(start + maxVisible, count) };
+}
+
+interface MultiSelectRenderRowParams {
+   index: number;
+   selectedIndex: number;
+   rowModel: SelectionRowModel;
+   options: QuestionOption[];
+   checked: ReadonlySet<number>;
+   commentEnabled: boolean;
+   theme: Theme;
+   width: number;
+}
+
+function renderMultiSelectRow(params: MultiSelectRenderRowParams): string[] {
+   const { index, selectedIndex, rowModel, options, checked, commentEnabled, theme, width } = params;
+   const isSelected = index === selectedIndex;
+   const prefix = isSelected ? theme.fg("accent", "→") : " ";
+
+   if (rowModel.isCommentToggleRow(index)) {
+      const checkbox = commentEnabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
+      const label = isSelected
+         ? theme.fg("accent", theme.bold(COMMENT_TOGGLE_LABEL))
+         : theme.fg("text", theme.bold(COMMENT_TOGGLE_LABEL));
+      return [truncateToWidth(`${prefix}   ${checkbox} ${label}`, width, "")];
+   }
+
+   if (rowModel.isFreeformRow(index)) {
+      const label = theme.fg("text", theme.bold("Type something."));
+      const desc = theme.fg("muted", "Enter a custom response");
+      return [truncateToWidth(`${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`, width, "")];
+   }
+
+   const option = options[index];
+   if (!option) return [];
+
+   const checkbox = checked.has(index) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
+   const num = theme.fg("dim", `${index + 1}.`);
+   const title = isSelected
+      ? theme.fg("accent", theme.bold(option.title))
+      : theme.fg("text", theme.bold(option.title));
+   const lines = [truncateToWidth(`${prefix} ${num} ${checkbox} ${title}`, width, "")];
+
+   if (option.description) {
+      const indent = "      ";
+      for (const wrappedLine of wrapTextWithAnsi(option.description, Math.max(10, width - indent.length))) {
+         lines.push(truncateToWidth(indent + theme.fg("muted", wrappedLine), width, ""));
+      }
+   }
+
+   return lines;
+}
+
+function buildSelectedOptionPreviewMarkdown(option: QuestionOption | undefined, searchQuery: string): string {
+   if (!option) return "*No option selected*\n";
+
+   let md = `## ${option.title}\n\n`;
+   md += option.description?.trim()
+      ? `${option.description}\n`
+      : "*No additional details provided for this option.*\n";
+   md += "\n---\n\nPress `Enter` to select this option.\n";
+   if (searchQuery) md += `\n> Filter: \`${searchQuery}\`\n`;
+   return md;
+}
+
+function buildPreviewMarkdown(params: {
+   rowModel: SelectionRowModel;
+   selectedIndex: number;
+   filteredOptions: QuestionOption[];
+   commentEnabled: boolean;
+   searchQuery: string;
+}): string {
+   const { rowModel, selectedIndex, filteredOptions, commentEnabled, searchQuery } = params;
+
+   if (rowModel.isCommentToggleRow(selectedIndex)) {
+      return [
+         "## Additional context",
+         "",
+         `Currently: **${commentEnabled ? "Enabled" : "Disabled"}**`,
+         "",
+         "Turn this on when the selected option needs extra explanation before the tool submits.",
+      ].join("\n");
+   }
+
+   if (rowModel.isFreeformRow(selectedIndex)) {
+      return [
+         "## Custom response",
+         "",
+         "Open the editor to write **any** answer.",
+         "",
+         "*Use this when none of the listed options fit.*",
+         searchQuery ? `\n> Current filter: \`${searchQuery}\`` : "",
+      ].join("\n");
+   }
+
+   return buildSelectedOptionPreviewMarkdown(filteredOptions[selectedIndex], searchQuery);
+}
+
+function renderPreviewMarkdown(md: string, width: number, mdTheme: MarkdownTheme | undefined): string[] {
+   if (mdTheme) return new Markdown(md.trim(), 0, 0, mdTheme).render(width);
+   return wrapTextWithAnsi(md.trim(), Math.max(10, width)).map((line) => truncateToWidth(line, width, ""));
+}
+
+function trimTrailingBlankLines(lines: string[]): string[] {
+   const trimmed = [...lines];
+   while (trimmed.length > 0 && trimmed[trimmed.length - 1]?.trim() === "") trimmed.pop();
+   return trimmed;
+}
+
+function limitLinesWithEllipsis(lines: string[], maxLines: number, width: number, theme: Theme): string[] {
+   if (lines.length <= maxLines) return lines;
+   const ellipsis = truncateToWidth(theme.fg("dim", "…"), width, "");
+   if (maxLines === 1) return [ellipsis];
+   return [...lines.slice(0, maxLines - 1), ellipsis];
+}
+
+
+type MultiSelectInputAction =
+   | { kind: "cancel" }
+   | { kind: "toggle-comment" }
+   | { kind: "move"; delta: -1 | 1 }
+   | { kind: "toggle-numbered"; index: number }
+   | { kind: "space" }
+   | { kind: "confirm" }
+   | { kind: "ignore" };
+
+function cancelAction(data: string, keybindings: KeybindingsManager): MultiSelectInputAction | null {
+   return keybindings.matches(data, "tui.select.cancel") ? { kind: "cancel" } : null;
+}
+
+function commentToggleAction(
+   data: string,
+   allowComment: boolean,
+   commentToggle: ResolvedShortcut,
+): MultiSelectInputAction | null {
+   const enabled = allowComment && !commentToggle.disabled;
+   return enabled && commentToggle.matches(data) ? { kind: "toggle-comment" } : null;
+}
+
+function moveAction(data: string, keybindings: KeybindingsManager): MultiSelectInputAction | null {
+   if (matchesSelectUp(data, keybindings)) return { kind: "move", delta: -1 };
+   if (matchesSelectDown(data, keybindings)) return { kind: "move", delta: 1 };
+   return null;
+}
+
+function numberedAction(data: string, optionCount: number): MultiSelectInputAction | null {
+   const index = numberedInputIndex(data, optionCount);
+   return index === null ? null : { kind: "toggle-numbered", index };
+}
+
+function spaceAction(data: string): MultiSelectInputAction | null {
+   return matchesKey(data, Key.space) ? { kind: "space" } : null;
+}
+
+function confirmAction(data: string, keybindings: KeybindingsManager): MultiSelectInputAction | null {
+   return keybindings.matches(data, "tui.select.confirm") ? { kind: "confirm" } : null;
+}
+
+function resolveMultiSelectInputAction(params: {
+   data: string;
+   optionCount: number;
+   allowComment: boolean;
+   commentToggle: ResolvedShortcut;
+   keybindings: KeybindingsManager;
+}): MultiSelectInputAction {
+   const { data, optionCount, allowComment, commentToggle, keybindings } = params;
+   const candidates = [
+      cancelAction(data, keybindings),
+      commentToggleAction(data, allowComment, commentToggle),
+      moveAction(data, keybindings),
+      numberedAction(data, optionCount),
+      spaceAction(data),
+      confirmAction(data, keybindings),
+   ];
+   return candidates.find((candidate): candidate is MultiSelectInputAction => candidate !== null) ?? { kind: "ignore" };
+}
+
 function buildCustomUIOptions(
    displayMode: AskDisplayMode,
    onHandle?: (handle: OverlayHandle) => void,
@@ -497,152 +696,105 @@ class MultiSelectList extends SelectionListBase<string[]> {
       else this.checked.add(index);
    }
 
-   handleInput(data: string): void {
-      if (this.keybindings.matches(data, "tui.select.cancel")) {
-         this.onCancel?.();
-         return;
-      }
-
-      const rowModel = this.getRowModel();
-      const count = rowModel.count;
-      if (count === 0) {
-         this.onCancel?.();
-         return;
-      }
-
-      if (this.allowComment && !this.commentToggle.disabled && this.commentToggle.matches(data)) {
+   private handleActionRow(rowModel: SelectionRowModel): boolean {
+      if (rowModel.isCommentToggleRow(this.selectedIndex)) {
          this.toggleComment();
-         return;
+         return true;
       }
-
-      if (matchesSelectUp(data, this.keybindings)) {
-         this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
-         this.invalidate();
-         return;
+      if (rowModel.isFreeformRow(this.selectedIndex)) {
+         this.onEnterFreeform?.();
+         return true;
       }
+      return false;
+   }
 
-      if (matchesSelectDown(data, this.keybindings)) {
-         this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
-         this.invalidate();
-         return;
-      }
+   private selectedTitles(): string[] {
+      const titles = Array.from(this.checked)
+         .sort((a, b) => a - b)
+         .map((index) => this.options[index]?.title)
+         .filter((title): title is string => !!title);
+      const fallback = this.options[this.selectedIndex]?.title;
+      return titles.length > 0 ? titles : fallback ? [fallback] : [];
+   }
 
-      const numMatch = data.match(/^[1-9]$/);
-      if (numMatch) {
-         const idx = Number.parseInt(numMatch[0], 10) - 1;
-         if (idx >= 0 && idx < this.options.length) {
-            this.toggle(idx);
-            this.selectedIndex = Math.min(idx, count - 1);
-            this.invalidate();
-         }
-         return;
-      }
+   handleInput(data: string): void {
+      const rowModel = this.getRowModel();
+      const action = resolveMultiSelectInputAction({
+         data,
+         optionCount: this.options.length,
+         allowComment: this.allowComment,
+         commentToggle: this.commentToggle,
+         keybindings: this.keybindings,
+      });
+      this.applyInputAction(action, rowModel);
+   }
 
-      if (matchesKey(data, Key.space)) {
-         if (rowModel.isCommentToggleRow(this.selectedIndex)) {
-            this.toggleComment();
-            return;
-         }
-         if (rowModel.isFreeformRow(this.selectedIndex)) {
-            this.onEnterFreeform?.();
-            return;
-         }
-         this.toggle(this.selectedIndex);
-         this.invalidate();
-         return;
-      }
+   private applyInputAction(action: MultiSelectInputAction, rowModel: SelectionRowModel): void {
+      const count = rowModel.count;
+      if (action.kind === "cancel" || count === 0) return this.onCancel?.();
+      if (action.kind === "toggle-comment") return this.toggleComment();
+      if (action.kind === "move") return this.moveSelection(action.delta, count);
+      if (action.kind === "toggle-numbered") return this.toggleNumberedOption(action.index, count);
+      if (action.kind === "space") return this.toggleCurrentRow(rowModel);
+      if (action.kind === "confirm") return this.confirmCurrentSelection(rowModel);
+   }
 
-      if (this.keybindings.matches(data, "tui.select.confirm")) {
-         if (rowModel.isCommentToggleRow(this.selectedIndex)) {
-            this.toggleComment();
-            return;
-         }
-         if (rowModel.isFreeformRow(this.selectedIndex)) {
-            this.onEnterFreeform?.();
-            return;
-         }
+   private toggleCurrentRow(rowModel: SelectionRowModel): void {
+      if (this.handleActionRow(rowModel)) return;
+      this.toggle(this.selectedIndex);
+      this.invalidate();
+   }
 
-         const selectedTitles = Array.from(this.checked)
-            .sort((a, b) => a - b)
-            .map((i) => this.options[i]?.title)
-            .filter((t): t is string => !!t);
+   private confirmCurrentSelection(rowModel: SelectionRowModel): void {
+      if (this.handleActionRow(rowModel)) return;
+      const result = this.selectedTitles();
+      if (result.length > 0) this.onSubmit?.(result);
+      else this.onCancel?.();
+   }
 
-         const fallback = this.options[this.selectedIndex]?.title;
-         const result = selectedTitles.length > 0 ? selectedTitles : fallback ? [fallback] : [];
+   private moveSelection(delta: -1 | 1, count: number): void {
+      this.selectedIndex = wrapSelectionIndex(this.selectedIndex, delta, count);
+      this.invalidate();
+   }
 
-         if (result.length > 0) this.onSubmit?.(result);
-         else this.onCancel?.();
-      }
+   private toggleNumberedOption(index: number, count: number): void {
+      this.toggle(index);
+      this.selectedIndex = Math.min(index, count - 1);
+      this.invalidate();
    }
 
    render(width: number): string[] {
-      if (this.cachedLines && this.cachedWidth === width) {
-         return this.cachedLines;
-      }
+      if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 
-      const theme = this.theme;
       const rowModel = this.getRowModel();
       const count = rowModel.count;
+      if (count === 0) return this.cacheLines(width, [this.theme.fg("warning", "No options")]);
+
       const maxVisible = Math.min(count, 10);
-
-      if (count === 0) {
-         this.cachedLines = [theme.fg("warning", "No options")];
-         this.cachedWidth = width;
-         return this.cachedLines;
-      }
-
-      const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), count - maxVisible));
-      const endIndex = Math.min(startIndex + maxVisible, count);
-
+      const { start, end } = centeredVisibleRange(this.selectedIndex, count, maxVisible);
       const lines: string[] = [];
 
-      for (let i = startIndex; i < endIndex; i++) {
-         const isSelected = i === this.selectedIndex;
-         const prefix = isSelected ? theme.fg("accent", "→") : " ";
-
-         if (rowModel.isCommentToggleRow(i)) {
-            const checkbox = this.commentEnabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
-            const label = isSelected
-               ? theme.fg("accent", theme.bold(COMMENT_TOGGLE_LABEL))
-               : theme.fg("text", theme.bold(COMMENT_TOGGLE_LABEL));
-            lines.push(truncateToWidth(`${prefix}   ${checkbox} ${label}`, width, ""));
-            continue;
-         }
-
-         if (rowModel.isFreeformRow(i)) {
-            const label = theme.fg("text", theme.bold("Type something."));
-            const desc = theme.fg("muted", "Enter a custom response");
-            const line = `${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`;
-            lines.push(truncateToWidth(line, width, ""));
-            continue;
-         }
-
-         const option = this.options[i];
-         if (!option) continue;
-
-         const checkbox = this.checked.has(i) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
-         const num = theme.fg("dim", `${i + 1}.`);
-         const title = isSelected
-            ? theme.fg("accent", theme.bold(option.title))
-            : theme.fg("text", theme.bold(option.title));
-
-         const firstLine = `${prefix} ${num} ${checkbox} ${title}`;
-         lines.push(truncateToWidth(firstLine, width, ""));
-
-         if (option.description) {
-            const indent = "      ";
-            const wrapWidth = Math.max(10, width - indent.length);
-            const wrapped = wrapTextWithAnsi(option.description, wrapWidth);
-            for (const w of wrapped) {
-               lines.push(truncateToWidth(indent + theme.fg("muted", w), width, ""));
-            }
-         }
+      for (let index = start; index < end; index++) {
+         lines.push(...renderMultiSelectRow({
+            index,
+            selectedIndex: this.selectedIndex,
+            rowModel,
+            options: this.options,
+            checked: this.checked,
+            commentEnabled: this.commentEnabled,
+            theme: this.theme,
+            width,
+         }));
       }
 
-      if (startIndex > 0 || endIndex < count) {
-         lines.push(theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
+      if (start > 0 || end < count) {
+         lines.push(this.theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
       }
 
+      return this.cacheLines(width, lines);
+   }
+
+   private cacheLines(width: number, lines: string[]): string[] {
       this.cachedWidth = width;
       this.cachedLines = lines;
       return lines;
@@ -783,78 +935,27 @@ class WrappedSingleSelectList extends SelectionListBase<string> {
    private buildPreviewLines(width: number, filteredOptions: QuestionOption[], maxLines: number): string[] {
       if (maxLines <= 0) return [];
 
-      const mdTheme = safeMarkdownTheme();
-      const rowModel = this.getRowModel(filteredOptions);
-
-      let md = "";
-
-      if (rowModel.isCommentToggleRow(this.selectedIndex)) {
-         md += "## Additional context\n\n";
-         md += `Currently: **${this.commentEnabled ? "Enabled" : "Disabled"}**\n\n`;
-         md += "Turn this on when the selected option needs extra explanation before the tool submits.\n";
-      } else if (rowModel.isFreeformRow(this.selectedIndex)) {
-         md += "## Custom response\n\n";
-         md += "Open the editor to write **any** answer.\n\n";
-         md += "*Use this when none of the listed options fit.*\n";
-         if (this.searchQuery) {
-            md += `\n> Current filter: \`${this.searchQuery}\`\n`;
-         }
-      } else {
-         const selected = filteredOptions[this.selectedIndex];
-         if (!selected) {
-            md += "*No option selected*\n";
-         } else {
-            md += `## ${selected.title}\n\n`;
-            if (selected.description?.trim()) {
-               md += `${selected.description}\n`;
-            } else {
-               md += "*No additional details provided for this option.*\n";
-            }
-            md += `\n---\n\nPress \`Enter\` to select this option.\n`;
-            if (this.searchQuery) {
-               md += `\n> Filter: \`${this.searchQuery}\`\n`;
-            }
-         }
-      }
-
-      let lines: string[];
-      if (mdTheme) {
-         const mdComponent = new Markdown(md.trim(), 0, 0, mdTheme);
-         lines = mdComponent.render(width);
-      } else {
-         lines = [];
-         for (const line of wrapTextWithAnsi(md.trim(), Math.max(10, width))) {
-            lines.push(truncateToWidth(line, width, ""));
-         }
-      }
-
-      while (lines.length > 0 && lines[lines.length - 1]?.trim() === "") {
-         lines.pop();
-      }
-
-      if (lines.length <= maxLines) return lines;
-      if (maxLines === 1) return [truncateToWidth(this.theme.fg("dim", "…"), width, "")];
-
-      const visibleLines = lines.slice(0, maxLines - 1);
-      visibleLines.push(truncateToWidth(this.theme.fg("dim", "…"), width, ""));
-      return visibleLines;
+      const md = buildPreviewMarkdown({
+         rowModel: this.getRowModel(filteredOptions),
+         selectedIndex: this.selectedIndex,
+         filteredOptions,
+         commentEnabled: this.commentEnabled,
+         searchQuery: this.searchQuery,
+      });
+      const lines = trimTrailingBlankLines(renderPreviewMarkdown(md, width, safeMarkdownTheme()));
+      return limitLinesWithEllipsis(lines, maxLines, width, this.theme);
    }
 
    private moveSelection(delta: -1 | 1, count: number): void {
-      this.selectedIndex = delta < 0
-         ? (this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1)
-         : (this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1);
+      this.selectedIndex = wrapSelectionIndex(this.selectedIndex, delta, count);
       this.invalidate();
    }
 
    private selectNumberedOption(data: string, filteredOptions: QuestionOption[]): boolean {
-      const numMatch = data.match(/^[1-9]$/);
-      if (!numMatch || filteredOptions.length === 0) return false;
+      const index = numberedInputIndex(data, filteredOptions.length);
+      if (index === null) return false;
 
-      const idx = Number.parseInt(numMatch[0], 10) - 1;
-      if (idx < 0 || idx >= filteredOptions.length) return false;
-
-      this.selectedIndex = idx;
+      this.selectedIndex = index;
       this.invalidate();
       return true;
    }
