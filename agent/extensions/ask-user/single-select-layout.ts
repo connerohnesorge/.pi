@@ -197,63 +197,73 @@ function flatten(blocks: ItemBlock[], selectedIndex: number): AnnotatedRow[] {
 	);
 }
 
-export function renderSingleSelectRows({
-	options,
-	selectedIndex,
-	width,
-	allowFreeform,
-	allowComment = false,
-	commentEnabled = false,
-	maxRows,
-	hideDescriptions,
-}: RenderSingleSelectRowsParams): AnnotatedRow[] {
-	const itemCount = buildSelectionRowModel({ optionCount: options.length, allowComment, allowFreeform }).count;
-	const blocks = buildItemBlocks(options, width, allowFreeform, allowComment, commentEnabled, selectedIndex, hideDescriptions);
-	const allRows = flatten(blocks, selectedIndex);
+interface RowWindow {
+	start: number;
+	end: number;
+}
 
-	if (!Number.isFinite(maxRows) || !maxRows || maxRows <= 0 || allRows.length <= maxRows) {
-		return allRows;
+function renderSelectedBlockOnly(block: ItemBlock, availableRows: number, safeMaxRows: number, indicator: string): AnnotatedRow[] {
+	const visible = block.lines.slice(0, availableRows).map((line) => ({ line, selected: true }));
+	if (safeMaxRows > 1) visible.push({ line: indicator, selected: false });
+	return visible.slice(0, safeMaxRows);
+}
+
+function expandRowWindow(blocks: ItemBlock[], selectedIndex: number, availableRows: number): RowWindow {
+	let start = selectedIndex;
+	let end = selectedIndex + 1;
+	let usedRows = blocks[selectedIndex]?.lines.length ?? 0;
+
+	while (true) {
+		const next = blocks[end];
+		if (next && usedRows + next.lines.length <= availableRows) {
+			usedRows += next.lines.length;
+			end += 1;
+			continue;
+		}
+
+		const previous = blocks[start - 1];
+		if (previous && usedRows + previous.lines.length <= availableRows) {
+			start -= 1;
+			usedRows += previous.lines.length;
+			continue;
+		}
+
+		return { start, end };
 	}
+}
 
+function limitSingleSelectRows(
+	blocks: ItemBlock[],
+	selectedIndex: number,
+	itemCount: number,
+	maxRows: number,
+): AnnotatedRow[] {
 	const safeMaxRows = Math.max(1, Math.floor(maxRows));
 	const selectedBlock = blocks[selectedIndex] ?? blocks[0];
 	if (!selectedBlock) return [];
 
 	const indicator = `  (${selectedIndex + 1}/${itemCount})`;
 	const availableRows = safeMaxRows > 1 ? safeMaxRows - 1 : 1;
-
 	if (selectedBlock.lines.length >= availableRows) {
-		const visible = selectedBlock.lines.slice(0, availableRows).map((line) => ({
-			line,
-			selected: true,
-		}));
-		if (safeMaxRows > 1) visible.push({ line: indicator, selected: false });
-		return visible.slice(0, safeMaxRows);
+		return renderSelectedBlockOnly(selectedBlock, availableRows, safeMaxRows, indicator);
 	}
 
-	let start = selectedIndex;
-	let end = selectedIndex + 1;
-	let usedRows = selectedBlock.lines.length;
-
-	while (true) {
-		const nextCanFit = end < blocks.length && usedRows + blocks[end]!.lines.length <= availableRows;
-		if (nextCanFit) {
-			usedRows += blocks[end]!.lines.length;
-			end += 1;
-			continue;
-		}
-
-		const prevCanFit = start > 0 && usedRows + blocks[start - 1]!.lines.length <= availableRows;
-		if (prevCanFit) {
-			start -= 1;
-			usedRows += blocks[start]!.lines.length;
-			continue;
-		}
-
-		break;
-	}
-
+	const { start, end } = expandRowWindow(blocks, selectedIndex, availableRows);
 	const visible = flatten(blocks.slice(start, end), selectedIndex);
 	visible.push({ line: indicator, selected: false });
 	return visible.slice(0, safeMaxRows);
+}
+
+function renderSingleSelectRowsInternal(params: Required<Omit<RenderSingleSelectRowsParams, "maxRows" | "hideDescriptions">> & Pick<RenderSingleSelectRowsParams, "maxRows" | "hideDescriptions">): AnnotatedRow[] {
+	const { options, selectedIndex, width, allowFreeform, allowComment, commentEnabled, maxRows, hideDescriptions } = params;
+	const itemCount = buildSelectionRowModel({ optionCount: options.length, allowComment, allowFreeform }).count;
+	const blocks = buildItemBlocks(options, width, allowFreeform, allowComment, commentEnabled, selectedIndex, hideDescriptions);
+	const allRows = flatten(blocks, selectedIndex);
+	return !Number.isFinite(maxRows) || !maxRows || maxRows <= 0 || allRows.length <= maxRows
+		? allRows
+		: limitSingleSelectRows(blocks, selectedIndex, itemCount, maxRows);
+}
+
+export function renderSingleSelectRows(params: RenderSingleSelectRowsParams): AnnotatedRow[] {
+	return renderSingleSelectRowsInternal({ ...params, allowComment: params.allowComment ?? false, commentEnabled: params.commentEnabled ?? false });
 }
