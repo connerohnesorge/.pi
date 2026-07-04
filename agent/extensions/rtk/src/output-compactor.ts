@@ -388,6 +388,45 @@ function truncateAnchorSafeReadLines(lines: AnchorSafeReadLine[], maxChars: numb
 	return truncatedLines;
 }
 
+function applyAnchorReadSourceFiltering(
+	lines: AnchorSafeReadLine[],
+	language: ReturnType<typeof detectLanguage>,
+	mode: Exclude<RtkIntegrationConfig["outputCompaction"]["sourceCodeFiltering"], "none">,
+): AnchorSafeReadLine[] {
+	const currentSource = lines.map((line) => line.content).join("\n");
+	const filtered = normalizeTechniqueResult(filterSourceCode(currentSource, language, mode), currentSource);
+	return remapTransformedContentToAnchorSafeLines(lines, filtered);
+}
+
+function applyAnchorReadSmartTruncate(
+	lines: AnchorSafeReadLine[],
+	language: ReturnType<typeof detectLanguage>,
+	maxLines: number,
+): AnchorSafeReadLine[] {
+	const currentSource = lines.map((line) => line.content).join("\n");
+	return remapTransformedContentToAnchorSafeLines(lines, smartTruncate(currentSource, maxLines, language));
+}
+
+function applyAnchorReadCharTruncation(
+	parts: AnchorSafeReadParts,
+	lines: AnchorSafeReadLine[],
+	maxChars: number,
+): AnchorSafeReadLine[] {
+	const nonBodyOverhead = renderAnchorSafeReadText(parts, []).length;
+	return truncateAnchorSafeReadLines(lines, Math.max(1, maxChars - nonBodyOverhead));
+}
+
+function setAnchorLinesIfChanged(
+	state: { lines: AnchorSafeReadLine[]; techniques: string[] },
+	nextLines: AnchorSafeReadLine[],
+	technique: string,
+): void {
+	if (renderAnchorSafeReadBody(nextLines) !== renderAnchorSafeReadBody(state.lines)) {
+		state.lines = nextLines;
+		state.techniques.push(technique);
+	}
+}
+
 function compactAnchoredReadText(
 	text: string,
 	filePath: string,
@@ -398,8 +437,7 @@ function compactAnchoredReadText(
 		return { text, techniques: [] };
 	}
 
-	let lines = toAnchorSafeReadLines(parts.anchoredLines);
-	const techniques: string[] = [];
+	const state = { lines: toAnchorSafeReadLines(parts.anchoredLines), techniques: [] as string[] };
 	const compaction = config.outputCompaction;
 	const language = detectLanguage(filePath);
 
@@ -408,41 +446,32 @@ function compactAnchoredReadText(
 		compaction.sourceCodeFiltering !== "none" &&
 		shouldApplyReadSourceFiltering(text, config)
 	) {
-		const currentSource = lines.map((line) => line.content).join("\n");
-		const filtered = normalizeTechniqueResult(
-			filterSourceCode(currentSource, language, compaction.sourceCodeFiltering),
-			currentSource,
+		setAnchorLinesIfChanged(
+			state,
+			applyAnchorReadSourceFiltering(state.lines, language, compaction.sourceCodeFiltering),
+			`source:${compaction.sourceCodeFiltering}`,
 		);
-		const filteredLines = remapTransformedContentToAnchorSafeLines(lines, filtered);
-		if (renderAnchorSafeReadBody(filteredLines) !== renderAnchorSafeReadBody(lines)) {
-			lines = filteredLines;
-			techniques.push(`source:${compaction.sourceCodeFiltering}`);
-		}
 	}
 
-	if (compaction.smartTruncate.enabled && lines.length > compaction.smartTruncate.maxLines) {
-		const currentSource = lines.map((line) => line.content).join("\n");
-		const compacted = smartTruncate(currentSource, compaction.smartTruncate.maxLines, language);
-		const compactedLines = remapTransformedContentToAnchorSafeLines(lines, compacted);
-		if (renderAnchorSafeReadBody(compactedLines) !== renderAnchorSafeReadBody(lines)) {
-			lines = compactedLines;
-			techniques.push("smart-truncate");
-		}
+	if (compaction.smartTruncate.enabled && state.lines.length > compaction.smartTruncate.maxLines) {
+		setAnchorLinesIfChanged(
+			state,
+			applyAnchorReadSmartTruncate(state.lines, language, compaction.smartTruncate.maxLines),
+			"smart-truncate",
+		);
 	}
 
-	if (compaction.truncate.enabled && renderAnchorSafeReadText(parts, lines).length > compaction.truncate.maxChars) {
-		const nonBodyOverhead = renderAnchorSafeReadText(parts, []).length;
-		const bodyMaxChars = Math.max(1, compaction.truncate.maxChars - nonBodyOverhead);
-		const truncatedLines = truncateAnchorSafeReadLines(lines, bodyMaxChars);
-		if (renderAnchorSafeReadBody(truncatedLines) !== renderAnchorSafeReadBody(lines)) {
-			lines = truncatedLines;
-			techniques.push("truncate");
-		}
+	if (compaction.truncate.enabled && renderAnchorSafeReadText(parts, state.lines).length > compaction.truncate.maxChars) {
+		setAnchorLinesIfChanged(
+			state,
+			applyAnchorReadCharTruncation(parts, state.lines, compaction.truncate.maxChars),
+			"truncate",
+		);
 	}
 
 	return {
-		text: renderAnchorSafeReadText(parts, lines),
-		techniques,
+		text: renderAnchorSafeReadText(parts, state.lines),
+		techniques: state.techniques,
 	};
 }
 
@@ -492,72 +521,85 @@ function applyMaxCharTruncation(text: string, enabled: boolean, maxChars: number
 	return { text: truncate(text, maxChars), applied: true };
 }
 
+function applyChangedText(
+	state: { text: string; techniques: string[] },
+	nextText: string,
+	technique: string,
+): boolean {
+	if (nextText === state.text) {
+		return false;
+	}
+
+	state.text = nextText;
+	state.techniques.push(technique);
+	return true;
+}
+
+function applyNormalizedTechnique(
+	state: { text: string; techniques: string[] },
+	technique: string,
+	transform: (text: string) => string | null,
+): boolean {
+	return applyChangedText(state, normalizeTechniqueResult(transform(state.text), state.text), technique);
+}
+
+function applyAnsiTechnique(state: { text: string; techniques: string[] }, enabled: boolean): void {
+	const ansiStripped = applyAnsiStripping(state.text, enabled);
+	if (ansiStripped.applied) {
+		state.text = ansiStripped.text;
+		state.techniques.push("ansi");
+	}
+}
+
+function applyConfiguredTruncation(
+	state: { text: string; techniques: string[] },
+	compaction: RtkIntegrationConfig["outputCompaction"],
+): void {
+	const truncated = applyMaxCharTruncation(state.text, compaction.truncate.enabled, compaction.truncate.maxChars);
+	if (truncated.applied) {
+		state.text = truncated.text;
+		state.techniques.push("truncate");
+	}
+}
+
+function withReadCompactionBanner(state: { text: string; techniques: string[] }): { text: string; techniques: string[] } {
+	if (state.techniques.length > 0 && !state.text.startsWith(READ_COMPACTION_BANNER_PREFIX)) {
+		state.text = `${formatReadCompactionBanner(state.techniques)}\n${state.text}`;
+	}
+
+	return state;
+}
+
 function compactBashText(
 	text: string,
 	command: string | undefined,
 	config: RtkIntegrationConfig,
 ): { text: string; techniques: string[] } {
-	let nextText = text;
-	const techniques: string[] = [];
+	const state = { text, techniques: [] as string[] };
 	const compaction = config.outputCompaction;
 
-	const ansiStripped = applyAnsiStripping(nextText, compaction.stripAnsi);
-	if (ansiStripped.applied) {
-		nextText = ansiStripped.text;
-		techniques.push("ansi");
-	}
-
-	const withoutRtkHookWarnings = normalizeTechniqueResult(stripRtkHookWarnings(nextText, command), nextText);
-	if (withoutRtkHookWarnings !== nextText) {
-		nextText = withoutRtkHookWarnings;
-		techniques.push("rtk-hook-warning");
-	}
-
-	const withoutRtkEmoji = normalizeTechniqueResult(sanitizeRtkEmojiOutput(nextText, command), nextText);
-	if (withoutRtkEmoji !== nextText) {
-		nextText = withoutRtkEmoji;
-		techniques.push("rtk-emoji");
-	}
+	applyAnsiTechnique(state, compaction.stripAnsi);
+	applyNormalizedTechnique(state, "rtk-hook-warning", (current) => stripRtkHookWarnings(current, command));
+	applyNormalizedTechnique(state, "rtk-emoji", (current) => sanitizeRtkEmojiOutput(current, command));
 
 	if (compaction.filterBuildOutput) {
-		const compacted = normalizeTechniqueResult(filterBuildOutput(nextText, command), nextText);
-		if (compacted !== nextText) {
-			nextText = compacted;
-			techniques.push("build");
-		}
+		applyNormalizedTechnique(state, "build", (current) => filterBuildOutput(current, command));
 	}
 
 	if (compaction.aggregateTestOutput) {
-		const compacted = normalizeTechniqueResult(aggregateTestOutput(nextText, command), nextText);
-		if (compacted !== nextText) {
-			nextText = compacted;
-			techniques.push("test");
-		}
+		applyNormalizedTechnique(state, "test", (current) => aggregateTestOutput(current, command));
 	}
 
 	if (compaction.compactGitOutput) {
-		const compacted = normalizeTechniqueResult(compactGitOutput(nextText, command), nextText);
-		if (compacted !== nextText) {
-			nextText = compacted;
-			techniques.push("git");
-		}
+		applyNormalizedTechnique(state, "git", (current) => compactGitOutput(current, command));
 	}
 
 	if (compaction.aggregateLinterOutput) {
-		const compacted = normalizeTechniqueResult(aggregateLinterOutput(nextText, command), nextText);
-		if (compacted !== nextText) {
-			nextText = compacted;
-			techniques.push("linter");
-		}
+		applyNormalizedTechnique(state, "linter", (current) => aggregateLinterOutput(current, command));
 	}
 
-	const truncated = applyMaxCharTruncation(nextText, compaction.truncate.enabled, compaction.truncate.maxChars);
-	if (truncated.applied) {
-		nextText = truncated.text;
-		techniques.push("truncate");
-	}
-
-	return { text: nextText, techniques };
+	applyConfiguredTruncation(state, compaction);
+	return state;
 }
 
 function compactReadText(
@@ -570,26 +612,16 @@ function compactReadText(
 		return { text, techniques: [] };
 	}
 
-	let nextText = text;
-	const techniques: string[] = [];
+	const state = { text, techniques: [] as string[] };
 	const compaction = config.outputCompaction;
 
-	const ansiStripped = applyAnsiStripping(nextText, compaction.stripAnsi);
-	if (ansiStripped.applied) {
-		nextText = ansiStripped.text;
-		techniques.push("ansi");
-	}
+	applyAnsiTechnique(state, compaction.stripAnsi);
 
-	if (looksLikeAnchoredReadOutput(nextText)) {
-		const anchored = compactAnchoredReadText(nextText, filePath, config);
-		nextText = anchored.text;
-		techniques.push(...anchored.techniques);
-
-		if (techniques.length > 0 && !nextText.startsWith(READ_COMPACTION_BANNER_PREFIX)) {
-			nextText = `${formatReadCompactionBanner(techniques)}\n${nextText}`;
-		}
-
-		return { text: nextText, techniques };
+	if (looksLikeAnchoredReadOutput(state.text)) {
+		const anchored = compactAnchoredReadText(state.text, filePath, config);
+		state.text = anchored.text;
+		state.techniques.push(...anchored.techniques);
+		return withReadCompactionBanner(state);
 	}
 
 	const language = detectLanguage(filePath);
@@ -599,66 +631,51 @@ function compactReadText(
 		compaction.sourceCodeFiltering !== "none" &&
 		shouldApplyReadSourceFiltering(text, config)
 	) {
-		const filtered = normalizeTechniqueResult(
-			filterSourceCode(nextText, language, compaction.sourceCodeFiltering),
-			nextText,
+		applyNormalizedTechnique(state, `source:${compaction.sourceCodeFiltering}`, (current) =>
+			filterSourceCode(current, language, compaction.sourceCodeFiltering),
 		);
-		if (filtered !== nextText) {
-			nextText = filtered;
-			techniques.push(`source:${compaction.sourceCodeFiltering}`);
-		}
 	}
 
 	if (compaction.smartTruncate.enabled) {
-		const lineCount = nextText.split("\n").length;
+		const lineCount = state.text.split("\n").length;
 		if (lineCount > compaction.smartTruncate.maxLines) {
-			const compacted = smartTruncate(nextText, compaction.smartTruncate.maxLines, language);
-			if (compacted !== nextText) {
-				nextText = compacted;
-				techniques.push("smart-truncate");
-			}
+			applyChangedText(state, smartTruncate(state.text, compaction.smartTruncate.maxLines, language), "smart-truncate");
 		}
 	}
 
-	const truncated = applyMaxCharTruncation(nextText, compaction.truncate.enabled, compaction.truncate.maxChars);
-	if (truncated.applied) {
-		nextText = truncated.text;
-		techniques.push("truncate");
-	}
-
-	if (techniques.length > 0 && !nextText.startsWith(READ_COMPACTION_BANNER_PREFIX)) {
-		nextText = `${formatReadCompactionBanner(techniques)}\n${nextText}`;
-	}
-
-	return { text: nextText, techniques };
+	applyConfiguredTruncation(state, compaction);
+	return withReadCompactionBanner(state);
 }
 
 function compactGrepText(text: string, config: RtkIntegrationConfig): { text: string; techniques: string[] } {
-	let nextText = text;
-	const techniques: string[] = [];
+	const state = { text, techniques: [] as string[] };
 	const compaction = config.outputCompaction;
 
-	const ansiStripped = applyAnsiStripping(nextText, compaction.stripAnsi);
-	if (ansiStripped.applied) {
-		nextText = ansiStripped.text;
-		techniques.push("ansi");
-	}
+	applyAnsiTechnique(state, compaction.stripAnsi);
 
 	if (compaction.groupSearchOutput) {
-		const grouped = normalizeTechniqueResult(groupSearchResults(nextText), nextText);
-		if (grouped !== nextText) {
-			nextText = grouped;
-			techniques.push("search");
-		}
+		applyNormalizedTechnique(state, "search", groupSearchResults);
 	}
 
-	const truncated = applyMaxCharTruncation(nextText, compaction.truncate.enabled, compaction.truncate.maxChars);
-	if (truncated.applied) {
-		nextText = truncated.text;
-		techniques.push("truncate");
+	applyConfiguredTruncation(state, compaction);
+	return state;
+}
+
+function compactTextBlock(
+	text: string,
+	event: ToolResultLikeEvent,
+	input: Record<string, unknown>,
+	config: RtkIntegrationConfig,
+): { text: string; techniques: string[] } {
+	if (event.toolName === "bash") {
+		return compactBashText(text, normalizeCommand(input), config);
 	}
 
-	return { text: nextText, techniques };
+	if (event.toolName === "read") {
+		return compactReadText(text, normalizePath(input), config, shouldPreserveExactReadOutput(text, input, config));
+	}
+
+	return event.toolName === "grep" ? compactGrepText(text, config) : { text, techniques: [] };
 }
 
 export function compactToolResult(
@@ -690,21 +707,7 @@ export function compactToolResult(
 			return block;
 		}
 
-		let transformed = { text: contentBlock.text, techniques: [] as string[] };
-		if (event.toolName === "bash") {
-			transformed = compactBashText(contentBlock.text, normalizeCommand(input), config);
-		} else if (event.toolName === "read") {
-			const normalizedPath = normalizePath(input);
-			transformed = compactReadText(
-				contentBlock.text,
-				normalizedPath,
-				config,
-				shouldPreserveExactReadOutput(contentBlock.text, input, config),
-			);
-		} else if (event.toolName === "grep") {
-			transformed = compactGrepText(contentBlock.text, config);
-		}
-
+		const transformed = compactTextBlock(contentBlock.text, event, input, config);
 		for (const technique of transformed.techniques) {
 			allTechniques.add(technique);
 		}
