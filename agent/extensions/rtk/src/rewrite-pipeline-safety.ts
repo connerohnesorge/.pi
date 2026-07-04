@@ -39,97 +39,168 @@ function isTopLevelQuoteCharacter(character: string): character is '"' | "'" | "
 	return character === '"' || character === "'" || character === "`";
 }
 
+interface PipelineParserState {
+	quote: '"' | "'" | "`" | null;
+	escaped: boolean;
+	segmentStart: number;
+	suffix: string;
+}
+
+function consumeQuotedOrEscapedCharacter(state: PipelineParserState, character: string): boolean {
+	if (state.escaped) {
+		state.escaped = false;
+		return true;
+	}
+
+	if (state.quote !== null) {
+		if (character === "\\" && state.quote !== "'") {
+			state.escaped = true;
+			return true;
+		}
+		if (character === state.quote) {
+			state.quote = null;
+		}
+		return true;
+	}
+
+	if (character === "\\") {
+		state.escaped = true;
+		return true;
+	}
+
+	if (isTopLevelQuoteCharacter(character)) {
+		state.quote = character;
+		return true;
+	}
+
+	return false;
+}
+
+type SeparatorAdvance = number | "suffix" | "invalid" | "none";
+
+function finishPipelineBeforeSuffix(
+	command: string,
+	index: number,
+	state: PipelineParserState,
+	segments: string[],
+): SeparatorAdvance {
+	segments.push(command.slice(state.segmentStart, index));
+	state.suffix = command.slice(index);
+	return "suffix";
+}
+
+function consumePipeSeparator(
+	command: string,
+	index: number,
+	state: PipelineParserState,
+	segments: string[],
+	separators: string[],
+): SeparatorAdvance {
+	const nextCharacter = command[index + 1] ?? "";
+	const previousCharacter = index > 0 ? (command[index - 1] ?? "") : "";
+	if (command[index] !== "|") {
+		return "none";
+	}
+	if (nextCharacter === "|") {
+		return separators.length === 0 ? "invalid" : finishPipelineBeforeSuffix(command, index, state, segments);
+	}
+	if (previousCharacter === ">") {
+		return "none";
+	}
+
+	const separatorLength = nextCharacter === "&" ? 2 : 1;
+	segments.push(command.slice(state.segmentStart, index));
+	separators.push(command.slice(index, index + separatorLength));
+	state.segmentStart = index + separatorLength;
+	return index + separatorLength;
+}
+
+function isRedirectAmpersand(nextCharacter: string, previousCharacter: string): boolean {
+	return nextCharacter === ">" || previousCharacter === ">" || previousCharacter === "<";
+}
+
+function consumeAmpersandSeparator(
+	command: string,
+	index: number,
+	state: PipelineParserState,
+	segments: string[],
+	separators: string[],
+): SeparatorAdvance {
+	const nextCharacter = command[index + 1] ?? "";
+	const previousCharacter = index > 0 ? (command[index - 1] ?? "") : "";
+	if (command[index] !== "&") {
+		return "none";
+	}
+	if (nextCharacter === "&") {
+		return separators.length === 0 ? "invalid" : finishPipelineBeforeSuffix(command, index, state, segments);
+	}
+	return isRedirectAmpersand(nextCharacter, previousCharacter) ? "none" : "invalid";
+}
+
+function consumeSemicolonSeparator(
+	command: string,
+	index: number,
+	state: PipelineParserState,
+	segments: string[],
+	separators: string[],
+): SeparatorAdvance {
+	if (command[index] !== ";") {
+		return "none";
+	}
+	return separators.length === 0 ? "invalid" : finishPipelineBeforeSuffix(command, index, state, segments);
+}
+
+function consumeTopLevelSeparator(
+	command: string,
+	index: number,
+	state: PipelineParserState,
+	segments: string[],
+	separators: string[],
+): SeparatorAdvance {
+	for (const consume of [consumePipeSeparator, consumeAmpersandSeparator, consumeSemicolonSeparator]) {
+		const advance = consume(command, index, state, segments, separators);
+		if (advance !== "none") {
+			return advance;
+		}
+	}
+	return index + 1;
+}
+
 function parseSimpleTopLevelPipeline(command: string): ParsedPipeline | null {
 	const segments: string[] = [];
 	const separators: string[] = [];
-	let quote: '"' | "'" | "`" | null = null;
-	let escaped = false;
-	let segmentStart = 0;
-	let suffix = "";
+	const state: PipelineParserState = { quote: null, escaped: false, segmentStart: 0, suffix: "" };
 
-	for (let index = 0; index < command.length; index += 1) {
+	for (let index = 0; index < command.length; ) {
 		const character = command[index] ?? "";
-		const nextCharacter = command[index + 1] ?? "";
-		const previousCharacter = index > 0 ? (command[index - 1] ?? "") : "";
-
-		if (escaped) {
-			escaped = false;
+		if (consumeQuotedOrEscapedCharacter(state, character)) {
+			index += 1;
 			continue;
 		}
 
-		if (quote !== null) {
-			if (character === "\\" && quote !== "'") {
-				escaped = true;
-				continue;
-			}
-			if (character === quote) {
-				quote = null;
-			}
-			continue;
-		}
-
-		if (character === "\\") {
-			escaped = true;
-			continue;
-		}
-
-		if (isTopLevelQuoteCharacter(character)) {
-			quote = character;
-			continue;
-		}
-
-		if (character === "|" && nextCharacter === "|") {
-			if (separators.length === 0) {
-				return null;
-			}
-			segments.push(command.slice(segmentStart, index));
-			suffix = command.slice(index);
-			break;
-		}
-
-		if (character === "|" && previousCharacter !== ">") {
-			const separatorLength = nextCharacter === "&" ? 2 : 1;
-			segments.push(command.slice(segmentStart, index));
-			separators.push(command.slice(index, index + separatorLength));
-			segmentStart = index + separatorLength;
-			if (separatorLength === 2) {
-				index += 1;
-			}
-			continue;
-		}
-
-		if (character === "&" && nextCharacter === "&") {
-			if (separators.length === 0) {
-				return null;
-			}
-			segments.push(command.slice(segmentStart, index));
-			suffix = command.slice(index);
-			break;
-		}
-
-		if (character === "&" && nextCharacter !== ">" && previousCharacter !== ">" && previousCharacter !== "<") {
+		const advance = consumeTopLevelSeparator(command, index, state, segments, separators);
+		if (advance === "invalid") {
 			return null;
 		}
-
-		if (character === ";") {
-			if (separators.length === 0) {
-				return null;
-			}
-			segments.push(command.slice(segmentStart, index));
-			suffix = command.slice(index);
+		if (advance === "suffix") {
 			break;
 		}
+		if (advance === "none") {
+			index += 1;
+			continue;
+		}
+		index = advance;
 	}
 
 	if (separators.length === 0) {
 		return null;
 	}
 
-	if (!suffix) {
-		segments.push(command.slice(segmentStart));
+	if (!state.suffix) {
+		segments.push(command.slice(state.segmentStart));
 	}
 
-	return { segments, separators, suffix };
+	return { segments, separators, suffix: state.suffix };
 }
 
 function extractProducerRewritePlan(segment: string, firstSeparator: string): ProducerRewritePlan | null {

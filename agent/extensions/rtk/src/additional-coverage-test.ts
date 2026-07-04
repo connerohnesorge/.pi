@@ -263,6 +263,14 @@ runTest("rewrite pipeline safety buffers rewritten Windows producer commands", (
 	assert.ok(rewritten.includes('rtk git diff > "$__pi_rtk_pipe_tmp"'));
 	assert.ok(rewritten.includes('(grep TODO) < "$__pi_rtk_pipe_tmp"'));
 
+	const stderrPipeline = applyRewrittenCommandShellSafetyFixups("rtk git diff |& grep TODO", "win32");
+	assert.ok(stderrPipeline.includes('rtk git diff > "$__pi_rtk_pipe_tmp" 2>&1'));
+	assert.ok(stderrPipeline.includes('(grep TODO) < "$__pi_rtk_pipe_tmp"'));
+
+	const quotedPipe = applyRewrittenCommandShellSafetyFixups('rtk echo "a | b" | grep "a \\"| b"', "win32");
+	assert.ok(quotedPipe.includes('rtk echo "a | b" > "$__pi_rtk_pipe_tmp"'));
+	assert.ok(quotedPipe.includes('(grep "a \\"| b") < "$__pi_rtk_pipe_tmp"'));
+
 	assert.equal(
 		applyRewrittenCommandShellSafetyFixups("rtk git diff | grep TODO", "linux"),
 		"rtk git diff | grep TODO",
