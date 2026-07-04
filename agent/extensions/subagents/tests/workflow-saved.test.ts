@@ -1,29 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import test from "node:test";
 import { WORKFLOW_SAVED_DIR } from "../src/config.ts";
 import { workflowProjectPaths } from "../src/workflow-paths.ts";
 import { createWorkflowStorage } from "../src/workflow-saved.ts";
-import { withFakeHomeAsync } from "./helpers/fake-home.ts";
+import { withTempCwd } from "./helpers/workflow-manager-fixtures.ts";
 
-/**
- * Run tests with HOME overridden to a temp directory so the user-level
- * saved workflows directory (~/.pi/workflows/saved) is isolated.
- */
-function withIsolatedHome(fn: (cwd: string) => Promise<void>) {
-  return async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-dw-ws-"));
-    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
-    try {
-      await withFakeHomeAsync(fakeHome, () => fn(cwd));
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
-  };
-}
+/** Run tests with HOME overridden so user-level saved workflows are isolated. */
+const withIsolatedHome = (fn: (cwd: string) => Promise<void>) => withTempCwd(fn, "pi-dw-ws-");
 
 test(
   "createWorkflowStorage save creates directory and file",

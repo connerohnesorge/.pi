@@ -1,26 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { WORKFLOW_RUNS_DIR } from "../src/config.ts";
 import { createRunPersistence, generateRunId, type PersistedRunState } from "../src/run-persistence.ts";
 import { WorkflowManager } from "../src/workflow-manager.ts";
 import { workflowProjectPaths } from "../src/workflow-paths.ts";
-import { withFakeHomeAsync } from "./helpers/fake-home.ts";
-
-function withTempCwd(fn: (cwd: string) => Promise<void>) {
-  return async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-dw-rp-"));
-    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
-    try {
-      await withFakeHomeAsync(fakeHome, () => fn(cwd));
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
-  };
-}
+import { withTempCwd } from "./helpers/workflow-manager-fixtures.ts";
 
 test(
   "createRunPersistence creates runs directory on first save",
