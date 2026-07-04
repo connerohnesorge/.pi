@@ -272,6 +272,10 @@ runTest("path compaction preserves the tail and handles Windows separators", () 
 	assert.ok(compactWindowsPath.endsWith("windows-command-helpers.ts"));
 
 	assert.equal(compactPath("src/file.ts", 40), "src/file.ts");
+	assert.equal(compactPath("/root/alpha/beta/file.ts", 20), "/…/beta/file.ts");
+	assert.equal(compactPath("/root/alpha/beta/file.ts", 14), "…/beta/file.ts");
+	assert.equal(compactPath("/root/alpha/beta/file.ts", 10), "…/file.ts");
+	assert.equal(compactPath("C:\\alpha\\b\\file.ts", 14), "C:\\…\\b\\file.ts");
 });
 
 runTest("windows bash compatibility rewrites only when the runtime is Windows", () => {

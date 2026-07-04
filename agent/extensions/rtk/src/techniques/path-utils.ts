@@ -31,6 +31,30 @@ function joinPathSegments(prefix: string, separator: "/" | "\\", segments: strin
 	return prefix ? `${prefix}${joined}` : joined;
 }
 
+function compactPathCandidates(
+	path: string,
+	prefix: string,
+	separator: "/" | "\\",
+	segments: string[],
+	maxLength: number,
+): string[] {
+	const lastSegment = segments[segments.length - 1] ?? path.slice(-(maxLength - 1));
+	const previous = segments[segments.length - 2];
+	const previousAndLast = previous ? [previous, lastSegment] : [lastSegment];
+
+	return [
+		joinPathSegments(prefix, separator, ["…", ...previousAndLast]),
+		joinPathSegments("", separator, ["…", ...previousAndLast]),
+		joinPathSegments("", separator, ["…", lastSegment]),
+		`…${path.slice(-(maxLength - 1))}`,
+		`…${lastSegment.slice(-(maxLength - 1))}`,
+	];
+}
+
+function firstFittingCandidate(candidates: string[], maxLength: number): string {
+	return candidates.find((candidate) => candidate.length <= maxLength) ?? candidates[candidates.length - 1] ?? "";
+}
+
 export function compactPath(path: string, maxLength: number): string {
 	if (path.length <= maxLength) {
 		return path;
@@ -47,21 +71,5 @@ export function compactPath(path: string, maxLength: number): string {
 		.split(/[\\/]+/)
 		.filter((segment) => segment.length > 0);
 
-	const lastSegment = segments[segments.length - 1] ?? path.slice(-(maxLength - 1));
-	const previousSegment = segments[segments.length - 2];
-
-	const candidates = [
-		joinPathSegments(prefix, separator, ["…", ...(previousSegment ? [previousSegment] : []), lastSegment]),
-		joinPathSegments("", separator, ["…", ...(previousSegment ? [previousSegment] : []), lastSegment]),
-		joinPathSegments("", separator, ["…", lastSegment]),
-		`…${path.slice(-(maxLength - 1))}`,
-	];
-
-	for (const candidate of candidates) {
-		if (candidate.length <= maxLength) {
-			return candidate;
-		}
-	}
-
-	return `…${lastSegment.slice(-(maxLength - 1))}`;
+	return firstFittingCandidate(compactPathCandidates(path, prefix, separator, segments, maxLength), maxLength);
 }
