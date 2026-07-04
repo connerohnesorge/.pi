@@ -38,46 +38,66 @@ export interface GoalActiveToolPolicyInput {
 	tweakDraftingFor?: string | null;
 }
 
-export function computeGoalActiveTools(input: GoalActiveToolPolicyInput): string[] {
-	const active = new Set(iterableToolNames(input.currentTools));
-	for (const name of GOAL_EXECUTION_WORK_TOOLS) active.add(name);
+function goalToolPhase(input: GoalActiveToolPolicyInput): "drafting" | "tweakDrafting" | "normal" {
+	if (input.confirmationActive) return "drafting";
+	return input.tweakDraftingFor !== null && input.tweakDraftingFor !== undefined ? "tweakDrafting" : "normal";
+}
+
+function addTools(active: Set<string>, tools: Iterable<string>): void {
+	for (const name of tools) active.add(name);
+}
+
+function resetGoalTools(active: Set<string>): void {
 	active.delete(QUESTION_TOOL_NAME);
 	active.delete(QUESTIONNAIRE_TOOL_NAME);
 	for (const name of ACTIVE_GOAL_TOOL_NAMES) active.delete(name);
-	const phase = input.confirmationActive ? "drafting" : input.tweakDraftingFor !== null && input.tweakDraftingFor !== undefined ? "tweakDrafting" : "normal";
-	const lifecycleTools = lifecycleToolNamesForGoalStatus(input.goalStatus, phase);
-	for (const name of lifecycleTools) active.add(name);
+}
 
-	if (input.goalId && input.tweakDraftingFor === input.goalId) {
-		active.add(TWEAK_APPLY_TOOL_NAME);
-		active.add(QUESTION_TOOL_NAME);
-		active.add(QUESTIONNAIRE_TOOL_NAME);
-	} else {
+function applyTweakDraftingTools(active: Set<string>, input: GoalActiveToolPolicyInput): void {
+	if (!input.goalId || input.tweakDraftingFor !== input.goalId) {
 		active.delete(TWEAK_APPLY_TOOL_NAME);
+		return;
 	}
+	active.add(TWEAK_APPLY_TOOL_NAME);
+	active.add(QUESTION_TOOL_NAME);
+	active.add(QUESTIONNAIRE_TOOL_NAME);
+}
 
-	active.add(PROPOSE_DRAFT_TOOL_NAME);
-	active.delete(CREATE_GOAL_TOOL_NAME);
-
+function applyQuestionTools(active: Set<string>, input: GoalActiveToolPolicyInput): void {
 	if (input.confirmationActive) {
 		active.add(QUESTION_TOOL_NAME);
 		active.add(QUESTIONNAIRE_TOOL_NAME);
 	} else if (input.goalStatus === "active") {
-		for (const name of GOAL_EXECUTION_WORK_TOOLS) active.add(name);
+		addTools(active, GOAL_EXECUTION_WORK_TOOLS);
 	}
+}
+
+export function computeGoalActiveTools(input: GoalActiveToolPolicyInput): string[] {
+	const active = new Set(iterableToolNames(input.currentTools));
+	addTools(active, GOAL_EXECUTION_WORK_TOOLS);
+	resetGoalTools(active);
+	addTools(active, lifecycleToolNamesForGoalStatus(input.goalStatus, goalToolPhase(input)));
+	applyTweakDraftingTools(active, input);
+	active.add(PROPOSE_DRAFT_TOOL_NAME);
+	active.delete(CREATE_GOAL_TOOL_NAME);
+	applyQuestionTools(active, input);
 	return Array.from(active);
+}
+
+function isGoalLedgerRead(args: unknown): boolean {
+	const filePath = asRecord(args)?.path;
+	return typeof filePath === "string" && (filePath === ".pi/goals" || filePath.startsWith(".pi/goals/"));
+}
+
+function isEchoCommand(args: unknown): boolean {
+	const command = asRecord(args)?.command;
+	return typeof command === "string" && /^\s*echo\b/.test(command);
 }
 
 export function isMeaningfulProgressToolCall(toolName: string, args: unknown): boolean {
 	if (!GOAL_PROGRESS_TOOL_SET.has(toolName)) return false;
-	if (toolName === "read") {
-		const filePath = asRecord(args)?.path;
-		if (typeof filePath === "string" && (filePath === ".pi/goals" || filePath.startsWith(".pi/goals/"))) return false;
-	}
-	if (toolName === "bash") {
-		const command = asRecord(args)?.command;
-		if (typeof command === "string" && /^\s*echo\b/.test(command)) return false;
-	}
+	if (toolName === "read") return !isGoalLedgerRead(args);
+	if (toolName === "bash") return !isEchoCommand(args);
 	return true;
 }
 
@@ -100,17 +120,24 @@ export interface GoalToolCallPolicyDecision {
 	turnStoppedFor?: string | null;
 }
 
-export function evaluateGoalToolCall(input: GoalToolCallPolicyInput): GoalToolCallPolicyDecision {
-	if (input.turnStoppedFor !== null && input.turnStoppedFor !== undefined && !POST_STOP_ALLOWED_TOOL_SET.has(input.toolName)) {
-		return {
-			blockReason: `The goal was already stopped earlier in this turn (goalId=${input.turnStoppedFor}). ` +
-				`Do not call more tools; end the turn with a brief summary and yield to the user.`,
-			countGetGoalNudge: false,
-			resetGetGoalNudge: false,
-			goalWorkToolCalledThisTurn: false,
-		};
-	}
+function postStopBlockDecision(input: GoalToolCallPolicyInput): GoalToolCallPolicyDecision | null {
+	if (input.turnStoppedFor === null || input.turnStoppedFor === undefined || POST_STOP_ALLOWED_TOOL_SET.has(input.toolName)) return null;
+	return {
+		blockReason: `The goal was already stopped earlier in this turn (goalId=${input.turnStoppedFor}). ` +
+			`Do not call more tools; end the turn with a brief summary and yield to the user.`,
+		countGetGoalNudge: false,
+		resetGetGoalNudge: false,
+		goalWorkToolCalledThisTurn: false,
+	};
+}
 
+function shouldStopAutoContinueTurn(input: GoalToolCallPolicyInput, activeGoal: boolean, meaningfulProgress: boolean): boolean {
+	return !meaningfulProgress && activeGoal && input.goalAutoContinue === true && input.toolName !== "get_goal";
+}
+
+export function evaluateGoalToolCall(input: GoalToolCallPolicyInput): GoalToolCallPolicyDecision {
+	const blocked = postStopBlockDecision(input);
+	if (blocked) return blocked;
 	const activeGoal = input.goalStatus === "active" && !!input.goalId;
 	const normalGoalTurn = !input.confirmationActive && !input.tweakDraftingActive && activeGoal;
 	const meaningfulProgress = isMeaningfulProgressToolCall(input.toolName, input.args);
@@ -118,9 +145,7 @@ export function evaluateGoalToolCall(input: GoalToolCallPolicyInput): GoalToolCa
 		countGetGoalNudge: normalGoalTurn && input.toolName === "get_goal",
 		resetGetGoalNudge: meaningfulProgress && !!input.goalId,
 		goalWorkToolCalledThisTurn: meaningfulProgress,
-		turnStoppedFor: !meaningfulProgress && activeGoal && input.goalAutoContinue === true && input.toolName !== "get_goal"
-			? input.goalId ?? null
-			: undefined,
+		turnStoppedFor: shouldStopAutoContinueTurn(input, activeGoal, meaningfulProgress) ? input.goalId ?? null : undefined,
 	};
 }
 
