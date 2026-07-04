@@ -123,7 +123,7 @@ function redirectExternalPath(
 		: { block: `Blocked absolute path outside active worktree: ${expanded}` };
 }
 
-export function redirectWorktreePath(
+function redirectWorktreePath(
 	filePath: string,
 	info: WorktreeInfo,
 	options: { allowExternalAbsolute: boolean },
