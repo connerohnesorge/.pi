@@ -475,6 +475,23 @@ function normalizeTechniqueResult(result: string | null, currentText: string): s
 	return result === null ? currentText : result;
 }
 
+function applyAnsiStripping(text: string, enabled: boolean): { text: string; applied: boolean } {
+	if (!enabled) {
+		return { text, applied: false };
+	}
+
+	const stripped = stripAnsiFast(text);
+	return { text: stripped, applied: stripped !== text };
+}
+
+function applyMaxCharTruncation(text: string, enabled: boolean, maxChars: number): { text: string; applied: boolean } {
+	if (!enabled || text.length <= maxChars) {
+		return { text, applied: false };
+	}
+
+	return { text: truncate(text, maxChars), applied: true };
+}
+
 function compactBashText(
 	text: string,
 	command: string | undefined,
@@ -484,12 +501,10 @@ function compactBashText(
 	const techniques: string[] = [];
 	const compaction = config.outputCompaction;
 
-	if (compaction.stripAnsi) {
-		const stripped = stripAnsiFast(nextText);
-		if (stripped !== nextText) {
-			nextText = stripped;
-			techniques.push("ansi");
-		}
+	const ansiStripped = applyAnsiStripping(nextText, compaction.stripAnsi);
+	if (ansiStripped.applied) {
+		nextText = ansiStripped.text;
+		techniques.push("ansi");
 	}
 
 	const withoutRtkHookWarnings = normalizeTechniqueResult(stripRtkHookWarnings(nextText, command), nextText);
@@ -536,8 +551,9 @@ function compactBashText(
 		}
 	}
 
-	if (compaction.truncate.enabled && nextText.length > compaction.truncate.maxChars) {
-		nextText = truncate(nextText, compaction.truncate.maxChars);
+	const truncated = applyMaxCharTruncation(nextText, compaction.truncate.enabled, compaction.truncate.maxChars);
+	if (truncated.applied) {
+		nextText = truncated.text;
 		techniques.push("truncate");
 	}
 
@@ -558,12 +574,10 @@ function compactReadText(
 	const techniques: string[] = [];
 	const compaction = config.outputCompaction;
 
-	if (compaction.stripAnsi) {
-		const stripped = stripAnsiFast(nextText);
-		if (stripped !== nextText) {
-			nextText = stripped;
-			techniques.push("ansi");
-		}
+	const ansiStripped = applyAnsiStripping(nextText, compaction.stripAnsi);
+	if (ansiStripped.applied) {
+		nextText = ansiStripped.text;
+		techniques.push("ansi");
 	}
 
 	if (looksLikeAnchoredReadOutput(nextText)) {
@@ -606,8 +620,9 @@ function compactReadText(
 		}
 	}
 
-	if (compaction.truncate.enabled && nextText.length > compaction.truncate.maxChars) {
-		nextText = truncate(nextText, compaction.truncate.maxChars);
+	const truncated = applyMaxCharTruncation(nextText, compaction.truncate.enabled, compaction.truncate.maxChars);
+	if (truncated.applied) {
+		nextText = truncated.text;
 		techniques.push("truncate");
 	}
 
@@ -623,12 +638,10 @@ function compactGrepText(text: string, config: RtkIntegrationConfig): { text: st
 	const techniques: string[] = [];
 	const compaction = config.outputCompaction;
 
-	if (compaction.stripAnsi) {
-		const stripped = stripAnsiFast(nextText);
-		if (stripped !== nextText) {
-			nextText = stripped;
-			techniques.push("ansi");
-		}
+	const ansiStripped = applyAnsiStripping(nextText, compaction.stripAnsi);
+	if (ansiStripped.applied) {
+		nextText = ansiStripped.text;
+		techniques.push("ansi");
 	}
 
 	if (compaction.groupSearchOutput) {
@@ -639,8 +652,9 @@ function compactGrepText(text: string, config: RtkIntegrationConfig): { text: st
 		}
 	}
 
-	if (compaction.truncate.enabled && nextText.length > compaction.truncate.maxChars) {
-		nextText = truncate(nextText, compaction.truncate.maxChars);
+	const truncated = applyMaxCharTruncation(nextText, compaction.truncate.enabled, compaction.truncate.maxChars);
+	if (truncated.applied) {
+		nextText = truncated.text;
 		techniques.push("truncate");
 	}
 
