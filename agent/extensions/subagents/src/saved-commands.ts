@@ -4,7 +4,8 @@
  */
 
 import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { runWorkflow, type WorkflowRunResult } from "./workflow.ts";
+import { runWorkflow } from "./workflow.ts";
+import { workflowReportText } from "./workflow-report.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.ts";
 
@@ -14,12 +15,6 @@ function isRegistered(pi: ExtensionAPI, name: string): boolean {
   } catch {
     return false;
   }
-}
-
-function reportText(result: WorkflowRunResult): string {
-  const r = result.result as { report?: unknown } | undefined;
-  if (r && typeof r.report === "string" && r.report.trim()) return r.report;
-  return JSON.stringify(result.result, null, 2);
 }
 
 /**
@@ -89,7 +84,7 @@ export function registerSavedWorkflow(
         }
 
         ctx.ui.setStatus(`wf:${wf.name}`, undefined);
-        await pi.sendMessage({ customType: `workflow:${wf.name}`, content: reportText(result), display: true });
+        await pi.sendMessage({ customType: `workflow:${wf.name}`, content: workflowReportText(result), display: true });
       } catch (error) {
         ctx.ui.setStatus(`wf:${wf.name}`, undefined);
         ctx.ui.notify(`/${wf.name} failed: ${error instanceof Error ? error.message : error}`, "error");

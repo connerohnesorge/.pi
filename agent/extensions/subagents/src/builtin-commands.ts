@@ -8,7 +8,8 @@ import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } fr
 import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.ts";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.ts";
 import { createWebTools } from "./web-tools.ts";
-import { runWorkflow, type WorkflowRunResult } from "./workflow.ts";
+import { runWorkflow } from "./workflow.ts";
+import { workflowReportText } from "./workflow-report.ts";
 
 function alreadyRegistered(pi: ExtensionAPI, name: string): boolean {
   try {
@@ -25,12 +26,6 @@ function tokenizeArgs(input: string): string[] {
     tokens.push(m[1] ?? m[2] ?? m[3] ?? "");
   }
   return tokens;
-}
-
-function reportText(result: WorkflowRunResult): string {
-  const r = result.result as { report?: unknown } | undefined;
-  if (r && typeof r.report === "string" && r.report.trim()) return r.report;
-  return JSON.stringify(result.result, null, 2);
 }
 
 export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }): void {
@@ -52,7 +47,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
             onPhase: (title) => ctx.ui.setStatus("deep-research", `research: ${title}`),
           });
           ctx.ui.setStatus("deep-research", undefined);
-          await pi.sendMessage({ customType: "deep-research", content: reportText(result), display: true });
+          await pi.sendMessage({ customType: "deep-research", content: workflowReportText(result), display: true });
         } catch (error) {
           ctx.ui.setStatus("deep-research", undefined);
           ctx.ui.notify(`deep-research failed: ${error instanceof Error ? error.message : error}`, "error");
@@ -76,7 +71,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
             onPhase: (title) => ctx.ui.setStatus("adversarial-review", `review: ${title}`),
           });
           ctx.ui.setStatus("adversarial-review", undefined);
-          await pi.sendMessage({ customType: "adversarial-review", content: reportText(result), display: true });
+          await pi.sendMessage({ customType: "adversarial-review", content: workflowReportText(result), display: true });
         } catch (error) {
           ctx.ui.setStatus("adversarial-review", undefined);
           ctx.ui.notify(`adversarial-review failed: ${error instanceof Error ? error.message : error}`, "error");
@@ -106,7 +101,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
           ctx.ui.setStatus("multi-perspective", undefined);
           // This workflow returns its prose under `synthesis`, not `report`.
           const r = result.result as { synthesis?: unknown } | undefined;
-          const content = r && typeof r.synthesis === "string" && r.synthesis.trim() ? r.synthesis : reportText(result);
+          const content = r && typeof r.synthesis === "string" && r.synthesis.trim() ? r.synthesis : workflowReportText(result);
           await pi.sendMessage({ customType: "multi-perspective", content, display: true });
         } catch (error) {
           ctx.ui.setStatus("multi-perspective", undefined);
@@ -132,7 +127,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, opts: { cwd: string }
             onPhase: (title) => ctx.ui.setStatus("codebase-audit", `audit: ${title}`),
           });
           ctx.ui.setStatus("codebase-audit", undefined);
-          await pi.sendMessage({ customType: "codebase-audit", content: reportText(result), display: true });
+          await pi.sendMessage({ customType: "codebase-audit", content: workflowReportText(result), display: true });
         } catch (error) {
           ctx.ui.setStatus("codebase-audit", undefined);
           ctx.ui.notify(`codebase-audit failed: ${error instanceof Error ? error.message : error}`, "error");
