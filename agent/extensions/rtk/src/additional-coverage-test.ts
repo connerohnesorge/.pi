@@ -7,6 +7,7 @@ import { clearOutputMetrics, getOutputMetricsSummary, trackOutputSavings } from 
 import { runTest } from "./test-helpers.ts";
 import { matchesCommandPatterns, normalizeCommandForDetection } from "./techniques/command-detection.ts";
 import { compactPath } from "./techniques/path-utils.ts";
+import { filterSourceCode } from "./techniques/source.ts";
 import { applyWindowsBashCompatibilityFixes } from "./windows-command-helpers.ts";
 import { applyRewrittenCommandShellSafetyFixups } from "./rewrite-pipeline-safety.ts";
 import { applyRtkCommandEnvironment } from "./rtk-command-environment.ts";
@@ -159,6 +160,25 @@ runTest("output metrics summarize tracked savings and clear state", () => {
 
 	clearOutputMetrics();
 	assert.equal(getOutputMetricsSummary(), "RTK output compaction metrics: no data yet.");
+});
+
+runTest("source minimal filter preserves userscript metadata and removes block comments", () => {
+	const source = `// ==UserScript==
+// @name demo
+// ==/UserScript==
+
+/* remove me */
+const kept = true;
+`;
+
+	assert.equal(
+		filterSourceCode(source, "typescript", "minimal"),
+		`// ==UserScript==
+// @name demo
+// ==/UserScript==
+
+const kept = true;`,
+	);
 });
 
 runTest("command detection ignores env prefixes, blank lines, and chained suffixes", () => {

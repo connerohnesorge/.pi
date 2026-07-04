@@ -50,6 +50,14 @@ const COMMENT_PATTERNS: Record<Language, CommentPatterns> = {
 const IMPORT_PATTERN = /^(use\s+|import\s+|from\s+|require\(|#include)/;
 const SIGNATURE_PATTERN = /^(pub\s+)?(async\s+)?(fn|def|function|func|class|struct|enum|trait|interface|type)\s+\w+/;
 const CONST_PATTERN = /^(const|static|let|pub\s+const|pub\s+static)\s+/;
+const USERSCRIPT_METADATA_START_PATTERN = /^\/\/\s*==\s*userscript\s*==$/i;
+const USERSCRIPT_METADATA_END_PATTERN = /^\/\/\s*==\s*\/userscript\s*==$/i;
+
+interface MinimalFilterState {
+	inBlockComment: boolean;
+	inDocstring: boolean;
+	inUserscriptMetadataBlock: boolean;
+}
 
 export function detectLanguage(filePath: string): Language {
 	const lastDot = filePath.lastIndexOf(".");
@@ -60,64 +68,81 @@ export function detectLanguage(filePath: string): Language {
 	return LANGUAGE_EXTENSIONS[extension] ?? "unknown";
 }
 
+function preserveUserscriptMetadata(line: string, trimmed: string, state: MinimalFilterState, result: string[]): boolean {
+	if (USERSCRIPT_METADATA_START_PATTERN.test(trimmed)) {
+		state.inUserscriptMetadataBlock = true;
+		result.push(line);
+		return true;
+	}
+
+	if (!state.inUserscriptMetadataBlock) {
+		return false;
+	}
+
+	result.push(line);
+	if (USERSCRIPT_METADATA_END_PATTERN.test(trimmed)) {
+		state.inUserscriptMetadataBlock = false;
+	}
+	return true;
+}
+
+function handleBlockOrDocLine(
+	line: string,
+	trimmed: string,
+	language: Language,
+	patterns: CommentPatterns,
+	state: MinimalFilterState,
+	result: string[],
+): boolean {
+	if (patterns.blockStart && patterns.blockEnd) {
+		if (
+			!state.inDocstring &&
+			trimmed.includes(patterns.blockStart) &&
+			!(patterns.docBlockStart && trimmed.startsWith(patterns.docBlockStart))
+		) {
+			state.inBlockComment = true;
+		}
+
+		if (state.inBlockComment) {
+			if (trimmed.includes(patterns.blockEnd)) {
+				state.inBlockComment = false;
+			}
+			return true;
+		}
+	}
+
+	if (language === "python" && trimmed.startsWith('"""')) {
+		state.inDocstring = !state.inDocstring;
+		result.push(line);
+		return true;
+	}
+
+	if (state.inDocstring) {
+		result.push(line);
+		return true;
+	}
+
+	return false;
+}
+
 function filterMinimal(content: string, language: Language): string {
 	const patterns = COMMENT_PATTERNS[language];
 	const lines = content.split("\n");
 	const result: string[] = [];
-	let inBlockComment = false;
-	let inDocstring = false;
-	let inUserscriptMetadataBlock = false;
-	const userscriptMetadataStartPattern = /^\/\/\s*==\s*userscript\s*==$/i;
-	const userscriptMetadataContentPattern = /^\/\/\s*@\w+/;
-	const userscriptMetadataEndPattern = /^\/\/\s*==\s*\/userscript\s*==$/i;
+	const state: MinimalFilterState = {
+		inBlockComment: false,
+		inDocstring: false,
+		inUserscriptMetadataBlock: false,
+	};
 
 	for (const line of lines) {
 		const trimmed = line.trim();
-		const isUserscriptMetadataStart = userscriptMetadataStartPattern.test(trimmed);
-		const isUserscriptMetadataContent = userscriptMetadataContentPattern.test(trimmed);
-		const isUserscriptMetadataEnd = userscriptMetadataEndPattern.test(trimmed);
 
-		if (isUserscriptMetadataStart) {
-			inUserscriptMetadataBlock = true;
-			result.push(line);
+		if (preserveUserscriptMetadata(line, trimmed, state, result)) {
 			continue;
 		}
 
-		if (inUserscriptMetadataBlock) {
-			result.push(line);
-			if (isUserscriptMetadataEnd) {
-				inUserscriptMetadataBlock = false;
-			} else if (isUserscriptMetadataContent) {
-				// Preserve metadata key/value lines (e.g. // @name) within the userscript block.
-			}
-			continue;
-		}
-
-		if (patterns.blockStart && patterns.blockEnd) {
-			if (
-				!inDocstring &&
-				trimmed.includes(patterns.blockStart) &&
-				!(patterns.docBlockStart && trimmed.startsWith(patterns.docBlockStart))
-			) {
-				inBlockComment = true;
-			}
-
-			if (inBlockComment) {
-				if (trimmed.includes(patterns.blockEnd)) {
-					inBlockComment = false;
-				}
-				continue;
-			}
-		}
-
-		if (language === "python" && trimmed.startsWith('"""')) {
-			inDocstring = !inDocstring;
-			result.push(line);
-			continue;
-		}
-
-		if (inDocstring) {
-			result.push(line);
+		if (handleBlockOrDocLine(line, trimmed, language, patterns, state, result)) {
 			continue;
 		}
 
