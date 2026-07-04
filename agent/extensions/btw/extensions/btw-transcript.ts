@@ -216,54 +216,64 @@ function upsertTranscriptTextEntry(
   appendTranscriptEntry(state, { type, turnId, text, streaming } as Omit<Extract<BtwTranscriptEntry, { type: "thinking" | "assistant-text" }>, "id">);
 }
 
-function summarizeToolResult(value: unknown, maxLength = 400): { content: string; truncated: boolean } {
-  let content = "";
+type ToolResultValue = {
+  content?: Array<{ type?: string; text?: string }>;
+  error?: unknown;
+  message?: unknown;
+};
 
-  if (value && typeof value === "object") {
-    const toolValue = value as {
-      content?: Array<{ type?: string; text?: string }>;
-      error?: unknown;
-      message?: unknown;
-    };
-
-    if (Array.isArray(toolValue.content)) {
-      content = toolValue.content
-        .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text ?? "")
-        .join("\n")
-        .trim();
-    }
-
-    if (!content && typeof toolValue.error === "string") {
-      content = toolValue.error;
-    }
-
-    if (!content && typeof toolValue.message === "string") {
-      content = toolValue.message;
-    }
+function textToolContent(value: ToolResultValue): string {
+  if (!Array.isArray(value.content)) {
+    return "";
   }
 
-  if (!content) {
-    if (typeof value === "string") {
-      content = value;
-    } else if (value !== undefined) {
-      try {
-        content = JSON.stringify(value, null, 2);
-      } catch {
-        content = String(value);
-      }
-    }
+  return value.content
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text ?? "")
+    .join("\n")
+    .trim();
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function jsonOrString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
   }
 
-  if (!content) {
-    content = "(no tool output)";
+  if (value === undefined) {
+    return "";
   }
 
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function toolObjectContent(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  const toolValue = value as ToolResultValue;
+  return textToolContent(toolValue) || stringField(toolValue.error) || stringField(toolValue.message);
+}
+
+function truncateToolContent(content: string, maxLength: number): { content: string; truncated: boolean } {
   const truncated = content.length > maxLength;
   return {
     content: truncated ? `${content.slice(0, maxLength - 3)}...` : content,
     truncated,
   };
+}
+
+function summarizeToolResult(value: unknown, maxLength = 400): { content: string; truncated: boolean } {
+  const content = toolObjectContent(value) || jsonOrString(value) || "(no tool output)";
+  return truncateToolContent(content, maxLength);
 }
 
 function ensureToolCallEntry(
