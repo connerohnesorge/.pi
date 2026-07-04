@@ -513,49 +513,64 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		return openGoalsFromPool(goalsById);
 	}
 
-	function reconcileFocusedGoalFromDisk(ctx: ExtensionContext, opts: { preserveMemoryUsage?: boolean } = {}): boolean {
-		const current = state.goal;
-		const fresh = readActiveGoalPool(ctx);
-		if (!focusedGoalId) {
-			goalsById = fresh;
-			return true;
-		}
-		const diskGoal = fresh.get(focusedGoalId) ?? null;
-		if (!diskGoal) {
-			// `readActiveGoalPool` intentionally filters complete active files during
-			// the deferred archival window. Keep the in-memory completed goal focused
-			// until `turn_end` archives it; otherwise an allowed post-stop `get_goal`
-			// call can orphan the complete active file before archival runs.
-			if (current?.status === "complete" && current.activePath && !current.archivedPath) {
-				goalsById = fresh;
-				goalsById.set(current.id, current);
-				focusedGoalId = current.id;
-				return true;
-			}
-			if (current && !current.activePath) {
-				goalsById = fresh;
-				goalsById.set(current.id, current);
-				focusedGoalId = current.id;
-				return true;
-			}
-			goalsById = fresh;
-			focusedGoalId = null;
-			clearStoppedRuntimeState();
-			if (current) resetGetGoalNudgeState(current.id);
-			if (tweakDraftingFor !== null) tweakDraftingFor = null;
-			syncGoalTools();
-			updateUI(ctx);
-			return false;
-		}
-		const reconciled = current && opts.preserveMemoryUsage
-			? mergeFocusedGoalWithDisk({ memoryGoal: current, diskGoal })
-			: diskGoal;
+	function keepMemoryOnlyGoal(fresh: Map<string, GoalRecord>, current: GoalRecord | null): boolean {
+		// `readActiveGoalPool` intentionally filters complete active files during
+		// the deferred archival window. Keep the in-memory completed goal focused
+		// until `turn_end` archives it; otherwise an allowed post-stop `get_goal`
+		// call can orphan the complete active file before archival runs.
+		const keepCompleted = current?.status === "complete" && current.activePath && !current.archivedPath;
+		const keepUnsaved = !!current && !current.activePath;
+		if (!current || (!keepCompleted && !keepUnsaved)) return false;
+		goalsById = fresh;
+		goalsById.set(current.id, current);
+		focusedGoalId = current.id;
+		return true;
+	}
+
+	function clearMissingFocusedGoal(ctx: ExtensionContext, fresh: Map<string, GoalRecord>, current: GoalRecord | null): void {
+		goalsById = fresh;
+		focusedGoalId = null;
+		clearStoppedRuntimeState();
+		if (current) resetGetGoalNudgeState(current.id);
+		if (tweakDraftingFor !== null) tweakDraftingFor = null;
+		syncGoalTools();
+		updateUI(ctx);
+	}
+
+	function applyDiskReconciledGoal(fresh: Map<string, GoalRecord>, reconciled: GoalRecord): void {
 		goalsById = fresh;
 		goalsById.set(reconciled.id, reconciled);
 		focusedGoalId = reconciled.id;
 		if (reconciled.status !== "active" || !reconciled.autoContinue) clearContinuationState();
 		if (reconciled.status !== "active") clearActiveAccounting();
+	}
+
+	function acceptFreshGoalPool(fresh: Map<string, GoalRecord>): true {
+		goalsById = fresh;
 		return true;
+	}
+
+	function reconcileMissingDiskGoal(ctx: ExtensionContext, fresh: Map<string, GoalRecord>, current: GoalRecord | null): boolean {
+		if (keepMemoryOnlyGoal(fresh, current)) return true;
+		clearMissingFocusedGoal(ctx, fresh, current);
+		return false;
+	}
+
+	function reconcileDiskGoal(fresh: Map<string, GoalRecord>, current: GoalRecord | null, diskGoal: GoalRecord, preserveMemoryUsage?: boolean): true {
+		applyDiskReconciledGoal(fresh, current && preserveMemoryUsage
+			? mergeFocusedGoalWithDisk({ memoryGoal: current, diskGoal })
+			: diskGoal);
+		return true;
+	}
+
+	function reconcileFocusedGoalFromDisk(ctx: ExtensionContext, opts: { preserveMemoryUsage?: boolean } = {}): boolean {
+		const current = state.goal;
+		const fresh = readActiveGoalPool(ctx);
+		if (!focusedGoalId) return acceptFreshGoalPool(fresh);
+		const diskGoal = fresh.get(focusedGoalId) ?? null;
+		return diskGoal
+			? reconcileDiskGoal(fresh, current, diskGoal, opts.preserveMemoryUsage)
+			: reconcileMissingDiskGoal(ctx, fresh, current);
 	}
 
 	function appendFocusEntry(goalId: string | null, reason: GoalFocusReason): void {
@@ -834,69 +849,104 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		notify: (ctx, message, level) => { ctx.ui.notify(message, level); },
 	});
 
-	function loadState(ctx: ExtensionContext): void {
-		goalsById = readActiveGoalPool(ctx);
-		focusedGoalId = null;
+	type LoadedGoalEntries = { focusEntry: GoalFocusEntry | null; legacyGoal: GoalRecord | null };
+
+	function latestGoalSessionEntries(ctx: ExtensionContext): LoadedGoalEntries {
 		let focusEntry: GoalFocusEntry | null = null;
 		let legacyGoal: GoalRecord | null = null;
 		let legacyStateSeen = false;
 		const entries = ctx.sessionManager.getBranch();
-		for (let i = entries.length - 1; i >= 0; i--) {
+		for (let i = entries.length - 1; i >= 0 && (!focusEntry || !legacyStateSeen); i--) {
 			const entry = entries[i] as { type?: string; customType?: string; data?: unknown };
 			if (entry.type !== "custom") continue;
-			if (!focusEntry && entry.customType === FOCUS_ENTRY) {
-				focusEntry = normalizeGoalFocusEntry(entry.data);
-			}
+			if (!focusEntry && entry.customType === FOCUS_ENTRY) focusEntry = normalizeGoalFocusEntry(entry.data);
 			if (!legacyStateSeen && entry.customType === STATE_ENTRY) {
 				legacyGoal = normalizeGoalRecord(asRecord(entry.data)?.goal);
 				legacyStateSeen = true;
 			}
-			if (focusEntry && legacyStateSeen) break;
 		}
-		if (legacyGoal && legacyGoal.status !== "complete") {
-			legacyGoal = sanitizeGoalPaths(ctx, mergeGoalPromptFromDisk(ctx, legacyGoal));
-		}
-		focusedGoalId = resolveSessionFocus({ pool: goalsById, focusEntry, legacyGoal });
-		if (!focusEntry && focusedGoalId) {
-			try {
-				appendFocusEntry(focusedGoalId, legacyGoal?.id === focusedGoalId ? "migrated" : "selected");
-			} catch {}
-		}
+		return { focusEntry, legacyGoal };
+	}
+
+	function activeLegacyGoal(ctx: ExtensionContext, legacyGoal: GoalRecord | null): GoalRecord | null {
+		return legacyGoal && legacyGoal.status !== "complete"
+			? sanitizeGoalPaths(ctx, mergeGoalPromptFromDisk(ctx, legacyGoal))
+			: legacyGoal;
+	}
+
+	function appendMigratedFocusEntry(focusEntry: GoalFocusEntry | null, legacyGoal: GoalRecord | null): void {
+		if (focusEntry || !focusedGoalId) return;
+		try {
+			appendFocusEntry(focusedGoalId, legacyGoal?.id === focusedGoalId ? "migrated" : "selected");
+		} catch {}
+	}
+
+	function dropCompleteGoalsFromPool(): void {
 		for (const [id, current] of goalsById) {
-			if (current.status === "complete") {
-				goalsById.delete(id);
-			}
+			if (current.status === "complete") goalsById.delete(id);
 		}
+	}
+
+	function resetLoadedRuntime(ctx: ExtensionContext): void {
 		clearStoppedRuntimeState();
 		runningGoalId = null;
 		syncGoalTools();
 		updateUI(ctx);
 	}
 
-	function setGoal(next: GoalRecord | null, ctx: ExtensionContext, shouldPersist = true, focusReason?: GoalFocusReason): void {
-		const previousGoalId = state.goal?.id ?? null;
-		state.goal = next;
-		const focusChanged = previousGoalId !== focusedGoalId;
-		if (focusChanged) {
-			clearContinuationState();
-			clearActiveAccounting();
-			resetGetGoalNudgeState(previousGoalId);
-			resetGetGoalNudgeState(focusedGoalId);
+	function loadState(ctx: ExtensionContext): void {
+		goalsById = readActiveGoalPool(ctx);
+		focusedGoalId = null;
+		const loaded = latestGoalSessionEntries(ctx);
+		loaded.legacyGoal = activeLegacyGoal(ctx, loaded.legacyGoal);
+		focusedGoalId = resolveSessionFocus({ pool: goalsById, ...loaded });
+		appendMigratedFocusEntry(loaded.focusEntry, loaded.legacyGoal);
+		dropCompleteGoalsFromPool();
+		resetLoadedRuntime(ctx);
+	}
+
+	function resetFocusRuntime(previousGoalId: string | null): void {
+		clearContinuationState();
+		clearActiveAccounting();
+		resetGetGoalNudgeState(previousGoalId);
+		resetGetGoalNudgeState(focusedGoalId);
+	}
+
+	function syncGoalRuntimeAfterSet(previousGoalId: string | null): void {
+		if (!state.goal || state.goal.status !== "active" || !state.goal.autoContinue) clearContinuationState();
+		if (!state.goal || state.goal.status === "paused" || state.goal.status === "complete") clearActiveAccounting();
+		// Drop any stale tweak-edit-gate that didn't belong to this goal.
+		if ((!state.goal || state.goal.id !== previousGoalId) && tweakDraftingFor !== null && tweakDraftingFor !== state.goal?.id) {
+			tweakDraftingFor = null;
 		}
+	}
+
+	function appendFocusChangeEntry(focusReason: GoalFocusReason | undefined, focusChanged: boolean): void {
 		if (focusReason && focusChanged) appendFocusEntry(focusedGoalId, focusReason);
-		if (!state.goal || (state.goal.status !== "active") || !state.goal.autoContinue) {
-			clearContinuationState();
-		}
-		if (!state.goal || state.goal.status === "paused" || state.goal.status === "complete") {
-			clearActiveAccounting();
-		}
-		if (!state.goal || state.goal.id !== previousGoalId) {
-			// Drop any stale tweak-edit-gate that didn't belong to this goal.
-			if (tweakDraftingFor !== null && tweakDraftingFor !== state.goal?.id) tweakDraftingFor = null;
-		}
+	}
+
+	function finishSetGoal(ctx: ExtensionContext, shouldPersist: boolean): void {
 		if (shouldPersist) persist(ctx);
 		else syncGoalTools();
 		updateUI(ctx);
+	}
+
+	function syncGoalFocusAfterSet(previousGoalId: string | null, focusReason: GoalFocusReason | undefined): void {
+		const focusChanged = previousGoalId !== focusedGoalId;
+		if (focusChanged) resetFocusRuntime(previousGoalId);
+		appendFocusChangeEntry(focusReason, focusChanged);
+	}
+
+	function completeSetGoal(ctx: ExtensionContext, previousGoalId: string | null, shouldPersist: boolean, focusReason: GoalFocusReason | undefined): void {
+		syncGoalFocusAfterSet(previousGoalId, focusReason);
+		syncGoalRuntimeAfterSet(previousGoalId);
+		finishSetGoal(ctx, shouldPersist);
+	}
+
+	function setGoal(next: GoalRecord | null, ctx: ExtensionContext, shouldPersist = true, focusReason?: GoalFocusReason): void {
+		const previousGoalId = state.goal?.id ?? null;
+		state.goal = next;
+		completeSetGoal(ctx, previousGoalId, shouldPersist, focusReason);
 	}
 
 	function archiveCurrentGoal(ctx: ExtensionContext, reason: StopReason | undefined): GoalRecord | null {
@@ -1000,21 +1050,34 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	}
 
 
-	function queueContinuation(ctx: ExtensionContext, force = false): void {
-		if (confirmationIntent !== null || tweakDraftingFor !== null) return;
-		if (!state.goal || state.goal.status !== "active" || !state.goal.autoContinue) return;
+	function continuationQueueGoalId(force: boolean): string | null {
+		if (confirmationIntent !== null || tweakDraftingFor !== null) return null;
+		if (!state.goal || state.goal.status !== "active" || !state.goal.autoContinue) return null;
 		const goalId = state.goal.id;
-		if (!force && (continuationQueuedFor === goalId || continuationScheduledFor === goalId)) return;
-		clearContinuationTimer();
-		let delay = CONTINUATION_IDLE_RETRY_MS;
+		return !force && (continuationQueuedFor === goalId || continuationScheduledFor === goalId) ? null : goalId;
+	}
+
+	function continuationDelay(ctx: ExtensionContext): number | null {
 		try {
-			delay = ctx.isIdle() && !ctx.hasPendingMessages() ? 0 : CONTINUATION_IDLE_RETRY_MS;
+			return ctx.isIdle() && !ctx.hasPendingMessages() ? 0 : CONTINUATION_IDLE_RETRY_MS;
 		} catch {
-			return;
+			return null;
 		}
+	}
+
+	function scheduleContinuation(ctx: ExtensionContext, goalId: string, delay: number): void {
 		continuationScheduledFor = goalId;
 		continuationTimer = setTimeout(() => sendQueuedContinuation(ctx, goalId), delay);
 		continuationTimer.unref?.();
+	}
+
+	function queueContinuation(ctx: ExtensionContext, force = false): void {
+		const goalId = continuationQueueGoalId(force);
+		if (!goalId) return;
+		clearContinuationTimer();
+		const delay = continuationDelay(ctx);
+		if (delay === null) return;
+		scheduleContinuation(ctx, goalId, delay);
 	}
 
 	function replaceGoal(config: GoalCreationConfig, ctx: ExtensionContext, startNow = true): void {
