@@ -139,6 +139,30 @@ function collectBuildStats(lines: string[]): BuildStats {
 	return stats;
 }
 
+function formatBuildError(error: string[]): string[] {
+	return error.length > 10 ? [...error.slice(0, 10), "  ..."] : error.slice(0, 10);
+}
+
+function remainingErrorSummary(errors: string[][]): string[] {
+	return errors.length > 5 ? [`... and ${errors.length - 5} more errors`] : [];
+}
+
+function appendBuildErrors(result: string[], errors: string[][]): void {
+	if (errors.length > 0) {
+		result.push(
+			`[ERROR] ${errors.length} error(s):`,
+			...errors.slice(0, 5).flatMap(formatBuildError),
+			...remainingErrorSummary(errors),
+		);
+	}
+}
+
+function appendBuildWarnings(result: string[], warnings: string[]): void {
+	if (warnings.length > 0) {
+		result.push(`\n[WARN] ${warnings.length} warning(s)`);
+	}
+}
+
 export function filterBuildOutput(output: string, command: string | undefined | null): string | null {
 	if (!isBuildCommand(command)) {
 		return null;
@@ -151,23 +175,7 @@ export function filterBuildOutput(output: string, command: string | undefined | 
 	}
 
 	const result: string[] = [];
-
-	if (stats.errors.length > 0) {
-		result.push(`[ERROR] ${stats.errors.length} error(s):`);
-		for (const error of stats.errors.slice(0, 5)) {
-			result.push(...error.slice(0, 10));
-			if (error.length > 10) {
-				result.push("  ...");
-			}
-		}
-		if (stats.errors.length > 5) {
-			result.push(`... and ${stats.errors.length - 5} more errors`);
-		}
-	}
-
-	if (stats.warnings.length > 0) {
-		result.push(`\n[WARN] ${stats.warnings.length} warning(s)`);
-	}
-
+	appendBuildErrors(result, stats.errors);
+	appendBuildWarnings(result, stats.warnings);
 	return result.join("\n");
 }
