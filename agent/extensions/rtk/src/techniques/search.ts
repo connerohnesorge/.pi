@@ -6,62 +6,65 @@ interface SearchResult {
 	content: string;
 }
 
-export function groupSearchResults(output: string, maxResults = 50): string | null {
-	const results: SearchResult[] = [];
-	for (const line of output.split("\n")) {
-		if (!line.trim()) {
-			continue;
-		}
-		const match = line.match(/^(.+?):(\d+)?:(.+)$/);
-		if (!match) {
-			continue;
-		}
-		results.push({
-			file: match[1] ?? "unknown",
-			lineNumber: match[2] ?? "?",
-			content: match[3] ?? "",
-		});
-	}
+const SEARCH_RESULT_PATTERN = /^(.+?):(\d+)?:(.+)$/;
 
-	if (results.length === 0) {
-		return null;
-	}
+function parseSearchResult(line: string): SearchResult | null {
+	if (!line.trim()) return null;
+	const match = line.match(SEARCH_RESULT_PATTERN);
+	if (!match) return null;
+	return {
+		file: match[1] ?? "unknown",
+		lineNumber: match[2] ?? "?",
+		content: match[3] ?? "",
+	};
+}
 
+function groupByFile(results: SearchResult[]): Map<string, SearchResult[]> {
 	const byFile = new Map<string, SearchResult[]>();
 	for (const result of results) {
-		const existing = byFile.get(result.file) ?? [];
-		existing.push(result);
-		byFile.set(result.file, existing);
+		const matches = byFile.get(result.file);
+		if (matches) matches.push(result);
+		else byFile.set(result.file, [result]);
 	}
+	return byFile;
+}
 
+function truncateMatchContent(content: string): string {
+	const cleaned = content.trim();
+	return cleaned.length > 70 ? `${cleaned.slice(0, 67)}...` : cleaned;
+}
+
+function formatFileMatches(file: string, matches: SearchResult[]): { text: string; shown: number } {
+	let text = `> ${compactPath(file, 50)} (${matches.length} matches):\n`;
+	for (const match of matches.slice(0, 10)) {
+		text += `    ${match.lineNumber}: ${truncateMatchContent(match.content)}\n`;
+	}
+	if (matches.length > 10) {
+		text += `  +${matches.length - 10} more\n`;
+	}
+	return { text: `${text}\n`, shown: Math.min(matches.length, 10) };
+}
+
+export function groupSearchResults(output: string, maxResults = 50): string | null {
+	const results = output.split("\n").flatMap((line) => {
+		const parsed = parseSearchResult(line);
+		return parsed ? [parsed] : [];
+	});
+	if (results.length === 0) return null;
+
+	const byFile = groupByFile(results);
 	let outputText = `${results.length} matches in ${byFile.size} files:\n\n`;
-	const sortedFiles = Array.from(byFile.entries()).sort((left, right) =>
-		left[0].localeCompare(right[0]),
-	);
-
 	let shown = 0;
-	for (const [file, matches] of sortedFiles) {
-		if (shown >= maxResults) {
-			break;
-		}
-		outputText += `> ${compactPath(file, 50)} (${matches.length} matches):\n`;
-		for (const match of matches.slice(0, 10)) {
-			let cleaned = match.content.trim();
-			if (cleaned.length > 70) {
-				cleaned = `${cleaned.slice(0, 67)}...`;
-			}
-			outputText += `    ${match.lineNumber}: ${cleaned}\n`;
-			shown++;
-		}
-		if (matches.length > 10) {
-			outputText += `  +${matches.length - 10} more\n`;
-		}
-		outputText += "\n";
+
+	for (const [file, matches] of Array.from(byFile.entries()).sort((left, right) => left[0].localeCompare(right[0]))) {
+		if (shown >= maxResults) break;
+		const formatted = formatFileMatches(file, matches);
+		outputText += formatted.text;
+		shown += formatted.shown;
 	}
 
 	if (results.length > shown) {
 		outputText += `... +${results.length - shown} more\n`;
 	}
-
 	return outputText;
 }
