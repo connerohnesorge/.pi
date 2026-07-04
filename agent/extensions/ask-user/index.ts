@@ -504,6 +504,34 @@ function appendMultiSelectDescriptionLines(lines: string[], description: string,
    }
 }
 
+function renderMultiSelectRows(params: Omit<MultiSelectRenderRowParams, "index"> & { start: number; end: number }): string[] {
+   const { start, end, ...rowParams } = params;
+   return Array.from({ length: end - start }, (_, offset) => renderMultiSelectRow({ ...rowParams, index: start + offset })).flat();
+}
+
+function renderMultiSelectPositionLine(
+   start: number,
+   end: number,
+   count: number,
+   selectedIndex: number,
+   theme: Theme,
+   width: number,
+): string[] {
+   return start > 0 || end < count
+      ? [theme.fg("dim", truncateToWidth(`  (${selectedIndex + 1}/${count})`, width, ""))]
+      : [];
+}
+
+function isAnsiControlCharacter(code: number): boolean {
+   return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
+}
+
+function decodePlainPrintableInput(data: string): string | null {
+   const [character, extra] = [...data];
+   if (!character || extra !== undefined) return null;
+   return isAnsiControlCharacter(character.charCodeAt(0)) ? null : character;
+}
+
 function buildSelectedOptionPreviewMarkdown(option: QuestionOption | undefined, searchQuery: string): string {
    if (!option) return "*No option selected*\n";
 
@@ -767,12 +795,18 @@ class MultiSelectList extends SelectionListBase<string[]> {
 
    private applyInputAction(action: MultiSelectInputAction, rowModel: SelectionRowModel): void {
       const count = rowModel.count;
-      if (action.kind === "cancel" || count === 0) return this.onCancel?.();
-      if (action.kind === "toggle-comment") return this.toggleComment();
-      if (action.kind === "move") return this.moveSelection(action.delta, count);
-      if (action.kind === "toggle-numbered") return this.toggleNumberedOption(action.index, count);
-      if (action.kind === "space") return this.toggleCurrentRow(rowModel);
-      if (action.kind === "confirm") return this.confirmCurrentSelection(rowModel);
+      const handlers: Record<MultiSelectInputAction["kind"], () => void> = {
+         cancel: () => this.onCancel?.(),
+         "toggle-comment": () => this.toggleComment(),
+         move: () => { if (action.kind === "move") this.moveSelection(action.delta, count); },
+         "toggle-numbered": () => { if (action.kind === "toggle-numbered") this.toggleNumberedOption(action.index, count); },
+         space: () => this.toggleCurrentRow(rowModel),
+         confirm: () => this.confirmCurrentSelection(rowModel),
+         ignore: () => undefined,
+      };
+
+      if (count === 0) handlers.cancel();
+      else handlers[action.kind]();
    }
 
    private toggleCurrentRow(rowModel: SelectionRowModel): void {
@@ -808,11 +842,10 @@ class MultiSelectList extends SelectionListBase<string[]> {
 
       const maxVisible = Math.min(count, 10);
       const { start, end } = centeredVisibleRange(this.selectedIndex, count, maxVisible);
-      const lines: string[] = [];
-
-      for (let index = start; index < end; index++) {
-         lines.push(...renderMultiSelectRow({
-            index,
+      const lines = [
+         ...renderMultiSelectRows({
+            start,
+            end,
             selectedIndex: this.selectedIndex,
             rowModel,
             options: this.options,
@@ -820,12 +853,9 @@ class MultiSelectList extends SelectionListBase<string[]> {
             commentEnabled: this.commentEnabled,
             theme: this.theme,
             width,
-         }));
-      }
-
-      if (start > 0 || end < count) {
-         lines.push(this.theme.fg("dim", truncateToWidth(`  (${this.selectedIndex + 1}/${count})`, width, "")));
-      }
+         }),
+         ...renderMultiSelectPositionLine(start, end, count, this.selectedIndex, this.theme, width),
+      ];
 
       return this.cacheLines(width, lines);
    }
@@ -876,21 +906,7 @@ class WrappedSingleSelectList extends SelectionListBase<string> {
    }
 
    private getPrintableInput(data: string): string | null {
-      const kittyPrintable = decodeKittyPrintable(data);
-      if (kittyPrintable !== undefined) return kittyPrintable;
-
-      const characters = [...data];
-      if (characters.length !== 1) return null;
-
-      const [character] = characters;
-      if (!character) return null;
-
-      const code = character.charCodeAt(0);
-      if (code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
-         return null;
-      }
-
-      return character;
+      return decodeKittyPrintable(data) ?? decodePlainPrintableInput(data);
    }
 
    private styleListLine(line: string, width: number, isSelected: boolean): string {
@@ -1050,19 +1066,30 @@ function handleWrappedSingleSelectInput(list: any, data: string): void {
 }
 
 function handleWrappedSingleSelectGlobalInput(list: any, data: string): boolean {
-   if (list.searchQuery && matchesKey(data, Key.escape)) {
-      list.setSearchQuery("");
-      return true;
-   }
-   if (list.keybindings.matches(data, "tui.select.cancel")) {
-      list.onCancel?.();
-      return true;
-   }
-   if (list.allowComment && !list.commentToggle.disabled && list.commentToggle.matches(data)) {
-      list.toggleComment();
-      return true;
-   }
-   return false;
+   return [
+      clearWrappedSingleSelectSearch,
+      cancelWrappedSingleSelect,
+      toggleWrappedSingleSelectComment,
+   ].some((handler) => handler(list, data));
+}
+
+function clearWrappedSingleSelectSearch(list: any, data: string): boolean {
+   if (!list.searchQuery || !matchesKey(data, Key.escape)) return false;
+   list.setSearchQuery("");
+   return true;
+}
+
+function cancelWrappedSingleSelect(list: any, data: string): boolean {
+   if (!list.keybindings.matches(data, "tui.select.cancel")) return false;
+   list.onCancel?.();
+   return true;
+}
+
+function toggleWrappedSingleSelectComment(list: any, data: string): boolean {
+   const enabled = list.allowComment && !list.commentToggle.disabled;
+   if (!enabled || !list.commentToggle.matches(data)) return false;
+   list.toggleComment();
+   return true;
 }
 
 function handleWrappedSingleSelectListInput(
