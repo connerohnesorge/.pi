@@ -231,9 +231,6 @@ export class NavigatorState {
   get savedName(): string | undefined {
     return this.top().savedName;
   }
-  get depth(): number {
-    return this.stack.length;
-  }
 
   /**
    * Determine what kind of item is at the given cursor position in the

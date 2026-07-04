@@ -113,7 +113,7 @@ const workflowToolSchema = Type.Object({
   ),
 });
 
-export type WorkflowToolInput = {
+type WorkflowToolInput = {
   script: string;
   args?: unknown;
   background?: boolean;

@@ -34,7 +34,7 @@ export interface WorkflowStorage {
   delete(name: string, location?: "project" | "user"): boolean;
 }
 
-export function isSafeSavedWorkflowName(name: string): boolean {
+function isSafeSavedWorkflowName(name: string): boolean {
   return (
     name.length > 0 &&
     name.length <= 128 &&
@@ -45,7 +45,7 @@ export function isSafeSavedWorkflowName(name: string): boolean {
   );
 }
 
-export function assertSafeSavedWorkflowName(name: string): void {
+function assertSafeSavedWorkflowName(name: string): void {
   if (!isSafeSavedWorkflowName(name)) {
     throw new Error("Saved workflow name must be a non-empty path-safe name without slashes.");
   }
