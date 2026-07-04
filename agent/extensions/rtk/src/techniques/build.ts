@@ -6,6 +6,12 @@ interface BuildStats {
 	warnings: string[];
 }
 
+interface ErrorBlockState {
+	inBlock: boolean;
+	current: string[];
+	blankCount: number;
+}
+
 const BUILD_COMMAND_PATTERNS = [
 	/^cargo\s+(build|check)\b/,
 	/^bun\s+build\b/,
@@ -56,21 +62,55 @@ function isBuildCommand(command: string | undefined | null): boolean {
 	return matchesCommandPatterns(command, BUILD_COMMAND_PATTERNS);
 }
 
-export function filterBuildOutput(output: string, command: string | undefined | null): string | null {
-	if (!isBuildCommand(command)) {
-		return null;
+function flushErrorBlock(stats: BuildStats, state: ErrorBlockState): void {
+	if (state.current.length > 0) {
+		stats.errors.push([...state.current]);
+	}
+	state.inBlock = false;
+	state.current = [];
+	state.blankCount = 0;
+}
+
+function startErrorBlock(stats: BuildStats, state: ErrorBlockState, line: string): void {
+	if (state.inBlock) {
+		flushErrorBlock(stats, state);
+	}
+	state.inBlock = true;
+	state.current = [line];
+	state.blankCount = 0;
+}
+
+function handleErrorBlockLine(stats: BuildStats, state: ErrorBlockState, line: string): void {
+	if (!state.inBlock) {
+		return;
 	}
 
-	const lines = output.split("\n");
+	if (line.trim() === "") {
+		state.blankCount++;
+		if (state.blankCount >= 2 && state.current.length > 3) {
+			flushErrorBlock(stats, state);
+		} else {
+			state.current.push(line);
+		}
+		return;
+	}
+
+	if (line.match(/^\s/) || line.match(/^-->/)) {
+		state.current.push(line);
+		state.blankCount = 0;
+		return;
+	}
+
+	flushErrorBlock(stats, state);
+}
+
+function collectBuildStats(lines: string[]): BuildStats {
 	const stats: BuildStats = {
 		compiled: 0,
 		errors: [],
 		warnings: [],
 	};
-
-	let inErrorBlock = false;
-	let currentError: string[] = [];
-	let blankCount = 0;
+	const errorBlock: ErrorBlockState = { inBlock: false, current: [], blankCount: 0 };
 
 	for (const line of lines) {
 		if (line.match(/^\s*(Compiling|Checking|Building)\s+/)) {
@@ -83,12 +123,7 @@ export function filterBuildOutput(output: string, command: string | undefined | 
 		}
 
 		if (isErrorStart(line)) {
-			if (inErrorBlock && currentError.length > 0) {
-				stats.errors.push([...currentError]);
-			}
-			inErrorBlock = true;
-			currentError = [line];
-			blankCount = 0;
+			startErrorBlock(stats, errorBlock, line);
 			continue;
 		}
 
@@ -97,36 +132,19 @@ export function filterBuildOutput(output: string, command: string | undefined | 
 			continue;
 		}
 
-		if (!inErrorBlock) {
-			continue;
-		}
-
-		if (line.trim() === "") {
-			blankCount++;
-			if (blankCount >= 2 && currentError.length > 3) {
-				stats.errors.push([...currentError]);
-				inErrorBlock = false;
-				currentError = [];
-			} else {
-				currentError.push(line);
-			}
-			continue;
-		}
-
-		if (line.match(/^\s/) || line.match(/^-->/)) {
-			currentError.push(line);
-			blankCount = 0;
-			continue;
-		}
-
-		stats.errors.push([...currentError]);
-		inErrorBlock = false;
-		currentError = [];
+		handleErrorBlockLine(stats, errorBlock, line);
 	}
 
-	if (inErrorBlock && currentError.length > 0) {
-		stats.errors.push(currentError);
+	flushErrorBlock(stats, errorBlock);
+	return stats;
+}
+
+export function filterBuildOutput(output: string, command: string | undefined | null): string | null {
+	if (!isBuildCommand(command)) {
+		return null;
 	}
+
+	const stats = collectBuildStats(output.split("\n"));
 
 	if (stats.errors.length === 0 && stats.warnings.length === 0) {
 		return `[OK] Build successful (${stats.compiled} units compiled)`;
