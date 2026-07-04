@@ -13,16 +13,19 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
 
 const { compactToolResult } = await import("./output-compactor.ts");
 
+function sourceLineFor(lineNumber: number): string {
+	return lineNumber % 2 === 0 ? `const value${lineNumber} = ${lineNumber};` : `// comment ${lineNumber}`;
+}
+
 function buildReadContent(lineCount: number): string {
-	const lines: string[] = [];
-	for (let index = 0; index < lineCount; index += 1) {
-		if (index % 2 === 0) {
-			lines.push(`// comment ${index}`);
-		} else {
-			lines.push(`const value${index} = ${index};`);
-		}
-	}
-	return `${lines.join("\n")}\n`;
+	return `${Array.from({ length: lineCount }, (_value, index) => sourceLineFor(index)).join("\n")}\n`;
+}
+
+function buildAnchoredReadContent(formatLine: (lineNumber: number, sourceLine: string) => string): string {
+	return Array.from({ length: 120 }, (_value, index) => {
+		const lineNumber = index + 1;
+		return formatLine(lineNumber, sourceLineFor(lineNumber));
+	}).join("\n");
 }
 
 function setReadCompaction(config: ReturnType<typeof cloneDefaultConfig>, enabled: boolean): void {
@@ -40,20 +43,71 @@ function firstTextBlock(content: unknown[] | undefined): string {
 	return first.text;
 }
 
+function compactReadContent(
+	config: ReturnType<typeof cloneDefaultConfig>,
+	content: string,
+	input: Record<string, unknown> = { path: "sample.ts" },
+) {
+	return compactToolResult({ toolName: "read", input, content: [{ type: "text", text: content }] }, config);
+}
+
+function assertChangedWithTechnique(result: ReturnType<typeof compactToolResult>, technique: string): string {
+	assert.equal(result.changed, true);
+	assert.ok(result.techniques.includes(technique));
+	return firstTextBlock(result.content);
+}
+
+function compactSourceRead(config: ReturnType<typeof cloneDefaultConfig>, content: string): string {
+	return assertChangedWithTechnique(compactReadContent(config, content), "source:minimal");
+}
+
+function enableMinimalReadCompaction(config: ReturnType<typeof cloneDefaultConfig>): void {
+	setReadCompaction(config, true);
+	config.outputCompaction.sourceCodeFilteringEnabled = true;
+	config.outputCompaction.sourceCodeFiltering = "minimal";
+	config.outputCompaction.smartTruncate.enabled = true;
+	config.outputCompaction.smartTruncate.maxLines = 40;
+}
+
+function enableReadTruncation(config: ReturnType<typeof cloneDefaultConfig>, maxChars: number): void {
+	config.outputCompaction.truncate.enabled = true;
+	config.outputCompaction.truncate.maxChars = maxChars;
+}
+
+function enableExactReadSafeguards(config: ReturnType<typeof cloneDefaultConfig>, maxChars = 500): void {
+	setReadCompaction(config, true);
+	enableReadTruncation(config, maxChars);
+	config.outputCompaction.smartTruncate.enabled = true;
+	config.outputCompaction.smartTruncate.maxLines = 40;
+}
+
+function assertUnchangedRead(
+	config: ReturnType<typeof cloneDefaultConfig>,
+	content: string,
+	input: Record<string, unknown> = { path: "sample.ts" },
+): void {
+	const result = compactReadContent(config, content, input);
+	assert.equal(result.changed, false);
+	assert.deepEqual(result.techniques, []);
+}
+
 const OUTPUT_EMOJI_MARKERS = ["✓", "✔", "❌", "⚠️", "⚠", "📋", "📄", "🔍", "✅", "⏭️", "📌", "📝", "❓", "•"];
 
-function compactBashOutput(command: string, text: string): string {
-	const result = compactToolResult(
-		{
-			toolName: "bash",
-			input: { command },
-			content: [{ type: "text", text }],
-		},
-		cloneDefaultConfig(),
-	);
+function compactBashResult(command: string, text: string) {
+	return compactToolResult({ toolName: "bash", input: { command }, content: [{ type: "text", text }] }, cloneDefaultConfig());
+}
 
+function compactBashOutput(command: string, text: string): string {
+	const result = compactBashResult(command, text);
 	assert.equal(result.changed, true);
 	return firstTextBlock(result.content);
+}
+
+function assertUnchangedBashOutput(command: string, text: string): void {
+	const result = compactBashResult(command, text);
+	assert.equal(result.changed, false);
+	assert.equal(result.content, undefined);
+	assert.deepEqual(result.techniques, []);
 }
 
 function compactGrepOutput(text: string): string {
@@ -86,46 +140,18 @@ function assertNoPartialHashlineAnchors(text: string): void {
 
 runTest("precision read with offset keeps exact output (no source/smart/hard truncation)", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 500;
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
+	enableExactReadSafeguards(config);
 
 	const content = buildReadContent(220);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts", offset: 1 },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, false);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedRead(config, content, { path: "sample.ts", offset: 1 });
 });
 
 runTest("precision read with limit keeps exact output", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 500;
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
+	enableExactReadSafeguards(config);
 
 	const content = buildReadContent(220);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts", limit: 200 },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, false);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedRead(config, content, { path: "sample.ts", limit: 200 });
 });
 
 runTest("default read output stays exact when read compaction is disabled by default", () => {
@@ -138,73 +164,25 @@ runTest("default read output stays exact when read compaction is disabled by def
 	config.outputCompaction.truncate.maxChars = 500;
 
 	const content = buildReadContent(220);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, false);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedRead(config, content);
 });
 
 runTest("normal read compacts and adds banner when read compaction is enabled", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.sourceCodeFilteringEnabled = true;
-	config.outputCompaction.sourceCodeFiltering = "minimal";
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
+	enableMinimalReadCompaction(config);
 
-	const content = buildReadContent(220);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, true);
-	assert.ok(result.techniques.includes("source:minimal"));
-
-	const compacted = firstTextBlock(result.content);
+	const compacted = compactSourceRead(config, buildReadContent(220));
 	assert.ok(compacted.startsWith("[RTK compacted output:"));
 	assert.ok(compacted.includes("source:minimal"));
 });
 
 runTest("line-anchor read output compacts without corrupting LINE#HASH anchors", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.sourceCodeFilteringEnabled = true;
-	config.outputCompaction.sourceCodeFiltering = "minimal";
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 5000;
+	enableMinimalReadCompaction(config);
+	enableReadTruncation(config, 5000);
 
-	const content = Array.from({ length: 120 }, (_value, index) => {
-		const lineNumber = index + 1;
-		const sourceLine = lineNumber % 2 === 0 ? `const value${lineNumber} = ${lineNumber};` : `// comment ${lineNumber}`;
-		return `${String(lineNumber).padStart(3, " ")}#ZP:${sourceLine}`;
-	}).join("\n");
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, true);
-	assert.ok(result.techniques.includes("source:minimal"));
-
-	const compacted = firstTextBlock(result.content);
+	const content = buildAnchoredReadContent((lineNumber, sourceLine) => `${String(lineNumber).padStart(3, " ")}#ZP:${sourceLine}`);
+	const compacted = compactSourceRead(config, content);
 	assert.ok(compacted.startsWith("[RTK compacted output:"));
 	assert.ok(compacted.includes("source:minimal"));
 	assert.match(compacted, /\n\s*2#ZP:const value2 = 2;/);
@@ -214,36 +192,17 @@ runTest("line-anchor read output compacts without corrupting LINE#HASH anchors",
 
 runTest("colon-pipe anchor read output compacts without requiring hashline extension", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.sourceCodeFilteringEnabled = true;
-	config.outputCompaction.sourceCodeFiltering = "minimal";
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 5000;
+	enableMinimalReadCompaction(config);
+	enableReadTruncation(config, 5000);
 
 	const content = [
 		"Read sample.ts: 120 lines",
 		"",
-		...Array.from({ length: 120 }, (_value, index) => {
-			const lineNumber = index + 1;
-			const sourceLine = lineNumber % 2 === 0 ? `const value${lineNumber} = ${lineNumber};` : `// comment ${lineNumber}`;
-			return `${lineNumber}:${(lineNumber % 256).toString(16).padStart(2, "0")}|${sourceLine}`;
-		}),
+		buildAnchoredReadContent(
+			(lineNumber, sourceLine) => `${lineNumber}:${(lineNumber % 256).toString(16).padStart(2, "0")}|${sourceLine}`,
+		),
 	].join("\n");
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, true);
-	assert.ok(result.techniques.includes("source:minimal"));
-
-	const compacted = firstTextBlock(result.content);
+	const compacted = compactSourceRead(config, content);
 	assert.ok(compacted.includes("Read sample.ts: 120 lines"));
 	assert.match(compacted, /\n2:02\|const value2 = 2;/);
 	assert.equal(compacted.includes("|// comment"), false);
@@ -251,71 +210,31 @@ runTest("colon-pipe anchor read output compacts without requiring hashline exten
 
 runTest("compact LINEHASH pipe anchors from oh-my-pi style reads", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.sourceCodeFilteringEnabled = true;
-	config.outputCompaction.sourceCodeFiltering = "minimal";
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 5000;
+	enableMinimalReadCompaction(config);
+	enableReadTruncation(config, 5000);
 
-	const content = Array.from({ length: 120 }, (_value, index) => {
-		const lineNumber = index + 1;
+	const content = buildAnchoredReadContent((lineNumber, sourceLine) => {
 		const hash = lineNumber % 2 === 0 ? "sr" : "ab";
-		const sourceLine = lineNumber % 2 === 0 ? `const value${lineNumber} = ${lineNumber};` : `// comment ${lineNumber}`;
 		return `${lineNumber}${hash}|${sourceLine}`;
-	}).join("\n");
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, true);
-	assert.ok(result.techniques.includes("source:minimal"));
-
-	const compacted = firstTextBlock(result.content);
+	});
+	const compacted = compactSourceRead(config, content);
 	assert.match(compacted, /\n2sr\|const value2 = 2;/);
 	assert.equal(compacted.includes("|// comment"), false);
 });
 
 runTest("compact hashline-tools file wrapper while preserving non-anchor wrapper lines", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.sourceCodeFilteringEnabled = true;
-	config.outputCompaction.sourceCodeFiltering = "minimal";
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 5000;
+	enableMinimalReadCompaction(config);
+	enableReadTruncation(config, 5000);
 
 	const content = [
 		"<file>",
-		...Array.from({ length: 120 }, (_value, index) => {
-			const lineNumber = index + 1;
-			const sourceLine = lineNumber % 2 === 0 ? `const value${lineNumber} = ${lineNumber};` : `// comment ${lineNumber}`;
-			return `${lineNumber}#ZM:${sourceLine}`;
-		}),
+		buildAnchoredReadContent((lineNumber, sourceLine) => `${lineNumber}#ZM:${sourceLine}`),
 		"",
 		"(End of file - 120 total lines)",
 		"</file>",
 	].join("\n");
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, true);
-	assert.ok(result.techniques.includes("source:minimal"));
-
-	const compacted = firstTextBlock(result.content);
+	const compacted = compactSourceRead(config, content);
 	assert.ok(compacted.includes("<file>"));
 	assert.ok(compacted.includes("(End of file - 120 total lines)"));
 	assert.ok(compacted.includes("</file>"));
@@ -335,14 +254,7 @@ runTest("anchor-safe read hard truncation preserves whole hashline anchors", () 
 		const lineNumber = index + 1;
 		return `${lineNumber}#ZP:const value${lineNumber} = "${"x".repeat(40)}";`;
 	}).join("\n");
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
+	const result = compactReadContent(config, content);
 
 	assert.equal(result.changed, true);
 	assert.ok(result.techniques.includes("truncate"));
@@ -354,22 +266,10 @@ runTest("anchor-safe read hard truncation preserves whole hashline anchors", () 
 
 runTest("incidental single anchor-like line does not disable normal read compaction", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.sourceCodeFilteringEnabled = true;
-	config.outputCompaction.sourceCodeFiltering = "minimal";
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
+	enableMinimalReadCompaction(config);
 
 	const content = [`1#ZP:not an anchored read`, buildReadContent(120)].join("\n");
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
+	const result = compactReadContent(config, content);
 	assert.equal(result.changed, true);
 	assert.ok(result.techniques.includes("source:minimal") || result.techniques.includes("smart-truncate"));
 });
@@ -379,17 +279,7 @@ runTest("short read output stays exact below threshold", () => {
 	setReadCompaction(config, true);
 	const content = buildReadContent(40);
 
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, false);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedRead(config, content);
 });
 
 runTest("read output stays exact at the 80-line boundary with trailing newline", () => {
@@ -399,37 +289,14 @@ runTest("read output stays exact at the 80-line boundary with trailing newline",
 	config.outputCompaction.smartTruncate.maxLines = 40;
 
 	const content = buildReadContent(80);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, false);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedRead(config, content);
 });
 
 runTest("read output compacts once the content exceeds the 80-line exactness threshold when read compaction is enabled", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
-	config.outputCompaction.sourceCodeFilteringEnabled = true;
-	config.outputCompaction.sourceCodeFiltering = "minimal";
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
+	enableMinimalReadCompaction(config);
 
-	const content = buildReadContent(81);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
+	const result = compactReadContent(config, buildReadContent(81));
 	assert.equal(result.changed, true);
 	assert.ok(result.techniques.includes("source:minimal") || result.techniques.includes("smart-truncate"));
 });
@@ -443,14 +310,7 @@ runTest("source file reads skip lossy source filtering when truncation safeguard
 	config.outputCompaction.truncate.enabled = false;
 
 	const content = buildReadContent(120);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "sample.ts" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
+	const result = compactReadContent(config, content);
 
 	assert.equal(result.changed, false);
 	assert.deepEqual(result.techniques, []);
@@ -459,71 +319,29 @@ runTest("source file reads skip lossy source filtering when truncation safeguard
 
 runTest("skill reads stay exact when preserveExactSkillReads is enabled for user skills", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
+	enableExactReadSafeguards(config);
 	config.outputCompaction.preserveExactSkillReads = true;
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 500;
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
 
 	const content = buildReadContent(220);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: join(TEST_AGENT_DIR, "skills", "example", "SKILL.md") },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, false);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedRead(config, content, { path: join(TEST_AGENT_DIR, "skills", "example", "SKILL.md") });
 });
 
 runTest("project .pi skill reads stay exact when preserveExactSkillReads is enabled", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
+	enableExactReadSafeguards(config);
 	config.outputCompaction.preserveExactSkillReads = true;
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 500;
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
 
 	const content = buildReadContent(220);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: ".pi/skills/example/SKILL.md" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, false);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedRead(config, content, { path: ".pi/skills/example/SKILL.md" });
 });
 
 runTest("ancestor .agents skill reads stay exact when preserveExactSkillReads is enabled", () => {
 	const config = cloneDefaultConfig();
-	setReadCompaction(config, true);
+	enableExactReadSafeguards(config);
 	config.outputCompaction.preserveExactSkillReads = true;
-	config.outputCompaction.truncate.enabled = true;
-	config.outputCompaction.truncate.maxChars = 500;
-	config.outputCompaction.smartTruncate.enabled = true;
-	config.outputCompaction.smartTruncate.maxLines = 40;
 
 	const content = buildReadContent(220);
-	const result = compactToolResult(
-		{
-			toolName: "read",
-			input: { path: "../.agents/skills/example/SKILL.md" },
-			content: [{ type: "text", text: content }],
-		},
-		config,
-	);
-
-	assert.equal(result.changed, false);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedRead(config, content, { path: "../.agents/skills/example/SKILL.md" });
 });
 
 runTest("build output uses plain-text status markers", () => {
@@ -702,18 +520,7 @@ runTest("hook-only output compacts to an empty text result", () => {
 });
 
 runTest("non-hook RTK warnings are preserved verbatim", () => {
-	const result = compactToolResult(
-		{
-			toolName: "bash",
-			input: { command: "FOO=1 rtk git status" },
-			content: [{ type: "text", text: "[rtk] warning: builtin filters: parse failure\n\nworking tree clean\n" }],
-		},
-		cloneDefaultConfig(),
-	);
-
-	assert.equal(result.changed, false);
-	assert.equal(result.content, undefined);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedBashOutput("FOO=1 rtk git status", "[rtk] warning: builtin filters: parse failure\n\nworking tree clean\n");
 });
 
 runTest("emoji RTK warnings stay visible and are sanitized to plain text", () => {
@@ -739,18 +546,7 @@ runTest("outdated hook warning is stripped while preserving the RTK payload", ()
 
 runTest("quoted hook warning text is preserved as payload", () => {
 	const quotedHookText = 'const warning = "No hook installed — run `rtk init -g` for automatic token savings";\n';
-	const result = compactToolResult(
-		{
-			toolName: "bash",
-			input: { command: "echo probe" },
-			content: [{ type: "text", text: quotedHookText }],
-		},
-		cloneDefaultConfig(),
-	);
-
-	assert.equal(result.changed, false);
-	assert.equal(result.content, undefined);
-	assert.deepEqual(result.techniques, []);
+	assertUnchangedBashOutput("echo probe", quotedHookText);
 });
 
 console.log("All output-compactor tests passed.");
