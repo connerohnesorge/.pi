@@ -3,11 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRuntimeRegistries } from "../../tests/runtime-harness.ts";
 import effortExtension from "../index.ts";
 
 type PiThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-
-type Handler = (event: any, ctx: any) => any;
 
 const xhighModel = {
   id: "gpt-5.4",
@@ -23,25 +22,14 @@ function createHarness(options: { model?: any; thinkingLevel?: PiThinkingLevel; 
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
 
-  const commands = new Map<string, any>();
-  const events = new Map<string, Handler[]>();
-  const shortcuts = new Map<string, any>();
+  const runtime = createRuntimeRegistries();
+  const { commands, events, shortcuts } = runtime;
   const flags = new Map<string, any>(Object.entries(options.flags ?? {}));
   const registeredFlags = new Map<string, any>();
   let thinkingLevel = options.thinkingLevel ?? "medium";
 
   const pi = {
-    on(name: string, handler: Handler) {
-      const handlers = events.get(name) ?? [];
-      handlers.push(handler);
-      events.set(name, handlers);
-    },
-    registerCommand(name: string, command: any) {
-      commands.set(name, command);
-    },
-    registerShortcut(shortcut: string, shortcutHandler: any) {
-      shortcuts.set(shortcut, shortcutHandler);
-    },
+    ...runtime.pi,
     registerFlag(name: string, flag: any) {
       registeredFlags.set(name, flag);
     },
