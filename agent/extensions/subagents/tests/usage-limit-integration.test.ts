@@ -29,14 +29,14 @@ const USAGE_LIMIT_MSG = "Codex usage limit reached (plus plan). Resets in ~3h.";
  * key is never actually used. A faux "deepseek" provider is registered/torn down
  * around `fn`; `setResponses` queues the scripted turns.
  */
-async function withFauxSession(
-  fn: (ctx: {
-    cwd: string;
-    model: unknown;
-    setResponses: (msgs: unknown[]) => void;
-    fauxAssistantMessage: typeof import("@earendil-works/pi-ai").fauxAssistantMessage;
-  }) => Promise<void>,
-): Promise<void> {
+type FauxSessionContext = {
+  cwd: string;
+  model: unknown;
+  setResponses: (msgs: unknown[]) => void;
+  fauxAssistantMessage: typeof import("@earendil-works/pi-ai").fauxAssistantMessage;
+};
+
+async function withFauxSession(fn: (ctx: FauxSessionContext) => Promise<void>): Promise<void> {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-i26-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-i26-cwd-"));
   const prevKey = process.env.DEEPSEEK_API_KEY;
@@ -88,41 +88,98 @@ test("a successful real turn whose text merely mentions 'rate limit' is NOT misc
     assert.ok(typeof text === "string" && text.includes("Done."), `expected normal text, got ${String(text)}`);
   }));
 
-test("through the manager: a usage limit pauses the run (not fails) and resume replays the journal", () =>
-  withFauxSession(async ({ cwd, model, setResponses, fauxAssistantMessage }) => {
-    const managerAgent = new WorkflowAgent({ cwd, session: { model: model as never } });
-    const manager = new WorkflowManager({ cwd, agent: managerAgent });
-    const pausedReasons: Array<string | undefined> = [];
-    manager.on("paused", (e: { reason?: string }) => pausedReasons.push(e.reason));
-    manager.on("error", () => {});
-
-    const twoAgentScript = `export const meta = { name: 'i26_integration', description: 'two agents' }
+const TWO_AGENT_SCRIPT = `export const meta = { name: 'i26_integration', description: 'two agents' }
 const a = await agent('first step', { label: 'first' })
 const b = await agent('second step', { label: 'second' })
 return { a, b }`;
 
-    // Agent 1 succeeds (journaled); agent 2 hits the usage limit.
-    setResponses([
-      fauxAssistantMessage("first-result-text", { stopReason: "stop" }),
-      fauxAssistantMessage("", { stopReason: "error", errorMessage: USAGE_LIMIT_MSG }),
-    ]);
-    const { runId, promise } = manager.startInBackground(twoAgentScript);
-    await promise.catch(() => {});
+function createManagerHarness({ cwd, model }: FauxSessionContext): {
+  manager: WorkflowManager;
+  pausedReasons: Array<string | undefined>;
+} {
+  const managerAgent = new WorkflowAgent({ cwd, session: { model: model as never } });
+  const manager = new WorkflowManager({ cwd, agent: managerAgent });
+  const pausedReasons: Array<string | undefined> = [];
+  manager.on("paused", (e: { reason?: string }) => pausedReasons.push(e.reason));
+  manager.on("error", () => {});
+  return { manager, pausedReasons };
+}
 
-    assert.equal(manager.getRun(runId)?.status, "paused", "run is checkpointed as paused, not failed");
-    const persisted = manager.listRuns().find((r) => r.runId === runId);
-    assert.equal(persisted?.pauseReason, "usage_limit");
-    assert.equal(persisted?.resetHint, "Resets in ~3h");
-    assert.ok((persisted?.journal?.length ?? 0) >= 1, "agent 1's result is journaled");
-    assert.ok(pausedReasons.includes("usage_limit"), "a usage_limit 'paused' event fired");
+function stubUsageLimitPause({ setResponses, fauxAssistantMessage }: FauxSessionContext): void {
+  // Agent 1 succeeds (journaled); agent 2 hits the usage limit.
+  setResponses([
+    fauxAssistantMessage("first-result-text", { stopReason: "stop" }),
+    fauxAssistantMessage("", { stopReason: "error", errorMessage: USAGE_LIMIT_MSG }),
+  ]);
+}
 
-    // Budget refills: agent 2 now succeeds. Resume replays agent 1 from the journal.
-    setResponses([fauxAssistantMessage("second-result-text", { stopReason: "stop" })]);
-    assert.equal(await manager.resume(runId), true, "the paused run is resumable");
-    await new Promise((r) => setTimeout(r, 100));
+function stubSuccessfulResume({ setResponses, fauxAssistantMessage }: FauxSessionContext): void {
+  // Budget refills: agent 2 now succeeds. Resume replays agent 1 from the journal.
+  setResponses([fauxAssistantMessage("second-result-text", { stopReason: "stop" })]);
+}
 
-    const done = manager.getRun(runId);
-    assert.equal(done?.status, "completed", "resumed run completes once the limit clears");
-    assert.equal((done?.result?.result as { a?: string })?.a, "first-result-text", "agent 1 replayed from journal");
-    assert.equal((done?.result?.result as { b?: string })?.b, "second-result-text", "agent 2 ran live after refill");
-  }));
+async function startPausedRun(manager: WorkflowManager): Promise<string> {
+  const { runId, promise } = manager.startInBackground(TWO_AGENT_SCRIPT);
+  await promise.catch(ignoreExpectedUsageLimit);
+  return runId;
+}
+
+function ignoreExpectedUsageLimit(): void {}
+
+function persistedRun(manager: WorkflowManager, runId: string): ReturnType<WorkflowManager["listRuns"]>[number] | undefined {
+  return manager.listRuns().find((run) => run.runId === runId);
+}
+
+function assertPausedRunStatus(manager: WorkflowManager, runId: string): void {
+  assert.equal(manager.getRun(runId)?.status, "paused", "run is checkpointed as paused, not failed");
+}
+
+function assertPersistedUsageLimit(manager: WorkflowManager, runId: string): void {
+  const persisted = persistedRun(manager, runId);
+  assert.equal(persisted?.pauseReason, "usage_limit");
+  assert.equal(persisted?.resetHint, "Resets in ~3h");
+}
+
+function assertJournaledFirstResult(manager: WorkflowManager, runId: string): void {
+  assert.ok((persistedRun(manager, runId)?.journal?.length ?? 0) >= 1, "agent 1's result is journaled");
+}
+
+function assertPausedEvent(pausedReasons: Array<string | undefined>): void {
+  assert.ok(pausedReasons.includes("usage_limit"), "a usage_limit 'paused' event fired");
+}
+
+async function assertUsageLimitPause(
+  manager: WorkflowManager,
+  pausedReasons: Array<string | undefined>,
+): Promise<string> {
+  const runId = await startPausedRun(manager);
+  assertPausedRunStatus(manager, runId);
+  assertPersistedUsageLimit(manager, runId);
+  assertJournaledFirstResult(manager, runId);
+  assertPausedEvent(pausedReasons);
+  return runId;
+}
+
+function resumedResult(manager: WorkflowManager, runId: string): { a?: string; b?: string } | undefined {
+  return manager.getRun(runId)?.result?.result as { a?: string; b?: string } | undefined;
+}
+
+async function assertUsageLimitResume(manager: WorkflowManager, runId: string): Promise<void> {
+  assert.equal(await manager.resume(runId), true, "the paused run is resumable");
+  await new Promise((r) => setTimeout(r, 100));
+
+  assert.equal(manager.getRun(runId)?.status, "completed", "resumed run completes once the limit clears");
+  assert.equal(resumedResult(manager, runId)?.a, "first-result-text", "agent 1 replayed from journal");
+  assert.equal(resumedResult(manager, runId)?.b, "second-result-text", "agent 2 ran live after refill");
+}
+
+async function assertManagerPausesAndResumes(ctx: FauxSessionContext): Promise<void> {
+  const { manager, pausedReasons } = createManagerHarness(ctx);
+  stubUsageLimitPause(ctx);
+  const runId = await assertUsageLimitPause(manager, pausedReasons);
+  stubSuccessfulResume(ctx);
+  await assertUsageLimitResume(manager, runId);
+}
+
+test("through the manager: a usage limit pauses the run (not fails) and resume replays the journal", () =>
+  withFauxSession(assertManagerPausesAndResumes));
