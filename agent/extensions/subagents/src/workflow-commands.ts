@@ -13,7 +13,7 @@ import {
   type WorkflowSnapshot,
 } from "./display.ts";
 import { type EffortState, effortDirective } from "./effort-command.ts";
-import type { PersistedRunState } from "./run-persistence.ts";
+import type { PersistedAgentState, PersistedRunState } from "./run-persistence.ts";
 import { registerSavedWorkflow } from "./saved-commands.ts";
 import {
   buildForcedWorkflowPrompt,
@@ -110,27 +110,42 @@ function watchRun(
   return true;
 }
 
+function agentStatusIcon(agent: PersistedAgentState): string {
+  return (
+    {
+      done: "✓",
+      error: "✗",
+      running: "◆",
+    }[agent.status] ?? "·"
+  );
+}
+
+function agentStatusLine(agent: PersistedAgentState): string {
+  return `  ${agentStatusIcon(agent)} ${agent.label}`;
+}
+
+function tokenLine(run: PersistedRunState): string | undefined {
+  return run.tokenUsage
+    ? `  tokens: ${run.tokenUsage.total.toLocaleString()}`
+    : undefined;
+}
+
+function durationLine(run: PersistedRunState): string | undefined {
+  return run.durationMs
+    ? `  duration: ${(run.durationMs / 1000).toFixed(1)}s`
+    : undefined;
+}
+
 function renderPersistedStatus(run: PersistedRunState): string {
-  const lines = [
+  return [
     `${STATUS_ICON[run.status] ?? "?"} ${run.workflowName} (${run.runId}) — ${run.status}`,
-  ];
-  if (run.currentPhase) lines.push(`  phase: ${run.currentPhase}`);
-  for (const agent of run.agents) {
-    const icon =
-      agent.status === "done"
-        ? "✓"
-        : agent.status === "error"
-          ? "✗"
-          : agent.status === "running"
-            ? "◆"
-            : "·";
-    lines.push(`  ${icon} ${agent.label}`);
-  }
-  if (run.tokenUsage)
-    lines.push(`  tokens: ${run.tokenUsage.total.toLocaleString()}`);
-  if (run.durationMs)
-    lines.push(`  duration: ${(run.durationMs / 1000).toFixed(1)}s`);
-  return lines.join("\n");
+    run.currentPhase ? `  phase: ${run.currentPhase}` : undefined,
+    ...run.agents.map(agentStatusLine),
+    tokenLine(run),
+    durationLine(run),
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 export interface WorkflowCommandOptions {
