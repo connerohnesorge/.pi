@@ -138,21 +138,27 @@ async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: GoalQue
 			return questions.every((q) => answers.has(q.id));
 		}
 
+		function answerText(existing: GoalQuestionnaireAnswer | undefined): string {
+			return existing?.wasCustom ? existing.answer : "";
+		}
+
+		function optionIndexForQuestion(q: GoalQuestionnaireQuestion, existing: GoalQuestionnaireAnswer | undefined): number {
+			if (existing?.wasCustom) return q.options.length;
+			if (!existing) return q.recommended ?? 0;
+			const idx = q.options.indexOf(existing.answer);
+			return idx >= 0 ? idx : 0;
+		}
+
 		function enterQuestion(q: GoalQuestionnaireQuestion) {
 			const existing = answers.get(q.id);
 			const draft = drafts.get(q.id);
 			if (q.options.length === 0) {
 				inputMode = true;
 				inputQuestionId = q.id;
-				editor.setText(draft ?? (existing?.wasCustom ? existing.answer : ""));
-			} else if (existing?.wasCustom) {
-				optionIndex = q.options.length;
-			} else if (existing && !existing.wasCustom) {
-				const idx = q.options.indexOf(existing.answer);
-				optionIndex = idx >= 0 ? idx : 0;
-			} else {
-				optionIndex = q.recommended ?? 0;
+				editor.setText(draft ?? answerText(existing));
+				return;
 			}
+			optionIndex = optionIndexForQuestion(q, existing);
 		}
 
 		function advanceAfterAnswer() {
@@ -209,24 +215,29 @@ async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: GoalQue
 			refresh();
 		}
 
+		function handleEditorEscape(): void {
+			const q = currentQuestion();
+			if (q && q.options.length === 0 && !isMulti) submit(true);
+			else {
+				exitEditor();
+				refresh();
+			}
+		}
+
+		function handleEditorTab(data: string): boolean {
+			if (!isMulti || (!matchesKey(data, Key.tab) && !matchesKey(data, Key.shift("tab")))) return false;
+			exitEditor();
+			selectTab(matchesKey(data, Key.tab) ? 1 : -1);
+			return true;
+		}
+
 		function handleInputMode(data: string): boolean {
 			if (!inputMode) return false;
-			if (matchesKey(data, Key.escape)) {
-				const q = currentQuestion();
-				if (q && q.options.length === 0 && !isMulti) submit(true);
-				else {
-					exitEditor();
-					refresh();
-				}
-				return true;
+			if (matchesKey(data, Key.escape)) handleEditorEscape();
+			else if (!handleEditorTab(data)) {
+				editor.handleInput(data);
+				refresh();
 			}
-			if (isMulti && (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")))) {
-				exitEditor();
-				selectTab(matchesKey(data, Key.tab) ? 1 : -1);
-				return true;
-			}
-			editor.handleInput(data);
-			refresh();
 			return true;
 		}
 
@@ -259,26 +270,26 @@ async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: GoalQue
 			refresh();
 		}
 
+		function handleOptionMove(data: string, optionCount: number): boolean {
+			if (matchesKey(data, Key.up)) optionIndex = Math.max(0, optionIndex - 1);
+			else if (matchesKey(data, Key.down)) optionIndex = Math.min(optionCount - 1, optionIndex + 1);
+			else return false;
+			refresh();
+			return true;
+		}
+
+		function confirmSelectedOption(q: GoalQuestionnaireQuestion, opt: { label: string; isCustom?: boolean } | undefined): void {
+			if (q.options.length === 0 || opt?.isCustom) startCustomAnswer(q);
+			else if (opt) {
+				saveAnswer(q.id, opt.label, false);
+				advanceAfterAnswer();
+			}
+		}
+
 		function handleQuestionInput(data: string, q: GoalQuestionnaireQuestion | undefined, opts: Array<{ label: string; isCustom?: boolean }>) {
-			if (matchesKey(data, Key.up)) {
-				optionIndex = Math.max(0, optionIndex - 1);
-				refresh();
-				return;
-			}
-			if (matchesKey(data, Key.down)) {
-				optionIndex = Math.min(opts.length - 1, optionIndex + 1);
-				refresh();
-				return;
-			}
-			if (matchesKey(data, Key.enter) && q) {
-				if (q.options.length === 0 || opts[optionIndex]?.isCustom) startCustomAnswer(q);
-				else if (opts[optionIndex]) {
-					saveAnswer(q.id, opts[optionIndex].label, false);
-					advanceAfterAnswer();
-				}
-				return;
-			}
-			if (matchesKey(data, Key.escape)) submit(true);
+			if (handleOptionMove(data, opts.length)) return;
+			if (matchesKey(data, Key.enter) && q) confirmSelectedOption(q, opts[optionIndex]);
+			else if (matchesKey(data, Key.escape)) submit(true);
 		}
 
 		function handleInput(data: string) {

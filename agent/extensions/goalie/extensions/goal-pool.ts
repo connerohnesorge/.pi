@@ -34,26 +34,32 @@ export function otherOpenGoalCount(pool: Map<string, GoalRecord>, focusedGoalId:
 	return openGoalsFromPool(pool).filter((goal) => goal.id !== focusedGoalId).length;
 }
 
+function focusedEntryId(pool: Map<string, GoalRecord>, focusEntry?: GoalFocusEntry | null): string | null | undefined {
+	const focusedGoalId = focusEntry?.focusedGoalId ?? null;
+	const focused = focusedGoalId ? focusedGoalFromPool(pool, focusedGoalId) : null;
+	if (focused && focused.status !== "complete") return focusedGoalId;
+	return focusEntry ? null : undefined;
+}
+
+function legacyFocusId(pool: Map<string, GoalRecord>, legacyGoal?: GoalRecord | null): string | null {
+	if (!legacyGoal || legacyGoal.status === "complete") return null;
+	if (!pool.has(legacyGoal.id)) pool.set(legacyGoal.id, cloneGoal(legacyGoal));
+	return legacyGoal.id;
+}
+
+function soleOpenGoalId(pool: Map<string, GoalRecord>): string | null {
+	const open = openGoalsFromPool(pool);
+	return open.length === 1 ? open[0]?.id ?? null : null;
+}
+
 export function resolveSessionFocus(args: {
 	pool: Map<string, GoalRecord>;
 	focusEntry?: GoalFocusEntry | null;
 	legacyGoal?: GoalRecord | null;
 }): string | null {
-	const focusedGoalId = args.focusEntry?.focusedGoalId ?? null;
-	const focused = focusedGoalId ? focusedGoalFromPool(args.pool, focusedGoalId) : null;
-	if (focused && focused.status !== "complete") {
-		return focusedGoalId;
-	}
-	if (args.focusEntry) {
-		return null;
-	}
-	if (args.legacyGoal && args.legacyGoal.status !== "complete") {
-		if (args.pool.has(args.legacyGoal.id)) return args.legacyGoal.id;
-		args.pool.set(args.legacyGoal.id, cloneGoal(args.legacyGoal));
-		return args.legacyGoal.id;
-	}
-	const open = openGoalsFromPool(args.pool);
-	return open.length === 1 ? open[0]?.id ?? null : null;
+	const focused = focusedEntryId(args.pool, args.focusEntry);
+	if (focused !== undefined) return focused;
+	return legacyFocusId(args.pool, args.legacyGoal) ?? soleOpenGoalId(args.pool);
 }
 
 export function goalSelectorLabel(goal: GoalRecord, focusedGoalId: string | null): string {
