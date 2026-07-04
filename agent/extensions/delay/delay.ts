@@ -15,6 +15,12 @@ const UNIT_MS: Record<string, number> = {
   d: 24 * 60 * 60 * 1000,
 };
 
+const COMMANDS: Record<string, DelayCommand> = {
+  "": { kind: "status" },
+  "--status": { kind: "status" },
+  "--clear": { kind: "clear" },
+};
+
 function normalizeWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -48,8 +54,8 @@ export function formatDelayDuration(delayMs: number): string {
 
 export function parseDelayCommand(args: string): DelayCommand {
   const trimmed = args.trim();
-  if (trimmed.length === 0 || trimmed === "--status") return { kind: "status" };
-  if (trimmed === "--clear") return { kind: "clear" };
+  const command = COMMANDS[trimmed];
+  if (command) return command;
 
   const [firstToken = "", ...rest] = trimmed.split(/\s+/);
   const parsedDelay = parseDelayDuration(firstToken);

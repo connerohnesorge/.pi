@@ -69,6 +69,14 @@ function fuzzySubsequenceScore(haystack, needle) {
 	return score
 }
 
+const SCORE_RULES = [
+	({ bareName, normalizedQuery }) => bareName === normalizedQuery ? 1100 : 0,
+	({ value, name, normalizedQuery }) => value === `/${normalizedQuery}` || name === normalizedQuery ? 1000 : 0,
+	({ bareName, normalizedQuery }) => bareName.startsWith(normalizedQuery) ? 950 - bareName.length : 0,
+	({ value, name, normalizedQuery }) => value.startsWith(`/${normalizedQuery}`) || name.startsWith(normalizedQuery) ? 900 - name.length : 0,
+	({ searchText, normalizedQuery }) => searchText.includes(normalizedQuery) ? 600 - searchText.indexOf(normalizedQuery) : 0,
+]
+
 function scoreCommand(command, query) {
 	const normalizedQuery = query.toLowerCase()
 	const value = commandValue(command).toLowerCase()
@@ -77,12 +85,10 @@ function scoreCommand(command, query) {
 	const searchText = commandSearchText(command)
 
 	if (!normalizedQuery) return 1
-	if (bareName === normalizedQuery) return 1100
-	if (value === `/${normalizedQuery}` || name === normalizedQuery) return 1000
-	if (bareName.startsWith(normalizedQuery)) return 950 - bareName.length
-	if (value.startsWith(`/${normalizedQuery}`) || name.startsWith(normalizedQuery)) return 900 - name.length
-	if (searchText.includes(normalizedQuery)) return 600 - searchText.indexOf(normalizedQuery)
-
+	for (const rule of SCORE_RULES) {
+		const score = rule({ value, name, bareName, searchText, normalizedQuery })
+		if (score > 0) return score
+	}
 	if (normalizedQuery.length < 3) return 0
 
 	const fuzzyScore = fuzzySubsequenceScore(searchText, normalizedQuery)
