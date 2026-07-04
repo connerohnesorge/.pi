@@ -16,6 +16,7 @@ import {
   registerWorkflowTriggerCommand,
   tokenizeAnsi,
   WorkflowEditor,
+  WORKFLOW_TOOL_NAME,
 } from "../src/workflow-editor.ts";
 
 const workflowEditor = {
@@ -29,6 +30,7 @@ const workflowEditor = {
   installWorkflowEditor,
   registerWorkflowTriggerCommand,
   registerWorkflowProgressCommands,
+  WORKFLOW_TOOL_NAME,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
