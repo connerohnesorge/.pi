@@ -3,6 +3,12 @@ import test from "node:test";
 import { registerBuiltinWorkflows } from "../src/builtin-commands.ts";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.ts";
 
+function assertUsageWarning(notified: Array<{ message: string; type?: string }>) {
+  assert.equal(notified.length, 1, "should notify with warning");
+  assert.equal(notified[0].type, "warning", "should be a warning");
+  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+}
+
 test("registerBuiltinWorkflows registers all four built-in workflow commands", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp" });
@@ -41,9 +47,7 @@ test("registerBuiltinWorkflows deep-research handler validates empty args (retur
   // Calling with empty args should warn and return early (before running any workflow)
   const { ctx, notified } = makeNotifyCtx();
   await deepResearchHandler("", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+  assertUsageWarning(notified);
 });
 
 test("registerBuiltinWorkflows adversarial-review handler validates empty args (returns early)", async () => {
@@ -54,9 +58,7 @@ test("registerBuiltinWorkflows adversarial-review handler validates empty args (
 
   const { ctx, notified } = makeNotifyCtx();
   await advHandler("", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+  assertUsageWarning(notified);
 });
 
 test("registerBuiltinWorkflows multi-perspective handler validates empty args (returns early)", async () => {
@@ -67,9 +69,7 @@ test("registerBuiltinWorkflows multi-perspective handler validates empty args (r
 
   const { ctx, notified } = makeNotifyCtx();
   await handler("", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+  assertUsageWarning(notified);
 });
 
 test("registerBuiltinWorkflows codebase-audit handler validates missing checks (returns early)", async () => {
@@ -81,9 +81,7 @@ test("registerBuiltinWorkflows codebase-audit handler validates missing checks (
   const { ctx, notified } = makeNotifyCtx();
   // scope but no checks → should warn and return early
   await handler("src/", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
+  assertUsageWarning(notified);
 });
 
 test("registerBuiltinWorkflows creates handlers with expected structure", () => {
