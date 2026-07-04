@@ -10,37 +10,24 @@ const RTK_DB_PATH_ASSIGNMENT_PATTERN = new RegExp(
 );
 const RTK_DB_PATH_EXPORT_PATTERN = new RegExp(`^export\\s+RTK_DB_PATH=${SHELL_ENV_VALUE_PATTERN}(?=\\s*(?:;|$))`);
 
+function firstNonBlank(values: Array<string | undefined>): string | undefined {
+	return values.find((value) => value?.trim());
+}
+
 function resolveTemporaryDirectory(): string {
-	if (process.platform === "win32") {
-		const windowsTempDir = process.env.TEMP ?? process.env.TMP;
-		if (windowsTempDir && windowsTempDir.trim()) {
-			return windowsTempDir;
-		}
-
-		const localAppData = process.env.LOCALAPPDATA;
-		if (localAppData && localAppData.trim()) {
-			return join(localAppData, "Temp");
-		}
-
-		const userProfile = process.env.USERPROFILE;
-		if (userProfile && userProfile.trim()) {
-			return join(userProfile, "AppData", "Local", "Temp");
-		}
-
-		const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
-		if (systemRoot && systemRoot.trim()) {
-			return join(systemRoot, "Temp");
-		}
-
-		return "C:/Windows/Temp";
+	if (process.platform !== "win32") {
+		return firstNonBlank([process.env.TMPDIR, process.env.TMP]) ?? "/tmp";
 	}
 
-	const posixTempDir = process.env.TMPDIR ?? process.env.TMP;
-	if (posixTempDir && posixTempDir.trim()) {
-		return posixTempDir;
-	}
-
-	return "/tmp";
+	return (
+		firstNonBlank([
+			process.env.TEMP,
+			process.env.TMP,
+			process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Temp") : undefined,
+			process.env.USERPROFILE ? join(process.env.USERPROFILE, "AppData", "Local", "Temp") : undefined,
+			process.env.SystemRoot || process.env.WINDIR ? join((process.env.SystemRoot ?? process.env.WINDIR)!, "Temp") : undefined,
+		]) ?? "C:/Windows/Temp"
+	);
 }
 
 function getTemporaryRtkHistoryDbPath(): string {

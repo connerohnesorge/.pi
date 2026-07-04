@@ -381,6 +381,35 @@ async function openSettingsModal(ctx: ExtensionCommandContext, controller: RtkIn
 	);
 }
 
+type RtkCommandHandler = (ctx: ExtensionCommandContext, controller: RtkIntegrationController) => void | Promise<void>;
+
+function notifyRuntimeStatus(ctx: ExtensionCommandContext, runtimeStatus: RuntimeStatus): void {
+	if (!runtimeStatus.rtkAvailable) {
+		ctx.ui.notify(`RTK binary is not available${runtimeStatus.lastError ? `: ${runtimeStatus.lastError}` : ""}.`, "warning");
+		return;
+	}
+
+	const pathDetail = runtimeStatus.rtkExecutablePath ? ` at ${runtimeStatus.rtkExecutablePath}` : "";
+	ctx.ui.notify(`RTK binary is available${pathDetail}.`, "info");
+}
+
+const RTK_COMMAND_HANDLERS: Record<string, RtkCommandHandler> = {
+	help: (ctx) => ctx.ui.notify(RTK_USAGE_TEXT, "info"),
+	show: (ctx, controller) =>
+		ctx.ui.notify(`rtk: ${summarizeConfig(controller.getConfig(), controller.getRuntimeStatus())}`, "info"),
+	path: (ctx, controller) => ctx.ui.notify(`rtk config: ${controller.getConfigPath()}`, "info"),
+	verify: async (ctx, controller) => notifyRuntimeStatus(ctx, await controller.refreshRuntimeStatus()),
+	stats: (ctx, controller) => ctx.ui.notify(controller.getMetricsSummary(), "info"),
+	"clear-stats": (ctx, controller) => {
+		controller.clearMetrics();
+		ctx.ui.notify("RTK metrics cleared.", "info");
+	},
+	reset: (ctx, controller) => {
+		controller.setConfig({ ...DEFAULT_RTK_INTEGRATION_CONFIG }, ctx);
+		ctx.ui.notify("RTK integration settings reset to defaults.", "info");
+	},
+};
+
 async function handleArgs(
 	args: string,
 	ctx: ExtensionCommandContext,
@@ -391,53 +420,12 @@ async function handleArgs(
 		return false;
 	}
 
-	if (normalized === "help") {
-		ctx.ui.notify(RTK_USAGE_TEXT, "info");
-		return true;
+	const handler = RTK_COMMAND_HANDLERS[normalized];
+	if (handler) {
+		await handler(ctx, controller);
+	} else {
+		ctx.ui.notify(RTK_USAGE_TEXT, "warning");
 	}
-
-	if (normalized === "show") {
-		ctx.ui.notify(`rtk: ${summarizeConfig(controller.getConfig(), controller.getRuntimeStatus())}`, "info");
-		return true;
-	}
-
-	if (normalized === "path") {
-		ctx.ui.notify(`rtk config: ${controller.getConfigPath()}`, "info");
-		return true;
-	}
-
-	if (normalized === "verify") {
-		const runtimeStatus = await controller.refreshRuntimeStatus();
-		if (runtimeStatus.rtkAvailable) {
-			const pathDetail = runtimeStatus.rtkExecutablePath ? ` at ${runtimeStatus.rtkExecutablePath}` : "";
-			ctx.ui.notify(`RTK binary is available${pathDetail}.`, "info");
-		} else {
-			ctx.ui.notify(
-				`RTK binary is not available${runtimeStatus.lastError ? `: ${runtimeStatus.lastError}` : ""}.`,
-				"warning",
-			);
-		}
-		return true;
-	}
-
-	if (normalized === "stats") {
-		ctx.ui.notify(controller.getMetricsSummary(), "info");
-		return true;
-	}
-
-	if (normalized === "clear-stats") {
-		controller.clearMetrics();
-		ctx.ui.notify("RTK metrics cleared.", "info");
-		return true;
-	}
-
-	if (normalized === "reset") {
-		controller.setConfig({ ...DEFAULT_RTK_INTEGRATION_CONFIG }, ctx);
-		ctx.ui.notify("RTK integration settings reset to defaults.", "info");
-		return true;
-	}
-
-	ctx.ui.notify(RTK_USAGE_TEXT, "warning");
 	return true;
 }
 

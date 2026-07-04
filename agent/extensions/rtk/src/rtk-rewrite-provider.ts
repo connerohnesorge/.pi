@@ -29,98 +29,69 @@ function normalizeOptions(optionsOrTimeout: number | RtkRewriteProviderOptions):
 	return optionsOrTimeout;
 }
 
+function unchangedResult(
+	command: string,
+	exitCode: number,
+	extra: Partial<RtkRewriteProviderResult> = {},
+): RtkRewriteProviderResult {
+	return { changed: false, originalCommand: command, rewrittenCommand: command, exitCode, ...extra };
+}
+
+async function resolveRewriteExecutable(
+	pi: ExtensionAPI,
+	options: RtkRewriteProviderOptions,
+): Promise<RtkExecutableResolution> {
+	return (
+		options.executableResolution ??
+		(await resolveRtkExecutable(pi, {
+			platform: options.platform,
+			timeoutMs: options.resolverTimeoutMs,
+		}))
+	);
+}
+
+function resultFromRtkExit(
+	command: string,
+	code: number,
+	stdout: string | undefined,
+	stderr: string | undefined,
+	executableResolution: RtkExecutableResolution,
+): RtkRewriteProviderResult {
+	if (code === 1) {
+		return unchangedResult(command, 1, { executableResolution });
+	}
+	if (code === 2) {
+		return unchangedResult(command, 2, { error: stderr?.trim() || "rtk denied rewrite", executableResolution });
+	}
+	if (code !== 0 && code !== 3) {
+		return unchangedResult(command, code, { error: `unexpected exit code ${code}`, executableResolution });
+	}
+
+	const rewritten = stdout?.trim();
+	if (!rewritten) {
+		return unchangedResult(command, code, { error: "rtk returned empty output", executableResolution });
+	}
+	if (rewritten === command) {
+		return unchangedResult(command, code, { executableResolution });
+	}
+	return { changed: true, originalCommand: command, rewrittenCommand: rewritten, exitCode: code, executableResolution };
+}
+
 export async function resolveRtkRewrite(
 	pi: ExtensionAPI,
 	command: string,
 	optionsOrTimeout: number | RtkRewriteProviderOptions = {},
 ): Promise<RtkRewriteProviderResult> {
 	const options = normalizeOptions(optionsOrTimeout);
-	const timeoutMs = options.timeoutMs ?? 3000;
-
-	if (!command || !command.trim()) {
-		return { changed: false, originalCommand: command, rewrittenCommand: command, exitCode: 1 };
-	}
-
-	if (isAlreadyRtk(command)) {
-		return { changed: false, originalCommand: command, rewrittenCommand: command, exitCode: 1 };
+	if (!command?.trim() || isAlreadyRtk(command)) {
+		return unchangedResult(command, 1);
 	}
 
 	try {
-		const executableResolution =
-			options.executableResolution ??
-			(await resolveRtkExecutable(pi, {
-				platform: options.platform,
-				timeoutMs: options.resolverTimeoutMs,
-			}));
-		const result = await pi.exec(executableResolution.command, ["rewrite", command], { timeout: timeoutMs });
-
-		if (result.code === 1) {
-			return {
-				changed: false,
-				originalCommand: command,
-				rewrittenCommand: command,
-				exitCode: 1,
-				executableResolution,
-			};
-		}
-
-		if (result.code === 2) {
-			return {
-				changed: false,
-				originalCommand: command,
-				rewrittenCommand: command,
-				exitCode: 2,
-				error: result.stderr?.trim() || "rtk denied rewrite",
-				executableResolution,
-			};
-		}
-
-		if (result.code === 0 || result.code === 3) {
-			const rewritten = result.stdout?.trim();
-			if (!rewritten) {
-				return {
-					changed: false,
-					originalCommand: command,
-					rewrittenCommand: command,
-					exitCode: result.code,
-					error: "rtk returned empty output",
-					executableResolution,
-				};
-			}
-			if (rewritten === command) {
-				return {
-					changed: false,
-					originalCommand: command,
-					rewrittenCommand: command,
-					exitCode: result.code,
-					executableResolution,
-				};
-			}
-			return {
-				changed: true,
-				originalCommand: command,
-				rewrittenCommand: rewritten,
-				exitCode: result.code,
-				executableResolution,
-			};
-		}
-
-		return {
-			changed: false,
-			originalCommand: command,
-			rewrittenCommand: command,
-			exitCode: result.code,
-			error: `unexpected exit code ${result.code}`,
-			executableResolution,
-		};
+		const executableResolution = await resolveRewriteExecutable(pi, options);
+		const result = await pi.exec(executableResolution.command, ["rewrite", command], { timeout: options.timeoutMs ?? 3000 });
+		return resultFromRtkExit(command, result.code, result.stdout, result.stderr, executableResolution);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return {
-			changed: false,
-			originalCommand: command,
-			rewrittenCommand: command,
-			exitCode: -1,
-			error: message,
-		};
+		return unchangedResult(command, -1, { error: error instanceof Error ? error.message : String(error) });
 	}
 }
