@@ -46,34 +46,38 @@ interface PipelineParserState {
 	suffix: string;
 }
 
+function consumeEscapedCharacter(state: PipelineParserState): boolean {
+	if (!state.escaped) {
+		return false;
+	}
+	state.escaped = false;
+	return true;
+}
+
+function consumeInsideQuote(state: PipelineParserState, character: string): boolean {
+	if (state.quote === null) {
+		return false;
+	}
+	state.escaped = character === "\\" && state.quote !== "'";
+	state.quote = character === state.quote ? null : state.quote;
+	return true;
+}
+
+function openEscape(state: PipelineParserState, character: string): boolean {
+	state.escaped = character === "\\";
+	return state.escaped;
+}
+
+function openQuote(state: PipelineParserState, character: string): boolean {
+	if (!isTopLevelQuoteCharacter(character)) {
+		return false;
+	}
+	state.quote = character;
+	return true;
+}
+
 function consumeQuotedOrEscapedCharacter(state: PipelineParserState, character: string): boolean {
-	if (state.escaped) {
-		state.escaped = false;
-		return true;
-	}
-
-	if (state.quote !== null) {
-		if (character === "\\" && state.quote !== "'") {
-			state.escaped = true;
-			return true;
-		}
-		if (character === state.quote) {
-			state.quote = null;
-		}
-		return true;
-	}
-
-	if (character === "\\") {
-		state.escaped = true;
-		return true;
-	}
-
-	if (isTopLevelQuoteCharacter(character)) {
-		state.quote = character;
-		return true;
-	}
-
-	return false;
+	return consumeEscapedCharacter(state) || consumeInsideQuote(state, character) || openEscape(state, character) || openQuote(state, character);
 }
 
 type SeparatorAdvance = number | "suffix" | "invalid" | "none";
@@ -281,31 +285,43 @@ function buildBufferedPipelineCommand(
 	].join(" ");
 }
 
-export function applyRewrittenCommandShellSafetyFixups(command: string, platform: string = process.platform): string {
-	if (platform !== "win32") {
-		return command;
-	}
-
-	const target = splitLeadingRtkDbPathExportPrelude(command);
-	const parsedPipeline = parseSimpleTopLevelPipeline(target.command);
-	if (!parsedPipeline) {
-		return command;
-	}
-
-	const producer = extractProducerRewritePlan(parsedPipeline.segments[0] ?? "", parsedPipeline.separators[0] ?? "");
-	if (!producer) {
-		return command;
-	}
-
-	const remainder = parsedPipeline.segments
+function buildPipelineRemainder(parsedPipeline: ParsedPipeline): string {
+	return parsedPipeline.segments
 		.slice(1)
 		.map((segment, index) => `${index === 0 ? "" : (parsedPipeline.separators[index] ?? "")}${segment}`)
 		.join("")
 		.trim();
-	if (!remainder) {
-		return command;
+}
+
+function buildPipelineSuffix(parsedPipeline: ParsedPipeline): string {
+	return parsedPipeline.suffix ? ` ${parsedPipeline.suffix.trimStart()}` : "";
+}
+
+function parsePipelineTarget(command: string): { target: ShellSafetyTarget; parsedPipeline: ParsedPipeline } | null {
+	const target = splitLeadingRtkDbPathExportPrelude(command);
+	const parsedPipeline = parseSimpleTopLevelPipeline(target.command);
+	return parsedPipeline ? { target, parsedPipeline } : null;
+}
+
+function extractPipelineProducer(parsedPipeline: ParsedPipeline): ProducerRewritePlan | null {
+	return extractProducerRewritePlan(parsedPipeline.segments[0] ?? "", parsedPipeline.separators[0] ?? "");
+}
+
+function buildWindowsPipelineSafetyRewrite(command: string): string | null {
+	const pipelineTarget = parsePipelineTarget(command);
+	if (!pipelineTarget) {
+		return null;
 	}
 
-	const suffix = parsedPipeline.suffix ? ` ${parsedPipeline.suffix.trimStart()}` : "";
-	return `${target.environmentPrelude}${buildBufferedPipelineCommand(producer, remainder)}${suffix}`;
+	const producer = extractPipelineProducer(pipelineTarget.parsedPipeline);
+	const remainder = buildPipelineRemainder(pipelineTarget.parsedPipeline);
+	if (!producer || !remainder) {
+		return null;
+	}
+
+	return `${pipelineTarget.target.environmentPrelude}${buildBufferedPipelineCommand(producer, remainder)}${buildPipelineSuffix(pipelineTarget.parsedPipeline)}`;
+}
+
+export function applyRewrittenCommandShellSafetyFixups(command: string, platform: string = process.platform): string {
+	return platform === "win32" ? (buildWindowsPipelineSafetyRewrite(command) ?? command) : command;
 }
