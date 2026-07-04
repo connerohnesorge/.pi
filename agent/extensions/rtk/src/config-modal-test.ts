@@ -1,44 +1,45 @@
 import assert from "node:assert/strict";
-import { mock } from "node:test";
+// @ts-expect-error Bun provides bun:test at runtime, but this package does not ship Bun types.
+import { mock } from "bun:test";
 
 import { cloneDefaultConfig, runTest } from "./test-helpers.ts";
 
-mock.module("@earendil-works/pi-coding-agent", {
-	namedExports: {
-		getAgentDir: () => "/tmp/.pi/agent",
-		getSettingsListTheme: () => ({}),
-	},
-});
+mock.module("@earendil-works/pi-coding-agent", () => ({
+	getAgentDir: () => "/tmp/.pi/agent",
+	getSettingsListTheme: () => ({}),
+}));
 
 const settingsListInputs: string[] = [];
 const settingsListUpdates: Array<{ id: string; value: string }> = [];
 
-mock.module("@earendil-works/pi-tui", {
-	namedExports: {
-		Box: class {
-			addChild(): void { }
-		},
-		Container: class {
-			addChild(): void { }
-			render(): string[] {
-				return ["settings-content"];
-			}
-			invalidate(): void { }
-		},
-		SettingsList: class {
-			handleInput(data: string): void {
-				settingsListInputs.push(data);
-			}
-			updateValue(id: string, value: string): void {
-				settingsListUpdates.push({ id, value });
-			}
-		},
-		Spacer: class { },
-		Text: class { },
-		truncateToWidth: (text: string, width: number) => text.slice(0, width),
-		visibleWidth: (text: string) => text.length,
+mock.module("@earendil-works/pi-tui", () => ({
+	Box: class {
+		addChild(): void { }
 	},
-});
+	Container: class {
+		addChild(): void { }
+		render(): string[] {
+			return ["settings-content"];
+		}
+		invalidate(): void { }
+	},
+	SettingsList: class {
+		handleInput(data: string): void {
+			settingsListInputs.push(data);
+		}
+		render(): string[] {
+			return ["settings-content"];
+		}
+		updateValue(id: string, value: string): void {
+			settingsListUpdates.push({ id, value });
+		}
+		invalidate(): void { }
+	},
+	Spacer: class { },
+	Text: class { },
+	truncateToWidth: (text: string, width: number) => text.slice(0, width),
+	visibleWidth: (text: string) => text.length,
+}));
 
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b\[[0-9;]*m/g, "");
