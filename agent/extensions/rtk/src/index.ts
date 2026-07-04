@@ -170,6 +170,20 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 		return activeBashCommands.get(toolCallId);
 	};
 
+	const trackBashToolExecutionEvent = (event: unknown): Record<string, unknown> | undefined => {
+		if (!config.enabled || !config.outputCompaction.enabled) {
+			return undefined;
+		}
+
+		const eventRecord = toRecord(event);
+		if (eventRecord.toolName !== "bash") {
+			return undefined;
+		}
+
+		trackBashCommand(eventRecord.toolCallId, eventRecord.args);
+		return eventRecord;
+	};
+
 	const forgetTrackedBashCommand = (toolCallId: unknown): void => {
 		if (typeof toolCallId !== "string") {
 			return;
@@ -308,29 +322,15 @@ export default function rtkIntegrationExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_start", async (event) => {
-		if (!config.enabled || !config.outputCompaction.enabled) {
-			return;
-		}
-
-		const eventRecord = toRecord(event);
-		if (eventRecord.toolName !== "bash") {
-			return;
-		}
-
-		trackBashCommand(eventRecord.toolCallId, eventRecord.args);
+		trackBashToolExecutionEvent(event);
 	});
 
 	pi.on("tool_execution_update", async (event) => {
-		if (!config.enabled || !config.outputCompaction.enabled) {
+		const eventRecord = trackBashToolExecutionEvent(event);
+		if (!eventRecord) {
 			return;
 		}
 
-		const eventRecord = toRecord(event);
-		if (eventRecord.toolName !== "bash") {
-			return;
-		}
-
-		trackBashCommand(eventRecord.toolCallId, eventRecord.args);
 		const sanitization = sanitizeStreamingBashExecutionResult(
 			eventRecord.partialResult,
 			getTrackedBashCommand(eventRecord.toolCallId),
