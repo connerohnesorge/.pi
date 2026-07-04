@@ -745,26 +745,41 @@ interface LoopUntilDryOptions {
 }
 
 async function collectUntilDry(opts: LoopUntilDryOptions) {
-  if (!opts || typeof opts.round !== "function") throw new TypeError("loopUntilDry requires { round: (i) => items[] }");
+  assertLoopUntilDryOptions(opts);
   const key = opts.key ?? ((x: unknown) => JSON.stringify(x));
+  const state = createDrynessState();
   const consecutiveEmpty = Math.max(1, opts.consecutiveEmpty ?? 2);
   const maxRounds = opts.maxRounds ?? 50;
-  const seen = new Set<string>();
-  const all: unknown[] = [];
-  let dry = 0;
 
-  for (let r = 0; r < maxRounds && dry < consecutiveEmpty; r++) {
-    const items = await runDrynessRound(opts.round, r);
+  while (shouldRunDrynessRound(state.round, maxRounds, state.dry, consecutiveEmpty)) {
+    const items = await runDrynessRound(opts.round, state.round);
     if (items === null) break;
-    const fresh = filterFreshItems(items, seen, key);
-    if (!fresh.length) {
-      dry++;
-      continue;
-    }
-    dry = 0;
-    rememberFreshItems(fresh, seen, key, all);
+    applyDrynessRound(state, items, key);
   }
-  return all;
+  return state.all;
+}
+
+function assertLoopUntilDryOptions(opts: LoopUntilDryOptions) {
+  if (!opts || typeof opts.round !== "function") throw new TypeError("loopUntilDry requires { round: (i) => items[] }");
+}
+
+function createDrynessState() {
+  return { seen: new Set<string>(), all: [] as unknown[], round: 0, dry: 0 };
+}
+
+function shouldRunDrynessRound(round: number, maxRounds: number, dry: number, consecutiveEmpty: number) {
+  return round < maxRounds && dry < consecutiveEmpty;
+}
+
+function applyDrynessRound(state: ReturnType<typeof createDrynessState>, items: unknown[], key: (item: unknown) => string) {
+  const fresh = filterFreshItems(items, state.seen, key);
+  state.round++;
+  if (!fresh.length) {
+    state.dry++;
+    return;
+  }
+  state.dry = 0;
+  rememberFreshItems(fresh, state.seen, key, state.all);
 }
 
 async function runDrynessRound(round: LoopUntilDryOptions["round"], roundIndex: number): Promise<unknown[] | null> {
@@ -992,20 +1007,54 @@ function replayCachedAgentResult(args: {
   callIndex: number;
   callHash: string;
 }): { replayed: true; result: unknown } | { replayed: false } {
-  const { options, state, store, prompt, agentOptions, assignedPhase, displayModel, label, callIndex, callHash } = args;
-  const cached = options.resumeJournal?.get(callIndex);
-  const hashMatches = cached != null && cached.hash === callHash;
-  const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
-
-  if (hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
-    options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
-    options.onAgentEnd?.({ label, phase: assignedPhase, result: cached.result, tokens: 0, model: displayModel });
-    if (cached.storeDelta) store.applyDelta(cached.storeDelta);
-    return { replayed: true, result: cached.result };
-  }
-
-  if (!hashMatches || cachedEmptyOutput) state.firstMiss = Math.min(state.firstMiss, callIndex);
+  const cache = readReplayCache(args);
+  if (canReplayCacheHit(cache, args.callIndex, args.state.firstMiss)) return replayCacheHit(args, cache.cached);
+  noteReplayCacheMiss(args.state, args.callIndex, cache);
   return { replayed: false };
+}
+
+function readReplayCache(args: {
+  options: WorkflowRunOptions;
+  agentOptions: AgentOptions;
+  callIndex: number;
+  callHash: string;
+}) {
+  const cached = args.options.resumeJournal?.get(args.callIndex);
+  const hashMatches = cached != null && cached.hash === args.callHash;
+  return {
+    cached,
+    hashMatches,
+    cachedEmptyOutput: hashMatches && isEmptyTextAgentResult(cached.result, args.agentOptions.schema),
+  };
+}
+
+function canReplayCacheHit(
+  cache: ReturnType<typeof readReplayCache>,
+  callIndex: number,
+  firstMiss: number,
+): cache is ReturnType<typeof readReplayCache> & { cached: JournalEntry } {
+  return cache.hashMatches && !cache.cachedEmptyOutput && callIndex < firstMiss;
+}
+
+function replayCacheHit(
+  args: {
+    options: WorkflowRunOptions;
+    store: SharedStore;
+    prompt: string;
+    assignedPhase: string | undefined;
+    displayModel: string | undefined;
+    label: string;
+  },
+  cached: JournalEntry,
+): { replayed: true; result: unknown } {
+  args.options.onAgentStart?.({ label: args.label, phase: args.assignedPhase, prompt: args.prompt, model: args.displayModel });
+  args.options.onAgentEnd?.({ label: args.label, phase: args.assignedPhase, result: cached.result, tokens: 0, model: args.displayModel });
+  if (cached.storeDelta) args.store.applyDelta(cached.storeDelta);
+  return { replayed: true, result: cached.result };
+}
+
+function noteReplayCacheMiss(state: RuntimeState, callIndex: number, cache: ReturnType<typeof readReplayCache>) {
+  if (!cache.hashMatches || cache.cachedEmptyOutput) state.firstMiss = Math.min(state.firstMiss, callIndex);
 }
 
 async function runLiveAgentCall(call: LiveAgentCallContext): Promise<unknown> {
