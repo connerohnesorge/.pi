@@ -9,6 +9,8 @@ type TaskPanelModule = {
   installTaskPanel: (pi: ExtensionAPI | null, manager: unknown, ui: unknown) => void;
 };
 
+type MessageCall = { content: string; customType?: string };
+
 // Loaded once before all tests
 let mod: TaskPanelModule;
 
@@ -29,8 +31,8 @@ describe("installResultDelivery", () => {
     return manager;
   }
 
-  function createMockPi(): ExtensionAPI & { _calls: { content: string; customType?: string }[] } {
-    const calls: { content: string; customType?: string }[] = [];
+  function createMockPi(): ExtensionAPI & { _calls: MessageCall[] } {
+    const calls: MessageCall[] = [];
     const obj = {
       sendMessage(msg: unknown, _opts?: unknown) {
         calls.push({
@@ -45,7 +47,26 @@ describe("installResultDelivery", () => {
       reload: () => Promise.resolve(),
       _calls: calls,
     };
-    return obj as unknown as ExtensionAPI & { _calls: { content: string; customType?: string }[] };
+    return obj as unknown as ExtensionAPI & { _calls: MessageCall[] };
+  }
+
+  function callsOf(pi: unknown) {
+    return (pi as { _calls: MessageCall[] })._calls;
+  }
+
+  function emitWithInstalled(
+    pi: unknown,
+    manager: EventEmitter,
+    event: string,
+    payload: Record<string, unknown> = { runId: "test-run-1" },
+  ) {
+    mod.installResultDelivery(pi as ExtensionAPI, manager);
+    manager.emit(event, payload);
+    return callsOf(pi);
+  }
+
+  function completeWithInstalled(pi: unknown, manager: EventEmitter) {
+    return emitWithInstalled(pi, manager, "complete");
   }
 
   function makeRun(overrides: Record<string, unknown> = {}) {
@@ -81,10 +102,7 @@ describe("installResultDelivery", () => {
     const pi = createMockPi();
     const manager = createMockManager(makeRun());
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = completeWithInstalled(pi, manager);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].customType, "workflow-result");
     assert.ok(calls[0].content.includes("All tests passed"), "should contain All tests passed");
@@ -102,10 +120,7 @@ describe("installResultDelivery", () => {
     const run = makeRun({ result: { result: { report: "Report body", verdict: "" } } });
     const manager = createMockManager(run);
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = completeWithInstalled(pi, manager);
     assert.ok(calls[0].content.includes("Report body"), "should contain Report body");
   });
 
@@ -114,10 +129,7 @@ describe("installResultDelivery", () => {
     const run = makeRun({ result: { result: { summary: "Short summary" } } });
     const manager = createMockManager(run);
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = completeWithInstalled(pi, manager);
     assert.ok(calls[0].content.includes("Short summary"), "should contain Short summary");
   });
 
@@ -126,10 +138,7 @@ describe("installResultDelivery", () => {
     const run = makeRun({ result: { result: "Plain string result" } });
     const manager = createMockManager(run);
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = completeWithInstalled(pi, manager);
     assert.ok(calls[0].content.includes("Plain string result"), "should contain Plain string result");
   });
 
@@ -138,10 +147,7 @@ describe("installResultDelivery", () => {
     const run = makeRun({ result: { result: { foo: "x".repeat(500), bar: "y".repeat(500) } } });
     const manager = createMockManager(run);
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = completeWithInstalled(pi, manager);
     assert.ok(calls[0].content.includes("foo"), "should contain foo");
     assert.ok(calls[0].content.includes("…(truncated)"), "should contain …(truncated)");
   });
@@ -151,11 +157,8 @@ describe("installResultDelivery", () => {
     const run = makeRun({ result: { result: undefined } });
     const manager = createMockManager(run);
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
+    const calls = completeWithInstalled(pi, manager);
     // Should not crash; should still deliver a message
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("null"), "should contain null for undefined result");
   });
@@ -171,7 +174,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
 
     manager.emit("complete", { runId: "test-run-1" });
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = callsOf(pi);
     assert.equal(calls.length, 1); // exactly once, not twice
   });
 
@@ -201,10 +204,7 @@ describe("installResultDelivery", () => {
     const run = makeRun({ background: false });
     const manager = createMockManager(run);
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = completeWithInstalled(pi, manager);
     assert.equal(calls.length, 0);
   });
 
@@ -214,10 +214,10 @@ describe("installResultDelivery", () => {
     const pi = createMockPi();
     const manager = createMockManager(makeRun());
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("error", { runId: "test-run-1", error: { message: "Something went wrong" } });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = emitWithInstalled(pi, manager, "error", {
+      runId: "test-run-1",
+      error: { message: "Something went wrong" },
+    });
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("failed"), "should contain failed");
     assert.ok(calls[0].content.includes("Something went wrong"), "should contain Something went wrong");
@@ -231,7 +231,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("error", { runId: "test-run-1", error: { message: "fail" } });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = callsOf(pi);
     assert.equal(calls.length, 0);
   });
 
@@ -241,15 +241,12 @@ describe("installResultDelivery", () => {
     const pi = createMockPi();
     const manager = createMockManager(makeRun());
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.emit("paused", {
+    const calls = emitWithInstalled(pi, manager, "paused", {
       runId: "test-run-1",
       reason: "usage_limit",
       error: { message: "Codex usage limit reached (plus plan)." },
       resetHint: "Resets in ~3h",
     });
-
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("paused"), "should say paused");
     assert.ok(calls[0].content.includes("/workflows resume test-run-1"), "should name the resume command");
@@ -264,7 +261,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("paused", { runId: "test-run-1" });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = callsOf(pi);
     assert.equal(calls.length, 0);
   });
 
@@ -275,7 +272,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
     manager.emit("paused", { runId: "test-run-1", reason: "usage_limit", error: { message: "usage limit" } });
 
-    const calls = (pi as unknown as { _calls: { content: string }[] })._calls;
+    const calls = callsOf(pi);
     assert.equal(calls.length, 0);
   });
 
@@ -293,8 +290,8 @@ describe("installResultDelivery", () => {
 
     manager.emit("complete", { runId: "test-run-1" });
 
-    const calls1 = (pi1 as unknown as { _calls: { content: string }[] })._calls;
-    const calls2 = (pi2 as unknown as { _calls: { content: string }[] })._calls;
+    const calls1 = callsOf(pi1);
+    const calls2 = callsOf(pi2);
     assert.equal(calls1.length, 0, "pi1 should not be used after refresh");
     assert.equal(calls2.length, 1, "pi2 should receive the delivery");
   });
