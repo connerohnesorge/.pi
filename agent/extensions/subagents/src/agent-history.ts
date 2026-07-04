@@ -22,60 +22,65 @@ const DEFAULT_MAX_TEXT_CHARS = 2000;
 const DEFAULT_MAX_TOTAL_CHARS = 20000;
 
 export function compactAgentHistory(messages: unknown[], options: AgentHistoryOptions = {}): AgentHistoryEntry[] {
-  const maxEntries = positiveInt(options.maxEntries, DEFAULT_MAX_ENTRIES);
-  const maxTextChars = positiveInt(options.maxTextChars, DEFAULT_MAX_TEXT_CHARS);
-  const maxTotalChars = positiveInt(options.maxTotalChars, DEFAULT_MAX_TOTAL_CHARS);
-  const entries: AgentHistoryEntry[] = [];
+  const entries = messages.flatMap(entriesFromMessage);
+  return fitEntries(
+    entries,
+    positiveInt(options.maxEntries, DEFAULT_MAX_ENTRIES),
+    positiveInt(options.maxTextChars, DEFAULT_MAX_TEXT_CHARS),
+    positiveInt(options.maxTotalChars, DEFAULT_MAX_TOTAL_CHARS),
+  );
+}
 
-  for (const raw of messages) {
-    const message = asRecord(raw);
-    if (!message) continue;
-    const role = message.role;
-    const timestamp = typeof message.timestamp === "number" ? message.timestamp : undefined;
+function entriesFromMessage(raw: unknown): AgentHistoryEntry[] {
+  const message = asRecord(raw);
+  if (!message) return [];
 
-    if (role === "user") {
-      const text = textFromContent(message.content);
-      if (text.trim()) entries.push({ role: "user", kind: "text", text, timestamp });
-      continue;
-    }
+  const timestamp = typeof message.timestamp === "number" ? message.timestamp : undefined;
+  if (message.role === "user") return userEntries(message, timestamp);
+  if (message.role === "assistant") return assistantEntries(message, timestamp);
+  if (message.role === "toolResult") return toolResultEntries(message, timestamp);
+  return [];
+}
 
-    if (role === "assistant") {
-      for (const part of Array.isArray(message.content) ? message.content : []) {
-        const block = asRecord(part);
-        if (!block || typeof block.type !== "string") continue;
-        if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
-          entries.push({ role: "assistant", kind: "text", text: block.text, timestamp });
-        } else if (block.type === "toolCall" && typeof block.name === "string") {
-          entries.push({
-            role: "assistant",
-            kind: "toolCall",
-            toolName: block.name,
-            text: stringifyCompact(block.arguments ?? {}),
-            timestamp,
-          });
-        }
-      }
-      if (typeof message.errorMessage === "string" && message.errorMessage.trim()) {
-        entries.push({ role: "assistant", kind: "error", text: message.errorMessage, isError: true, timestamp });
-      }
-      continue;
-    }
+function userEntries(message: Record<string, unknown>, timestamp?: number): AgentHistoryEntry[] {
+  const text = textFromContent(message.content);
+  return text.trim() ? [{ role: "user", kind: "text", text, timestamp }] : [];
+}
 
-    if (role === "toolResult") {
-      const toolName = typeof message.toolName === "string" ? message.toolName : undefined;
-      const text = textFromContent(message.content) || "(no text output)";
-      entries.push({
-        role: "tool",
-        kind: message.isError ? "error" : "toolResult",
-        toolName,
-        text,
-        isError: Boolean(message.isError),
-        timestamp,
-      });
-    }
+function assistantEntries(message: Record<string, unknown>, timestamp?: number): AgentHistoryEntry[] {
+  const entries = assistantContentEntries(message.content, timestamp);
+  if (typeof message.errorMessage === "string" && message.errorMessage.trim()) {
+    entries.push({ role: "assistant", kind: "error", text: message.errorMessage, isError: true, timestamp });
   }
+  return entries;
+}
 
-  return fitEntries(entries, maxEntries, maxTextChars, maxTotalChars);
+function assistantContentEntries(content: unknown, timestamp?: number): AgentHistoryEntry[] {
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((part): AgentHistoryEntry[] => {
+    const block = asRecord(part);
+    if (!block || typeof block.type !== "string") return [];
+    if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+      return [{ role: "assistant", kind: "text", text: block.text, timestamp }];
+    }
+    if (block.type === "toolCall" && typeof block.name === "string") {
+      return [{ role: "assistant", kind: "toolCall", toolName: block.name, text: stringifyCompact(block.arguments ?? {}), timestamp }];
+    }
+    return [];
+  });
+}
+
+function toolResultEntries(message: Record<string, unknown>, timestamp?: number): AgentHistoryEntry[] {
+  return [
+    {
+      role: "tool",
+      kind: message.isError ? "error" : "toolResult",
+      toolName: typeof message.toolName === "string" ? message.toolName : undefined,
+      text: textFromContent(message.content) || "(no text output)",
+      isError: Boolean(message.isError),
+      timestamp,
+    },
+  ];
 }
 
 function fitEntries(

@@ -151,43 +151,54 @@ async function handleRunCommand(
   ctx: ExtensionCommandContext,
   opts: WorkflowCommandOptions,
 ): Promise<void> {
-  const prompt = args
+  const prompt = runPromptFromArgs(args, parts);
+  if (!prompt) return ctx.ui.notify(RUN_USAGE, "warning");
+
+  ensureWorkflowTool(pi);
+  ctx.ui.notify(`Forcing workflow: ${shortPrompt(prompt)}`, "info");
+  await sendForcedWorkflowPrompt(prompt, pi, ctx, opts);
+}
+
+function runPromptFromArgs(args: string, parts: string[]): string {
+  return args
     .trim()
     .slice(parts[0]?.length ?? 0)
     .trim();
-  if (!prompt) {
-    ctx.ui.notify(RUN_USAGE, "warning");
-    return;
-  }
+}
 
+function ensureWorkflowTool(pi: ExtensionAPI): void {
   // Best-effort: ensure the workflow tool is active (session_start usually has).
   // Add-only so this does not interfere with the keyword hook's save/restore state.
   try {
     const active = pi.getActiveTools?.() ?? [];
-    if (!active.includes(WORKFLOW_TOOL_NAME))
-      pi.setActiveTools?.([...active, WORKFLOW_TOOL_NAME]);
+    if (!active.includes(WORKFLOW_TOOL_NAME)) pi.setActiveTools?.([...active, WORKFLOW_TOOL_NAME]);
   } catch {
     // ignore — the forced directive is the real forcing primitive
   }
+}
 
-  const effort = opts.effort;
-  const extra =
-    effort && effort.level !== "off"
-      ? effortDirective(effort.level)
-      : undefined;
-  const forced = buildForcedWorkflowPrompt(prompt, extra);
-  ctx.ui.notify(
-    `Forcing workflow: ${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}`,
-    "info",
-  );
+function shortPrompt(prompt: string): string {
+  return `${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}`;
+}
+
+async function sendForcedWorkflowPrompt(
+  prompt: string,
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  opts: WorkflowCommandOptions,
+): Promise<void> {
   try {
     await pi.sendMessage(
-      { customType: "workflow-run", content: forced, display: true },
+      { customType: "workflow-run", content: buildForcedWorkflowPrompt(prompt, runEffortDirective(opts)), display: true },
       { triggerTurn: true, deliverAs: "followUp" },
     );
   } catch {
     ctx.ui.notify("Could not start the workflow turn.", "error");
   }
+}
+
+function runEffortDirective(opts: WorkflowCommandOptions): string | undefined {
+  return opts.effort && opts.effort.level !== "off" ? effortDirective(opts.effort.level) : undefined;
 }
 
 async function handleListCommand(
@@ -267,32 +278,37 @@ async function handleLifecycleCommand(
   ctx: ExtensionCommandContext,
 ): Promise<void> {
   if (!id) return ctx.ui.notify(USAGE, "warning");
-  if (sub === "stop") {
-    ctx.ui.notify(
-      manager.stop(id) ? `Stopped ${id}` : `Cannot stop ${id} (not running)`,
-      manager.getRun(id) ? "info" : "warning",
-    );
-    return;
-  }
-  if (sub === "pause") {
-    ctx.ui.notify(
-      manager.pause(id) ? `Paused ${id}` : `Cannot pause ${id} (not running)`,
-      "info",
-    );
-    return;
-  }
-  if (sub === "resume") {
-    const ok = await manager.resume(id);
-    ctx.ui.notify(
-      ok ? `Resumed ${id}` : `Resume not available for ${id} yet`,
-      ok ? "info" : "warning",
-    );
-    return;
-  }
-  ctx.ui.notify(
-    manager.deleteRun(id) ? `Removed ${id}` : `No run ${id}`,
-    "info",
-  );
+  const result = await lifecycleResult(sub, id, manager);
+  ctx.ui.notify(result.message, result.level);
+}
+
+type NotifyLevel = "info" | "warning" | "error";
+
+async function lifecycleResult(
+  sub: string,
+  id: string,
+  manager: WorkflowManager,
+): Promise<{ message: string; level: NotifyLevel }> {
+  if (sub === "stop") return stopResult(id, manager);
+  if (sub === "pause") return pauseResult(id, manager);
+  if (sub === "resume") return resumeResult(id, manager);
+  return { message: manager.deleteRun(id) ? `Removed ${id}` : `No run ${id}`, level: "info" };
+}
+
+function stopResult(id: string, manager: WorkflowManager): { message: string; level: NotifyLevel } {
+  return {
+    message: manager.stop(id) ? `Stopped ${id}` : `Cannot stop ${id} (not running)`,
+    level: manager.getRun(id) ? "info" : "warning",
+  };
+}
+
+function pauseResult(id: string, manager: WorkflowManager): { message: string; level: NotifyLevel } {
+  return { message: manager.pause(id) ? `Paused ${id}` : `Cannot pause ${id} (not running)`, level: "info" };
+}
+
+async function resumeResult(id: string, manager: WorkflowManager): Promise<{ message: string; level: NotifyLevel }> {
+  const ok = await manager.resume(id);
+  return { message: ok ? `Resumed ${id}` : `Resume not available for ${id} yet`, level: ok ? "info" : "warning" };
 }
 
 async function handleSaveCommand(
@@ -303,46 +319,43 @@ async function handleSaveCommand(
   opts: WorkflowCommandOptions,
 ): Promise<void> {
   const name = parts[1];
-  if (!name)
-    return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
-  if (!opts.storage)
-    return ctx.ui.notify(
-      "Saving is not available (no storage configured)",
-      "error",
-    );
-  const storage = opts.storage;
-  const runs = manager.listRuns();
+  if (!name) return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
+  if (!opts.storage) return ctx.ui.notify("Saving is not available (no storage configured)", "error");
+
   const runIdArg = parts[2];
-  // Pick the named run, else the most recent run that still has its script.
-  const run = runIdArg
-    ? runs.find((r) => r.runId === runIdArg)
-    : runs.find((r) => r.script);
-  if (!run?.script) {
-    ctx.ui.notify(
-      runIdArg ? `No run ${runIdArg} with a script` : "No saved run to save",
-      "error",
-    );
-    return;
-  }
-  let saved: ReturnType<WorkflowStorage["save"]>;
-  try {
-    saved = storage.save({
-      name,
-      description: run.workflowName,
-      script: run.script,
-      location: "project",
-    });
-  } catch (error) {
-    ctx.ui.notify(
-      error instanceof Error ? error.message : String(error),
-      "error",
-    );
-    return;
-  }
+  const run = findSavableRun(manager.listRuns(), runIdArg);
+  if (!run?.script) return ctx.ui.notify(missingSavableRunMessage(runIdArg), "error");
+
+  const saved = saveWorkflow(ctx, opts.storage, name, run);
+  if (!saved) return;
+
   registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
-    storage.list().some((w) => w.name === saved.name),
+    opts.storage?.list().some((w) => w.name === saved.name) ?? false,
   );
   ctx.ui.notify(`Saved /${name} (from ${run.runId})`, "info");
+}
+
+function findSavableRun(runs: PersistedRunState[], runIdArg: string | undefined): PersistedRunState | undefined {
+  // Pick the named run, else the most recent run that still has its script.
+  return runIdArg ? runs.find((r) => r.runId === runIdArg) : runs.find((r) => r.script);
+}
+
+function missingSavableRunMessage(runIdArg: string | undefined): string {
+  return runIdArg ? `No run ${runIdArg} with a script` : "No saved run to save";
+}
+
+function saveWorkflow(
+  ctx: ExtensionCommandContext,
+  storage: WorkflowStorage,
+  name: string,
+  run: PersistedRunState,
+): ReturnType<WorkflowStorage["save"]> | null {
+  try {
+    return storage.save({ name, description: run.workflowName, script: run.script, location: "project" });
+  } catch (error) {
+    ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+    return null;
+  }
 }
 
 /** Register the `/workflows` command against the shared manager. Idempotent. */
