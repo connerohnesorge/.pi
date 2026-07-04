@@ -7,6 +7,7 @@ import {
 	registerPromptallExtension,
 	selectPromptWithTui,
 } from "../index.ts";
+import { createRuntimeRegistries } from "../../tests/runtime-harness.ts";
 import type { PromptHistoryItem } from "../prompt-history.ts";
 
 function prompt(id: string, text: string, timestampMs: number): PromptHistoryItem {
@@ -21,27 +22,11 @@ function prompt(id: string, text: string, timestampMs: number): PromptHistoryIte
 }
 
 function createHarness(options: { mode?: string; prompts?: PromptHistoryItem[]; selected?: PromptHistoryItem | null } = {}) {
-	const commands = new Map<string, any>();
-	const shortcuts = new Map<string, any>();
-	const events = new Map<string, any[]>();
+	const { commands, shortcuts, events, pi } = createRuntimeRegistries();
 	let loadCalls = 0;
 	let selectCalls = 0;
 	let editorText = "existing editor text";
 	const notifications: Array<{ message: string; type: string }> = [];
-
-	const pi = {
-		on(name: string, handler: any) {
-			const handlers = events.get(name) ?? [];
-			handlers.push(handler);
-			events.set(name, handlers);
-		},
-		registerCommand(name: string, command: any) {
-			commands.set(name, command);
-		},
-		registerShortcut(shortcut: string, shortcutHandler: any) {
-			shortcuts.set(shortcut, shortcutHandler);
-		},
-	};
 
 	const ctx = {
 		mode: options.mode ?? "tui",
@@ -98,9 +83,9 @@ function createHarness(options: { mode?: string; prompts?: PromptHistoryItem[]; 
 	};
 }
 
-test("runtime registers /promptall command and Ctrl+Alt+R shortcut", () => {
+test("runtime registers /promptall command and shortcut", () => {
 	const h = createHarness();
-	assert.equal(PROMPTALL_SHORTCUT, "ctrl+alt+r");
+	assert.equal(PROMPTALL_SHORTCUT, "ctrl+r");
 	assert.ok(h.shortcuts.has(PROMPTALL_SHORTCUT));
 	assert.ok(h.commands.has("promptall"));
 });
@@ -117,7 +102,7 @@ test("/promptall inserts the selected prompt without submitting it", async () =>
 	assert.match(h.notifications.at(-1)?.message ?? "", /Prompt inserted/);
 });
 
-test("Ctrl+Alt+R shortcut uses the same prompt insertion flow", async () => {
+test("promptall shortcut uses the same prompt insertion flow", async () => {
 	const selected = prompt("p1", "from editor shortcut", 2000);
 	const h = createHarness({ prompts: [selected] });
 
