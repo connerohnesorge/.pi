@@ -4,6 +4,30 @@ import type { AgentDefinition, AgentRegistry } from "../src/agent-registry.ts";
 import { SharedStore } from "../src/shared-store.ts";
 import { runWorkflow } from "../src/workflow.ts";
 
+type StoreSystemTool = { name: string; execute: (id: string, p: unknown) => Promise<unknown> };
+type StoreAgentGet = { key: string; found: boolean | undefined; value: unknown };
+
+function createStoreAgent(onGet?: (get: StoreAgentGet) => unknown) {
+  return {
+    async run(prompt: string, opts: { systemTools?: StoreSystemTool[] }) {
+      if (prompt.startsWith("put:")) {
+        const [, key, val] = prompt.split(":");
+        await opts.systemTools?.find((t) => t.name === "store_put")?.execute("", { key, value: val });
+        return `wrote ${key}`;
+      }
+      if (prompt.startsWith("get:")) {
+        const [, key] = prompt.split(":");
+        const res = (await opts.systemTools?.find((t) => t.name === "store_get")?.execute("", { key })) as {
+          details?: { value?: unknown; found?: boolean };
+        };
+        const got = { key, found: res?.details?.found, value: res?.details?.value };
+        return onGet?.(got) ?? got;
+      }
+      return "ok";
+    },
+  };
+}
+
 // ─── SharedStore unit tests ───────────────────────────────────────────────────
 
 test("SharedStore.put / get / has basics", () => {
@@ -196,28 +220,7 @@ test("nested workflow() concurrent with its parent does not collide on shared-st
   // steal/overwrite each other's journaled delta. Both writes must survive.
   const journal: import("../src/workflow.ts").JournalEntry[] = [];
 
-  const agent = {
-    async run(
-      prompt: string,
-      opts: {
-        systemTools?: Array<{ name: string; execute: (id: string, p: unknown) => Promise<unknown> }>;
-      },
-    ) {
-      if (prompt.startsWith("put:")) {
-        const [, key, val] = prompt.split(":");
-        await opts.systemTools?.find((t) => t.name === "store_put")?.execute("", { key, value: val });
-        return `wrote ${key}`;
-      }
-      if (prompt.startsWith("get:")) {
-        const [, key] = prompt.split(":");
-        const res = (await opts.systemTools?.find((t) => t.name === "store_get")?.execute("", { key })) as {
-          details?: { value?: unknown; found?: boolean };
-        };
-        return { key, found: res?.details?.found, value: res?.details?.value };
-      }
-      return "ok";
-    },
-  };
+  const agent = createStoreAgent();
 
   // Outer script: kicks off a nested workflow() concurrently with its own
   // parent-level agent() call, both writing to the shared store at the same
@@ -272,29 +275,10 @@ test("resume replays parallel-agent deltas additively so no writes are lost", as
 
   // Agent that either writes to the store (put agent) or reads from it (check agent).
   const writeCalls: Record<string, string> = {};
-  const agent = {
-    async run(
-      prompt: string,
-      opts: {
-        systemTools?: Array<{ name: string; execute: (id: string, p: unknown) => Promise<unknown> }>;
-      },
-    ) {
-      if (prompt.startsWith("put:")) {
-        const [, key, val] = prompt.split(":");
-        await opts.systemTools?.find((t) => t.name === "store_put")?.execute("", { key, value: val });
-        return `wrote ${key}`;
-      }
-      if (prompt.startsWith("get:")) {
-        const [, key] = prompt.split(":");
-        const res = (await opts.systemTools?.find((t) => t.name === "store_get")?.execute("", { key })) as {
-          details?: { value?: unknown; found?: boolean };
-        };
-        writeCalls[key] = String(res?.details?.value ?? "MISSING");
-        return `got ${key}:${writeCalls[key]}`;
-      }
-      return "ok";
-    },
-  };
+  const agent = createStoreAgent(({ key, value }) => {
+    writeCalls[key] = String(value ?? "MISSING");
+    return `got ${key}:${writeCalls[key]}`;
+  });
 
   // Script: two parallel puts, then one sequential get that should see both.
   const script = `
