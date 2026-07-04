@@ -360,25 +360,44 @@ function remapTransformedContentToAnchorSafeLines(
 	return remappedLines;
 }
 
+const ANCHOR_SAFE_TRUNCATE_MARKER =
+	"[RTK anchor-safe truncate: remaining anchored read lines omitted to preserve complete anchors]";
+const ANCHOR_SAFE_TRUNCATE_MARKER_LINE = {
+	text: ANCHOR_SAFE_TRUNCATE_MARKER,
+	content: ANCHOR_SAFE_TRUNCATE_MARKER,
+};
+
+function nextAnchorSafeReadCharCount(currentCount: number, emittedLineCount: number, line: AnchorSafeReadLine): number {
+	return currentCount + (emittedLineCount > 0 ? 1 : 0) + line.text.length;
+}
+
+function remainingAnchorSafeMarkerLength(remainingLineCount: number, nextCharCount: number): number {
+	if (remainingLineCount <= 0) {
+		return 0;
+	}
+
+	return (nextCharCount > 0 ? 1 : 0) + ANCHOR_SAFE_TRUNCATE_MARKER.length;
+}
+
+function appendAnchorSafeTruncateMarker(lines: AnchorSafeReadLine[]): AnchorSafeReadLine[] {
+	return lines.length > 0 ? [...lines, ANCHOR_SAFE_TRUNCATE_MARKER_LINE] : [ANCHOR_SAFE_TRUNCATE_MARKER_LINE];
+}
+
 function truncateAnchorSafeReadLines(lines: AnchorSafeReadLine[], maxChars: number): AnchorSafeReadLine[] {
 	if (renderAnchorSafeReadBody(lines).length <= maxChars) {
 		return lines;
 	}
 
-	const marker = "[RTK anchor-safe truncate: remaining anchored read lines omitted to preserve complete anchors]";
 	const truncatedLines: AnchorSafeReadLine[] = [];
 	let charCount = 0;
 
 	for (let index = 0; index < lines.length; index += 1) {
 		const line = lines[index]!;
-		const separatorLength = truncatedLines.length > 0 ? 1 : 0;
-		const nextCharCount = charCount + separatorLength + line.text.length;
-		const remainingAfter = lines.length - index - 1;
-		const markerLength = remainingAfter > 0 ? (nextCharCount > 0 ? 1 : 0) + marker.length : 0;
+		const nextCharCount = nextAnchorSafeReadCharCount(charCount, truncatedLines.length, line);
+		const markerLength = remainingAnchorSafeMarkerLength(lines.length - index - 1, nextCharCount);
 
 		if (nextCharCount + markerLength > maxChars) {
-			const markerLine = { text: marker, content: marker };
-			return truncatedLines.length > 0 ? [...truncatedLines, markerLine] : [markerLine];
+			return appendAnchorSafeTruncateMarker(truncatedLines);
 		}
 
 		truncatedLines.push(line);
@@ -416,8 +435,19 @@ function applyAnchorReadCharTruncation(
 	return truncateAnchorSafeReadLines(lines, Math.max(1, maxChars - nonBodyOverhead));
 }
 
+interface AnchorReadCompactionState {
+	lines: AnchorSafeReadLine[];
+	techniques: string[];
+}
+
+interface AnchorReadCompactionStep {
+	technique: string;
+	isApplicable(lines: AnchorSafeReadLine[]): boolean;
+	apply(lines: AnchorSafeReadLine[]): AnchorSafeReadLine[];
+}
+
 function setAnchorLinesIfChanged(
-	state: { lines: AnchorSafeReadLine[]; techniques: string[] },
+	state: AnchorReadCompactionState,
 	nextLines: AnchorSafeReadLine[],
 	technique: string,
 ): void {
@@ -425,6 +455,44 @@ function setAnchorLinesIfChanged(
 		state.lines = nextLines;
 		state.techniques.push(technique);
 	}
+}
+
+function anchoredReadCompactionSteps(
+	text: string,
+	parts: AnchorSafeReadParts,
+	filePath: string,
+	config: RtkIntegrationConfig,
+): AnchorReadCompactionStep[] {
+	const compaction = config.outputCompaction;
+	const language = detectLanguage(filePath);
+	const steps: AnchorReadCompactionStep[] = [];
+
+	const sourceCodeFiltering = compaction.sourceCodeFiltering;
+	if (compaction.sourceCodeFilteringEnabled && sourceCodeFiltering !== "none" && shouldApplyReadSourceFiltering(text, config)) {
+		steps.push({
+			technique: `source:${sourceCodeFiltering}`,
+			isApplicable: () => true,
+			apply: (lines) => applyAnchorReadSourceFiltering(lines, language, sourceCodeFiltering),
+		});
+	}
+
+	if (compaction.smartTruncate.enabled) {
+		steps.push({
+			technique: "smart-truncate",
+			isApplicable: (lines) => lines.length > compaction.smartTruncate.maxLines,
+			apply: (lines) => applyAnchorReadSmartTruncate(lines, language, compaction.smartTruncate.maxLines),
+		});
+	}
+
+	if (compaction.truncate.enabled) {
+		steps.push({
+			technique: "truncate",
+			isApplicable: (lines) => renderAnchorSafeReadText(parts, lines).length > compaction.truncate.maxChars,
+			apply: (lines) => applyAnchorReadCharTruncation(parts, lines, compaction.truncate.maxChars),
+		});
+	}
+
+	return steps;
 }
 
 function compactAnchoredReadText(
@@ -437,36 +505,11 @@ function compactAnchoredReadText(
 		return { text, techniques: [] };
 	}
 
-	const state = { lines: toAnchorSafeReadLines(parts.anchoredLines), techniques: [] as string[] };
-	const compaction = config.outputCompaction;
-	const language = detectLanguage(filePath);
-
-	if (
-		compaction.sourceCodeFilteringEnabled &&
-		compaction.sourceCodeFiltering !== "none" &&
-		shouldApplyReadSourceFiltering(text, config)
-	) {
-		setAnchorLinesIfChanged(
-			state,
-			applyAnchorReadSourceFiltering(state.lines, language, compaction.sourceCodeFiltering),
-			`source:${compaction.sourceCodeFiltering}`,
-		);
-	}
-
-	if (compaction.smartTruncate.enabled && state.lines.length > compaction.smartTruncate.maxLines) {
-		setAnchorLinesIfChanged(
-			state,
-			applyAnchorReadSmartTruncate(state.lines, language, compaction.smartTruncate.maxLines),
-			"smart-truncate",
-		);
-	}
-
-	if (compaction.truncate.enabled && renderAnchorSafeReadText(parts, state.lines).length > compaction.truncate.maxChars) {
-		setAnchorLinesIfChanged(
-			state,
-			applyAnchorReadCharTruncation(parts, state.lines, compaction.truncate.maxChars),
-			"truncate",
-		);
+	const state: AnchorReadCompactionState = { lines: toAnchorSafeReadLines(parts.anchoredLines), techniques: [] };
+	for (const step of anchoredReadCompactionSteps(text, parts, filePath, config)) {
+		if (step.isApplicable(state.lines)) {
+			setAnchorLinesIfChanged(state, step.apply(state.lines), step.technique);
+		}
 	}
 
 	return {
