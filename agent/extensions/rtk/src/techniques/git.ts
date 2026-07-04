@@ -102,6 +102,63 @@ interface StatusStats {
 	untrackedFiles: string[];
 }
 
+const STAGED_STATUS = ["M", "A", "D", "R", "C"];
+const MODIFIED_STATUS = ["M", "D"];
+
+function parseStatusBranch(line: string): string | null {
+	const shortBranch = line.match(/^## (.+)/)?.[1];
+	if (shortBranch) {
+		return shortBranch.split("...")[0] ?? shortBranch;
+	}
+
+	return line.match(/^# branch\.head (.+)/)?.[1] ?? null;
+}
+
+function accumulateStatusLine(stats: StatusStats, line: string): void {
+	if (line.length < 3) {
+		return;
+	}
+
+	const status = line.slice(0, 2);
+	const filename = line.slice(3);
+	const indexStatus = status[0];
+	const worktreeStatus = status[1];
+
+	if (STAGED_STATUS.includes(indexStatus)) {
+		stats.staged++;
+		stats.stagedFiles.push(filename);
+	}
+
+	if (indexStatus === "U") {
+		stats.conflicts++;
+	}
+
+	if (MODIFIED_STATUS.includes(worktreeStatus)) {
+		stats.modified++;
+		stats.modifiedFiles.push(filename);
+	}
+
+	if (status === "??") {
+		stats.untracked++;
+		stats.untrackedFiles.push(filename);
+	}
+}
+
+function appendFileList(result: string, label: string, count: number, files: string[], limit: number): string {
+	if (count === 0) {
+		return result;
+	}
+
+	result += `${label}: ${count} files\n`;
+	for (const file of files.slice(0, limit)) {
+		result += `  ${file}\n`;
+	}
+	if (count > limit) {
+		result += `  ... +${count - limit} more\n`;
+	}
+	return result;
+}
+
 function compactStatus(output: string): string {
 	const lines = output.split("\n");
 
@@ -122,74 +179,19 @@ function compactStatus(output: string): string {
 	let branchName = "";
 
 	for (const line of lines) {
-		if (line.startsWith("##")) {
-			const match = line.match(/## (.+)/);
-			if (match?.[1]) {
-				branchName = match[1].split("...")[0] ?? match[1];
-			}
+		const parsedBranch = parseStatusBranch(line);
+		if (parsedBranch !== null) {
+			branchName = parsedBranch;
 			continue;
 		}
 
-		if (line.length < 3) {
-			continue;
-		}
-
-		const status = line.slice(0, 2);
-		const filename = line.slice(3);
-		const indexStatus = status[0];
-		const worktreeStatus = status[1];
-
-		if (["M", "A", "D", "R", "C"].includes(indexStatus)) {
-			stats.staged++;
-			stats.stagedFiles.push(filename);
-		}
-
-		if (indexStatus === "U") {
-			stats.conflicts++;
-		}
-
-		if (["M", "D"].includes(worktreeStatus)) {
-			stats.modified++;
-			stats.modifiedFiles.push(filename);
-		}
-
-		if (status === "??") {
-			stats.untracked++;
-			stats.untrackedFiles.push(filename);
-		}
+		accumulateStatusLine(stats, line);
 	}
 
 	let result = `Branch: ${branchName}\n`;
-
-	if (stats.staged > 0) {
-		result += `Staged: ${stats.staged} files\n`;
-		for (const file of stats.stagedFiles.slice(0, 5)) {
-			result += `  ${file}\n`;
-		}
-		if (stats.staged > 5) {
-			result += `  ... +${stats.staged - 5} more\n`;
-		}
-	}
-
-	if (stats.modified > 0) {
-		result += `Modified: ${stats.modified} files\n`;
-		for (const file of stats.modifiedFiles.slice(0, 5)) {
-			result += `  ${file}\n`;
-		}
-		if (stats.modified > 5) {
-			result += `  ... +${stats.modified - 5} more\n`;
-		}
-	}
-
-	if (stats.untracked > 0) {
-		result += `Untracked: ${stats.untracked} files\n`;
-		for (const file of stats.untrackedFiles.slice(0, 3)) {
-			result += `  ${file}\n`;
-		}
-		if (stats.untracked > 3) {
-			result += `  ... +${stats.untracked - 3} more\n`;
-		}
-	}
+	result = appendFileList(result, "Staged", stats.staged, stats.stagedFiles, 5);
+	result = appendFileList(result, "Modified", stats.modified, stats.modifiedFiles, 5);
+	result = appendFileList(result, "Untracked", stats.untracked, stats.untrackedFiles, 3);
 
 	if (stats.conflicts > 0) {
 		result += `Conflicts: ${stats.conflicts} files\n`;
