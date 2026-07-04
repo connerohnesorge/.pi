@@ -174,64 +174,91 @@ export function renderWorkflowLines(
 ): string[] {
   const maxAgents = options.maxAgents ?? 8;
   const showResultPreviews = options.showResultPreviews ?? false;
+  const lines = [renderWorkflowHeader(snapshot, theme)];
+  const rendered = new Set<WorkflowAgentSnapshot>();
+
+  for (const phase of workflowPhaseNames(snapshot)) {
+    const agents = snapshot.agents.filter((agent) => agent.phase === phase);
+    for (const agent of agents) rendered.add(agent);
+    lines.push(...renderPhaseLines(snapshot, phase, agents, maxAgents, showResultPreviews, theme));
+  }
+
+  lines.push(...renderUnphasedLines(snapshot, rendered, maxAgents, showResultPreviews, theme));
+  return lines;
+}
+
+function renderWorkflowHeader(snapshot: WorkflowSnapshot, theme: ThemeLike): string {
   const state =
     snapshot.errorCount > 0
       ? `, ${snapshot.errorCount} errors`
       : snapshot.runningCount > 0
         ? `, ${snapshot.runningCount} running`
         : "";
-  // Build header with token info (and cost when the provider reports it)
   const usage = snapshot.tokenUsage;
   const costInfo = usage?.cost ? ` · $${usage.cost.toFixed(4)}` : "";
   const tokenInfo = usage ? ` · ${usage.total.toLocaleString()} tokens${costInfo}` : "";
-  const lines = [
-    `${theme.bold(`◆ Workflow: ${snapshot.name}`)} (${snapshot.doneCount}/${snapshot.agentCount} done${state}${tokenInfo})`,
-  ];
+  return `${theme.bold(`◆ Workflow: ${snapshot.name}`)} (${snapshot.doneCount}/${snapshot.agentCount} done${state}${tokenInfo})`;
+}
 
-  const phaseNames = snapshot.phases.length
+function workflowPhaseNames(snapshot: WorkflowSnapshot): string[] {
+  return snapshot.phases.length
     ? snapshot.phases
     : unique(snapshot.agents.map((agent) => agent.phase).filter(Boolean) as string[]);
-  const rendered = new Set<WorkflowAgentSnapshot>();
+}
 
-  for (const phase of phaseNames) {
-    const agents = snapshot.agents.filter((agent) => agent.phase === phase);
-    for (const agent of agents) rendered.add(agent);
-    const done = agents.filter((agent) => agent.status === "done").length;
-    const running = agents.filter((agent) => agent.status === "running").length;
-    const errors = agents.filter((agent) => agent.status === "error").length;
-    const skipped = agents.filter((agent) => agent.status === "skipped").length;
-    const complete = agents.length > 0 && done + errors + skipped === agents.length;
-    const marker = running > 0 || (!complete && snapshot.currentPhase === phase) ? "▶" : complete ? "✓" : " ";
-    lines.push(
-      theme.fg("accent", `  ${marker} ${phase}`) +
-        theme.fg(
-          "dim",
-          ` ${done}/${agents.length}${running ? ` · ${running} running` : ""}${errors ? ` · ${errors} errors` : ""}${skipped ? ` · ${skipped} skipped` : ""}`,
-        ),
-    );
-
-    const visibleAgents = agents.slice(-maxAgents);
-    for (const agent of visibleAgents) {
-      const order = `[${agent.id}]`;
-      const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
-      const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
-      lines.push(`    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
-    }
-    if (agents.length > visibleAgents.length)
-      lines.push(theme.fg("dim", `    … ${agents.length - visibleAgents.length} earlier agents`));
-  }
-
-  const unphased = snapshot.agents.filter((agent) => !rendered.has(agent));
-  if (unphased.length) {
-    lines.push(theme.fg("accent", "  Unphased"));
-    for (const agent of unphased.slice(-maxAgents)) {
-      const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
-      const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
-      lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`);
-    }
-  }
-
+function renderPhaseLines(
+  snapshot: WorkflowSnapshot,
+  phase: string,
+  agents: WorkflowAgentSnapshot[],
+  maxAgents: number,
+  showResultPreviews: boolean,
+  theme: ThemeLike,
+): string[] {
+  const status = phaseStatus(agents);
+  const complete = agents.length > 0 && status.done + status.errors + status.skipped === agents.length;
+  const marker = status.running > 0 || (!complete && snapshot.currentPhase === phase) ? "▶" : complete ? "✓" : " ";
+  const visibleAgents = agents.slice(-maxAgents);
+  const lines = [
+    theme.fg("accent", `  ${marker} ${phase}`) +
+      theme.fg(
+        "dim",
+        ` ${status.done}/${agents.length}${status.running ? ` · ${status.running} running` : ""}${status.errors ? ` · ${status.errors} errors` : ""}${status.skipped ? ` · ${status.skipped} skipped` : ""}`,
+      ),
+    ...visibleAgents.map((agent) => renderAgentLine(agent, showResultPreviews, theme)),
+  ];
+  if (agents.length > visibleAgents.length)
+    lines.push(theme.fg("dim", `    … ${agents.length - visibleAgents.length} earlier agents`));
   return lines;
+}
+
+function phaseStatus(agents: WorkflowAgentSnapshot[]) {
+  return {
+    done: agents.filter((agent) => agent.status === "done").length,
+    running: agents.filter((agent) => agent.status === "running").length,
+    errors: agents.filter((agent) => agent.status === "error").length,
+    skipped: agents.filter((agent) => agent.status === "skipped").length,
+  };
+}
+
+function renderUnphasedLines(
+  snapshot: WorkflowSnapshot,
+  rendered: Set<WorkflowAgentSnapshot>,
+  maxAgents: number,
+  showResultPreviews: boolean,
+  theme: ThemeLike,
+): string[] {
+  const unphased = snapshot.agents.filter((agent) => !rendered.has(agent));
+  if (!unphased.length) return [];
+  return [
+    theme.fg("accent", "  Unphased"),
+    ...unphased.slice(-maxAgents).map((agent) => renderAgentLine(agent, showResultPreviews, theme)),
+  ];
+}
+
+function renderAgentLine(agent: WorkflowAgentSnapshot, showResultPreviews: boolean, theme: ThemeLike): string {
+  const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
+  const agentTokens = agent.tokens ? theme.fg("dim", ` [${agent.tokens.toLocaleString()} tok]`) : "";
+  return `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokens}${result}`;
 }
 
 export function renderWorkflowText(snapshot: WorkflowSnapshot, completed = false): string {
