@@ -1290,158 +1290,168 @@ export default function (pi: ExtensionAPI) {
     notify(ctx, `Injected BTW ${label} (${formatExchangeCount(count)}).`, "info");
   }
 
-  async function dispatchBtwCommand(name: string, args: string, ctx: ExtensionCommandContext): Promise<boolean> {
-    const trimmedArgs = args.trim();
+  type BtwCommandHandler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 
-    if (name === "btw") {
-      const { question, save } = parseBtwArgs(trimmedArgs);
-      if (!question) {
-        await ensureBtwSession(ctx, pendingMode);
-        await ensureOverlay(ctx);
-        return true;
-      }
-
-      if (pendingMode !== "contextual") {
-        await resetThread(ctx, true, "contextual");
-      }
-
-      await runBtw(ctx, question, save, "contextual");
-      return true;
+  async function handleBtwCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    const { question, save } = parseBtwArgs(args);
+    if (!question) {
+      await ensureBtwSession(ctx, pendingMode);
+      await ensureOverlay(ctx);
+      return;
     }
 
-    if (name === "btw:tangent") {
-      const { question, save } = parseBtwArgs(trimmedArgs);
-      if (pendingMode !== "tangent") {
-        await resetThread(ctx, true, "tangent");
-      }
-
-      if (!question) {
-        await ensureBtwSession(ctx, "tangent");
-        await ensureOverlay(ctx);
-        return true;
-      }
-
-      await runBtw(ctx, question, save, "tangent");
-      return true;
-    }
-
-    if (name === "btw:new") {
+    if (pendingMode !== "contextual") {
       await resetThread(ctx, true, "contextual");
-      const { question, save } = parseBtwArgs(trimmedArgs);
-      if (question) {
-        await runBtw(ctx, question, save, "contextual");
-      } else {
-        await ensureBtwSession(ctx, "contextual");
-        setOverlayStatus("Started a fresh BTW thread.", ctx);
-        await ensureOverlay(ctx);
-        notify(ctx, "Started a fresh BTW thread.", "info");
-      }
-      return true;
     }
 
-    if (name === "btw:clear") {
-      await resetThread(ctx);
-      dismissOverlay();
-      notify(ctx, "Cleared BTW thread.", "info");
-      return true;
+    await runBtw(ctx, question, save, "contextual");
+  }
+
+  async function handleBtwTangentCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    const { question, save } = parseBtwArgs(args);
+    if (pendingMode !== "tangent") {
+      await resetThread(ctx, true, "tangent");
     }
 
-    if (name === "btw:model") {
-      const parsed = parseBtwModelArgs(trimmedArgs);
-      if (parsed.action === "invalid") {
-        setOverlayStatus(parsed.message, ctx);
-        notify(ctx, parsed.message, "error");
-        return true;
-      }
-
-      if (parsed.action === "show") {
-        const settings = await resolveBtwSettings(ctx);
-        const message = describeResolvedModel(settings);
-        setOverlayStatus(message, ctx);
-        notify(ctx, message, settings.model ? "info" : "warning");
-        return true;
-      }
-
-      if (parsed.action === "clear") {
-        await setBtwModelOverride(ctx, null);
-        return true;
-      }
-      const ref = parsed.model;
-      const resolved = ctx.modelRegistry.find(ref.provider, ref.id);
-      if (!resolved) {
-        const message = `Unknown model ${ref.provider}/${ref.id}. Use /login or /models to add it before setting it as the BTW override.`;
-        setOverlayStatus(message, ctx);
-        notify(ctx, message, "error");
-        return true;
-      }
-      await setBtwModelOverride(ctx, resolved);
-      return true;
-    }
-
-    if (name === "btw:thinking") {
-      const parsed = parseBtwThinkingArgs(trimmedArgs);
-      if (parsed.action === "show") {
-        const settings = await resolveBtwSettings(ctx);
-        const message = describeResolvedThinking(settings);
-        setOverlayStatus(message, ctx);
-        notify(ctx, message, "info");
-        return true;
-      }
-
-      await setBtwThinkingOverride(ctx, parsed.action === "clear" ? null : parsed.thinkingLevel);
-      return true;
-    }
-
-    if (name === "btw:inject") {
-      if (pendingThread.length === 0) {
-        notify(ctx, "No BTW thread to inject.", "warning");
-        return true;
-      }
-
-      setOverlayStatus("⏳ injecting into the main session...", ctx);
+    if (!question) {
+      await ensureBtwSession(ctx, "tangent");
       await ensureOverlay(ctx);
-
-      try {
-        const { thread } = await getBtwHandoffThread(ctx);
-        const instructions = trimmedArgs;
-        const content = instructions
-          ? `Here is a side conversation I had. ${instructions}\n\n${formatThread(thread)}`
-          : `Here is a side conversation I had for additional context:\n\n${formatThread(thread)}`;
-
-        await completeBtwHandoff(ctx, thread, content, "thread");
-      } catch (error) {
-        setOverlayStatus("Inject failed. Thread preserved for retry or summarize.", ctx);
-        notify(ctx, error instanceof Error ? error.message : String(error), "error");
-      }
-      return true;
+      return;
     }
 
-    if (name === "btw:summarize") {
-      if (pendingThread.length === 0) {
-        notify(ctx, "No BTW thread to summarize.", "warning");
-        return true;
-      }
+    await runBtw(ctx, question, save, "tangent");
+  }
 
-      setOverlayStatus("⏳ summarizing...", ctx);
-      await ensureOverlay(ctx);
-
-      try {
-        const { thread } = await getBtwHandoffThread(ctx);
-        const summary = await summarizeThread(ctx, thread);
-        const instructions = trimmedArgs;
-        const content = instructions
-          ? `Here is a summary of a side conversation I had. ${instructions}\n\n${summary}`
-          : `Here is a summary of a side conversation I had:\n\n${summary}`;
-
-        await completeBtwHandoff(ctx, thread, content, "summary");
-      } catch (error) {
-        setOverlayStatus("Summarize failed. Thread preserved for retry or injection.", ctx);
-        notify(ctx, error instanceof Error ? error.message : String(error), "error");
-      }
-      return true;
+  async function handleBtwNewCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    await resetThread(ctx, true, "contextual");
+    const { question, save } = parseBtwArgs(args);
+    if (question) {
+      await runBtw(ctx, question, save, "contextual");
+      return;
     }
 
-    return false;
+    await ensureBtwSession(ctx, "contextual");
+    setOverlayStatus("Started a fresh BTW thread.", ctx);
+    await ensureOverlay(ctx);
+    notify(ctx, "Started a fresh BTW thread.", "info");
+  }
+
+  async function handleBtwClearCommand(_args: string, ctx: ExtensionCommandContext): Promise<void> {
+    await resetThread(ctx);
+    dismissOverlay();
+    notify(ctx, "Cleared BTW thread.", "info");
+  }
+
+  async function handleBtwModelCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    const parsed = parseBtwModelArgs(args);
+    if (parsed.action === "invalid") {
+      setOverlayStatus(parsed.message, ctx);
+      notify(ctx, parsed.message, "error");
+      return;
+    }
+
+    if (parsed.action === "show") {
+      const settings = await resolveBtwSettings(ctx);
+      const message = describeResolvedModel(settings);
+      setOverlayStatus(message, ctx);
+      notify(ctx, message, settings.model ? "info" : "warning");
+      return;
+    }
+
+    if (parsed.action === "clear") {
+      await setBtwModelOverride(ctx, null);
+      return;
+    }
+
+    const ref = parsed.model;
+    const resolved = ctx.modelRegistry.find(ref.provider, ref.id);
+    if (!resolved) {
+      const message = `Unknown model ${ref.provider}/${ref.id}. Use /login or /models to add it before setting it as the BTW override.`;
+      setOverlayStatus(message, ctx);
+      notify(ctx, message, "error");
+      return;
+    }
+
+    await setBtwModelOverride(ctx, resolved);
+  }
+
+  async function handleBtwThinkingCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    const parsed = parseBtwThinkingArgs(args);
+    if (parsed.action === "show") {
+      const settings = await resolveBtwSettings(ctx);
+      const message = describeResolvedThinking(settings);
+      setOverlayStatus(message, ctx);
+      notify(ctx, message, "info");
+      return;
+    }
+
+    await setBtwThinkingOverride(ctx, parsed.action === "clear" ? null : parsed.thinkingLevel);
+  }
+
+  async function handleBtwInjectCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (pendingThread.length === 0) {
+      notify(ctx, "No BTW thread to inject.", "warning");
+      return;
+    }
+
+    setOverlayStatus("⏳ injecting into the main session...", ctx);
+    await ensureOverlay(ctx);
+
+    try {
+      const { thread } = await getBtwHandoffThread(ctx);
+      const content = args
+        ? `Here is a side conversation I had. ${args}\n\n${formatThread(thread)}`
+        : `Here is a side conversation I had for additional context:\n\n${formatThread(thread)}`;
+
+      await completeBtwHandoff(ctx, thread, content, "thread");
+    } catch (error) {
+      setOverlayStatus("Inject failed. Thread preserved for retry or summarize.", ctx);
+      notify(ctx, error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  async function handleBtwSummarizeCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (pendingThread.length === 0) {
+      notify(ctx, "No BTW thread to summarize.", "warning");
+      return;
+    }
+
+    setOverlayStatus("⏳ summarizing...", ctx);
+    await ensureOverlay(ctx);
+
+    try {
+      const { thread } = await getBtwHandoffThread(ctx);
+      const summary = await summarizeThread(ctx, thread);
+      const content = args
+        ? `Here is a summary of a side conversation I had. ${args}\n\n${summary}`
+        : `Here is a summary of a side conversation I had:\n\n${summary}`;
+
+      await completeBtwHandoff(ctx, thread, content, "summary");
+    } catch (error) {
+      setOverlayStatus("Summarize failed. Thread preserved for retry or injection.", ctx);
+      notify(ctx, error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  const btwCommandHandlers: Record<string, BtwCommandHandler> = {
+    btw: handleBtwCommand,
+    "btw:tangent": handleBtwTangentCommand,
+    "btw:new": handleBtwNewCommand,
+    "btw:clear": handleBtwClearCommand,
+    "btw:model": handleBtwModelCommand,
+    "btw:thinking": handleBtwThinkingCommand,
+    "btw:inject": handleBtwInjectCommand,
+    "btw:summarize": handleBtwSummarizeCommand,
+  };
+
+  async function dispatchBtwCommand(name: string, args: string, ctx: ExtensionCommandContext): Promise<boolean> {
+    const handler = btwCommandHandlers[name];
+    if (!handler) {
+      return false;
+    }
+
+    await handler(args.trim(), ctx);
+    return true;
   }
 
   function parseOverlayBtwCommand(value: string): { name: string; args: string } | null {
