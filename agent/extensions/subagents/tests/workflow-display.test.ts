@@ -67,6 +67,25 @@ function agent(
   };
 }
 
+function widgetCtx(options: { hasUI?: boolean; setWidget?: ReturnType<typeof mock.fn>; setStatus?: ReturnType<typeof mock.fn> } = {}) {
+  const setWidget = options.setWidget ?? mock.fn();
+  const setStatus = options.setStatus ?? mock.fn();
+  return {
+    setWidget,
+    setStatus,
+    ctx: { hasUI: options.hasUI ?? true, ui: { setWidget, setStatus } },
+  };
+}
+
+function renderTestComponent(factory: (input: unknown, theme: unknown) => { render: (width: number) => string[] }) {
+  return factory(null, { fg: (_c: string, t: string) => t, bold: (t: string) => t });
+}
+
+async function renderedWorkflowLinesText() {
+  const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+  return renderWorkflowLines(createWorkflowSnapshot(fakeMeta())).join("\n");
+}
+
 // ─── Module loading helpers ─────────────────────────────────────────────────
 
 async function loadDisplay() {
@@ -234,13 +253,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   it("update calls setWidget constructor once and re-renders via component", async () => {
     const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
 
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus },
-    };
-
+    const { ctx, setWidget } = widgetCtx();
     const display = createWidgetWorkflowDisplay(ctx as never, { key: "test-wf" });
 
     // Constructor registers the widget as a component factory (callback, not array)
@@ -250,13 +263,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
     assert.equal(typeof widget, "function", "widget should be a component factory function");
 
     // The component factory produces a Component with a render method
-    const comp = widget(
-      undefined as never,
-      {
-        fg: (_c: string, t: string) => t,
-        bold: (t: string) => t,
-      } as never,
-    );
+    const comp = renderTestComponent(widget);
     assert.ok(comp, "component factory should return a component");
     assert.equal(typeof comp.render, "function", "component should have a render method");
 
@@ -274,12 +281,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   it("complete does not re-register widget (constructor did it)", async () => {
     const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
 
-    const setWidget = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus: mock.fn() },
-    };
-
+    const { ctx, setWidget } = widgetCtx();
     const display = createWidgetWorkflowDisplay(ctx as never);
     assert.equal(setWidget.mock.callCount(), 1, "constructor registers widget once");
 
@@ -293,13 +295,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   it("clear removes widget and status", async () => {
     const { createWidgetWorkflowDisplay } = await loadDisplay();
 
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus },
-    };
-
+    const { ctx, setWidget, setStatus } = widgetCtx();
     const display = createWidgetWorkflowDisplay(ctx as never, { showStatus: true });
     // Constructor registers the widget once
     assert.equal(setWidget.mock.callCount(), 1);
@@ -316,13 +312,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   it("does nothing when hasUI is false", async () => {
     const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
 
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: false,
-      ui: { setWidget, setStatus },
-    };
-
+    const { ctx, setWidget } = widgetCtx({ hasUI: false });
     const display = createWidgetWorkflowDisplay(ctx as never);
     const snap = createWorkflowSnapshot(fakeMeta());
     display.update(snap);
@@ -335,12 +325,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   it("sets status line when showStatus is enabled", async () => {
     const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
 
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget: mock.fn(), setStatus },
-    };
-
+    const { ctx, setStatus } = widgetCtx();
     const display = createWidgetWorkflowDisplay(ctx as never, { key: "wf", showStatus: true });
     const snap = createWorkflowSnapshot(fakeMeta("test-wf"));
     snap.agents = [agent(1, "a1", "done", "Research"), agent(2, "a2", "running", "Research")] as never[];
@@ -354,11 +339,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
   it("re-renders via setWidget even when showStatus is false (default)", async () => {
     const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
 
-    const setWidget = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus: mock.fn() },
-    };
+    const { ctx, setWidget } = widgetCtx();
 
     // showStatus defaults to false
     const display = createWidgetWorkflowDisplay(ctx as never, { key: "wf-no-status" });
@@ -372,7 +353,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
     // Extract the re-registered factory and verify it renders the latest snapshot
     const [, factory2] = setWidget.mock.calls[1].arguments;
     assert.equal(typeof factory2, "function", "factory must be a function");
-    const comp2 = factory2(null, { fg: (_c, t) => t, bold: (t) => t });
+    const comp2 = renderTestComponent(factory2);
     assert.equal(typeof comp2.render, "function", "factory must produce a component with render()");
 
     // Spy on render to prove it produces updated output
@@ -394,7 +375,7 @@ describe("createWidgetWorkflowDisplay lifecycle", () => {
 
     // Verify the post-complete factory also renders updated content
     const [, factory3] = setWidget.mock.calls[2].arguments;
-    const comp3 = factory3(null, { fg: (_c, t) => t, bold: (t) => t });
+    const comp3 = renderTestComponent(factory3);
     const lines3 = comp3.render(80);
     assert.ok(
       lines3.some((l) => l.includes("no-status-wf")),
@@ -454,8 +435,7 @@ describe("createToolUpdateWorkflowDisplay lifecycle", () => {
   it("accepts a widget ctx and delegates to widget lifecycle", async () => {
     const { createWorkflowSnapshot, createToolUpdateWorkflowDisplay } = await loadDisplay();
 
-    const setWidget = mock.fn();
-    const ctx = { hasUI: true, ui: { setWidget, setStatus: mock.fn() } };
+    const { ctx, setWidget } = widgetCtx();
     const display = createToolUpdateWorkflowDisplay(undefined, ctx as never, { key: "tool-wf" });
 
     // Constructor registers the component factory once
@@ -536,8 +516,7 @@ describe("display pure helpers", () => {
   it("statusLine shows completed state", async () => {
     const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
     // statusLine is internal to display.ts — tested via widget display
-    const setStatus = mock.fn();
-    const ctx = { hasUI: true, ui: { setWidget: mock.fn(), setStatus } };
+    const { ctx, setStatus } = widgetCtx();
     const display = createWidgetWorkflowDisplay(ctx as never, { key: "s", showStatus: true });
     const snap = createWorkflowSnapshot(fakeMeta("bench"));
     snap.agents = [agent(1, "a1", "done", "Research")] as never[];
@@ -809,23 +788,17 @@ describe("TUI rendering has no markdown syntax", () => {
   });
 
   it("renderWorkflowLines has no **bold** markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = await renderedWorkflowLinesText();
     assert.ok(!text.includes("**"), "should not have bold markdown markers");
   });
 
   it("renderWorkflowLines has no ## heading markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = await renderedWorkflowLinesText();
     assert.ok(!text.includes("##"), "should not have heading markdown markers");
   });
 
   it("renderWorkflowLines has no code fence markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = await renderedWorkflowLinesText();
     assert.ok(!text.includes("```"), "should not have code fence markers");
   });
 
