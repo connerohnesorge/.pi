@@ -157,32 +157,7 @@ function isValidLedgerEvent(value: unknown): value is GoalLedgerEvent {
 }
 
 function sanitizeEvent(event: GoalLedgerEvent): GoalLedgerEvent {
-  switch (event.type) {
-    case "goal_created":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "goal_focused":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "goal_paused":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "goal_resumed":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "goal_tweaked":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "completion_requested":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "audit_started":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "audit_result":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "audit_skipped":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "goal_completed":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "goal_aborted":
-      return { ...event, goalId: safeGoalId(event.goalId) };
-    case "goal_unfocused":
-      return event;
-  }
+  return "goalId" in event ? { ...event, goalId: safeGoalId(event.goalId) } : event;
 }
 
 function clearGoalFocus(goals: Map<string, ReconstructedGoalState>, terminalGoals: Map<string, ReconstructedGoalState>): void {
@@ -199,95 +174,104 @@ function moveGoalToTerminal(goals: Map<string, ReconstructedGoalState>, terminal
   goals.delete(goalId);
 }
 
-export function reconstructGoalLedger(events: GoalLedgerEvent[]): ReconstructedLedgerState {
-  const goals = new Map<string, ReconstructedGoalState>();
-  const terminalGoals = new Map<string, ReconstructedGoalState>();
-  let focusedGoalId: string | null = null;
+type LedgerMutation = {
+  goals: Map<string, ReconstructedGoalState>;
+  terminalGoals: Map<string, ReconstructedGoalState>;
+  focusedGoalId: string | null;
+};
 
-  for (const event of events) {
-    switch (event.type) {
-      case "goal_created": {
-        const state: ReconstructedGoalState = {
-          goalId: event.goalId,
-          latestStatus: "active",
-          latestFocus: false,
-          createdAt: event.at,
-        };
-        goals.set(event.goalId, state);
-        break;
-      }
-      case "goal_focused": {
-        focusedGoalId = event.goalId;
-        clearGoalFocus(goals, terminalGoals);
-        const state = goals.get(event.goalId) ?? terminalGoals.get(event.goalId);
-        if (state) state.latestFocus = true;
-        break;
-      }
-      case "goal_unfocused": {
-        focusedGoalId = null;
-        clearGoalFocus(goals, terminalGoals);
-        break;
-      }
-      case "goal_paused": {
-        const state = goals.get(event.goalId);
-        if (state) {
-          state.latestStatus = event.status ?? "paused";
-          state.latestPauseReason = event.reason;
-          state.latestPauseSuggestedAction = event.suggestedAction;
-        }
-        break;
-      }
-      case "goal_resumed": {
-        const state = goals.get(event.goalId);
-        if (state) {
-          state.latestStatus = "active";
-          state.resumedAt = event.at;
-          delete state.latestPauseReason;
-          delete state.latestPauseSuggestedAction;
-        }
-        break;
-      }
-      case "goal_tweaked": {
-        const state = goals.get(event.goalId);
-        if (state) state.tweakedAt = event.at;
-        break;
-      }
-      case "completion_requested": {
-        // No status change until audit_result or goal_completed
-        break;
-      }
-      case "audit_started": {
-        // No state change
-        break;
-      }
-      case "audit_skipped": {
-        // audit was skipped; goal continues as-is
-        break;
-      }
-      case "audit_result": {
-        const state = goals.get(event.goalId) ?? terminalGoals.get(event.goalId);
-        if (state) {
-          state.latestAuditorResult = { verdict: event.verdict, report: event.report, at: event.at };
-        }
-        break;
-      }
-      case "goal_completed": {
-        moveGoalToTerminal(goals, terminalGoals, event.goalId, "complete", event.at);
-        break;
-      }
-      case "goal_aborted": {
-        moveGoalToTerminal(goals, terminalGoals, event.goalId, "aborted", event.at);
-        break;
-      }
-    }
-  }
+type LedgerEventHandler<T extends GoalLedgerEvent = GoalLedgerEvent> = (state: LedgerMutation, event: T) => void;
+
+function createdState(event: Extract<GoalLedgerEvent, { type: "goal_created" }>): ReconstructedGoalState {
+  return { goalId: event.goalId, latestStatus: "active", latestFocus: false, createdAt: event.at };
+}
+
+function currentGoal(state: LedgerMutation, goalId: string): ReconstructedGoalState | undefined {
+  return state.goals.get(goalId) ?? state.terminalGoals.get(goalId);
+}
+
+function handleGoalCreated(state: LedgerMutation, event: Extract<GoalLedgerEvent, { type: "goal_created" }>): void {
+  state.goals.set(event.goalId, createdState(event));
+}
+
+function handleGoalFocused(state: LedgerMutation, event: Extract<GoalLedgerEvent, { type: "goal_focused" }>): void {
+  state.focusedGoalId = event.goalId;
+  clearGoalFocus(state.goals, state.terminalGoals);
+  const goal = currentGoal(state, event.goalId);
+  if (goal) goal.latestFocus = true;
+}
+
+function handleGoalUnfocused(state: LedgerMutation): void {
+  state.focusedGoalId = null;
+  clearGoalFocus(state.goals, state.terminalGoals);
+}
+
+function handleGoalPaused(state: LedgerMutation, event: Extract<GoalLedgerEvent, { type: "goal_paused" }>): void {
+  const goal = state.goals.get(event.goalId);
+  if (!goal) return;
+  goal.latestStatus = event.status ?? "paused";
+  goal.latestPauseReason = event.reason;
+  goal.latestPauseSuggestedAction = event.suggestedAction;
+}
+
+function handleGoalResumed(state: LedgerMutation, event: Extract<GoalLedgerEvent, { type: "goal_resumed" }>): void {
+  const goal = state.goals.get(event.goalId);
+  if (!goal) return;
+  goal.latestStatus = "active";
+  goal.resumedAt = event.at;
+  delete goal.latestPauseReason;
+  delete goal.latestPauseSuggestedAction;
+}
+
+function handleGoalTweaked(state: LedgerMutation, event: Extract<GoalLedgerEvent, { type: "goal_tweaked" }>): void {
+  const goal = state.goals.get(event.goalId);
+  if (goal) goal.tweakedAt = event.at;
+}
+
+function handleAuditResult(state: LedgerMutation, event: Extract<GoalLedgerEvent, { type: "audit_result" }>): void {
+  const goal = currentGoal(state, event.goalId);
+  if (goal) goal.latestAuditorResult = { verdict: event.verdict, report: event.report, at: event.at };
+}
+
+function handleGoalCompleted(state: LedgerMutation, event: Extract<GoalLedgerEvent, { type: "goal_completed" }>): void {
+  moveGoalToTerminal(state.goals, state.terminalGoals, event.goalId, "complete", event.at);
+}
+
+function handleGoalAborted(state: LedgerMutation, event: Extract<GoalLedgerEvent, { type: "goal_aborted" }>): void {
+  moveGoalToTerminal(state.goals, state.terminalGoals, event.goalId, "aborted", event.at);
+}
+
+const ledgerEventHandlers: { [K in GoalLedgerEvent["type"]]?: LedgerEventHandler<Extract<GoalLedgerEvent, { type: K }>> } = {
+  goal_created: handleGoalCreated,
+  goal_focused: handleGoalFocused,
+  goal_unfocused: handleGoalUnfocused,
+  goal_paused: handleGoalPaused,
+  goal_resumed: handleGoalResumed,
+  goal_tweaked: handleGoalTweaked,
+  audit_result: handleAuditResult,
+  goal_completed: handleGoalCompleted,
+  goal_aborted: handleGoalAborted,
+};
+
+function applyLedgerEvent(state: LedgerMutation, event: GoalLedgerEvent): void {
+  ledgerEventHandlers[event.type]?.(state, event as never);
+}
+
+export function reconstructGoalLedger(events: GoalLedgerEvent[]): ReconstructedLedgerState {
+  const state: LedgerMutation = {
+    goals: new Map<string, ReconstructedGoalState>(),
+    terminalGoals: new Map<string, ReconstructedGoalState>(),
+    focusedGoalId: null,
+  };
+
+  for (const event of events) applyLedgerEvent(state, event);
 
   // If the focused goal was moved to terminal (e.g., aborted/completed), clear focus.
-  if (focusedGoalId && !goals.has(focusedGoalId)) {
-    focusedGoalId = null;
+  if (state.focusedGoalId && !state.goals.has(state.focusedGoalId)) {
+    state.focusedGoalId = null;
   }
 
-  return { focusedGoalId, goals, terminalGoals };
+  return { focusedGoalId: state.focusedGoalId, goals: state.goals, terminalGoals: state.terminalGoals };
 }
 
 export function latestAuditorResultForGoal(events: GoalLedgerEvent[], goalId: string): { verdict: "approved" | "disapproved" | "error"; report: string; at: string } | undefined {

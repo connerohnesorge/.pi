@@ -101,17 +101,20 @@ export function goalFocusDetails(focusedGoalId: string | null, reason: GoalFocus
 	};
 }
 
+const goalFocusReasons = new Set<GoalFocusReason>(["created", "selected", "resumed", "completed", "cleared", "aborted", "migrated"]);
+
+function normalizeFocusedGoalId(value: unknown): string | null {
+	return typeof value === "string" && value.trim() ? safeIdPart(value) : null;
+}
+
+function normalizeGoalFocusReason(value: unknown): GoalFocusReason {
+	return typeof value === "string" && goalFocusReasons.has(value as GoalFocusReason) ? (value as GoalFocusReason) : "selected";
+}
+
 export function normalizeGoalFocusEntry(value: unknown): GoalFocusEntry | null {
 	const raw = asRecord(value);
 	if (!raw || raw.version !== 1) return null;
-	const focusedGoalId = typeof raw.focusedGoalId === "string" && raw.focusedGoalId.trim()
-		? safeIdPart(raw.focusedGoalId)
-		: null;
-	const reason: GoalFocusReason =
-		raw.reason === "created" || raw.reason === "selected" || raw.reason === "resumed" || raw.reason === "completed" || raw.reason === "cleared" || raw.reason === "aborted" || raw.reason === "migrated"
-			? raw.reason
-			: "selected";
-	return { version: 1, focusedGoalId, reason };
+	return { version: 1, focusedGoalId: normalizeFocusedGoalId(raw.focusedGoalId), reason: normalizeGoalFocusReason(raw.reason) };
 }
 
 export function createGoal(config: GoalCreationConfig, now = Date.now()): GoalRecord {
@@ -136,36 +139,44 @@ function normalizeUsage(value: unknown): GoalUsage {
 	return { tokensUsed, activeSeconds };
 }
 
+function optionalString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function optionalTrimmedString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeGoalStatus(value: unknown, autoContinue: boolean): GoalStatus {
+	const status: GoalStatus = value === "complete" ? "complete" : value === "paused" ? "paused" : "active";
+	return status === "paused" && autoContinue ? "active" : status;
+}
+
+function normalizeStopReason(value: unknown): StopReason | undefined {
+	return value === "agent" || value === "user" ? value : undefined;
+}
+
 export function normalizeGoalRecord(value: unknown): GoalRecord | null {
 	const raw = asRecord(value);
 	if (!raw) return null;
-	const objective = typeof raw.objective === "string" ? raw.objective.trim() : "";
+	const objective = optionalTrimmedString(raw.objective);
 	if (!objective) return null;
 
 	const timestamp = nowIso();
-	const rawStatus = raw.status;
-	let status: GoalStatus = rawStatus === "complete" ? "complete" : rawStatus === "paused" ? "paused" : "active";
 	const autoContinue = typeof raw.autoContinue === "boolean" ? raw.autoContinue : true;
-	const usage = normalizeUsage(raw.usage);
-	const sisyphus = raw.sisyphus === true;
-
-	if (status === "paused" && autoContinue) {
-		status = "active";
-	}
-
 	return {
 		id: typeof raw.id === "string" && raw.id ? safeIdPart(raw.id) : newGoalId(),
 		objective,
-		status,
+		status: normalizeGoalStatus(raw.status, autoContinue),
 		autoContinue,
-		usage,
-		sisyphus,
-		createdAt: typeof raw.createdAt === "string" ? raw.createdAt : timestamp,
-		updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : timestamp,
-		activePath: typeof raw.activePath === "string" ? raw.activePath : undefined,
-		archivedPath: typeof raw.archivedPath === "string" ? raw.archivedPath : undefined,
-		stopReason: raw.stopReason === "agent" || raw.stopReason === "user" ? raw.stopReason : undefined,
-		pauseReason: typeof raw.pauseReason === "string" && raw.pauseReason.trim() ? raw.pauseReason : undefined,
-		pauseSuggestedAction: typeof raw.pauseSuggestedAction === "string" && raw.pauseSuggestedAction.trim() ? raw.pauseSuggestedAction : undefined,
+		usage: normalizeUsage(raw.usage),
+		sisyphus: raw.sisyphus === true,
+		createdAt: optionalString(raw.createdAt) ?? timestamp,
+		updatedAt: optionalString(raw.updatedAt) ?? timestamp,
+		activePath: optionalString(raw.activePath),
+		archivedPath: optionalString(raw.archivedPath),
+		stopReason: normalizeStopReason(raw.stopReason),
+		pauseReason: optionalTrimmedString(raw.pauseReason),
+		pauseSuggestedAction: optionalTrimmedString(raw.pauseSuggestedAction),
 	};
 }
