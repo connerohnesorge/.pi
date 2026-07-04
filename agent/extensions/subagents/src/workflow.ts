@@ -937,14 +937,29 @@ export async function runWorkflow<T = unknown>(
 }
 
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
-  if (DETERMINISM_BLOCKLIST.test(script)) {
-    throw new WorkflowError(
-      "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable",
-      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      { recoverable: false },
-    );
-  }
+  rejectNondeterministicScript(script);
 
+  const first = firstWorkflowStatement(script);
+  const declarator = metaDeclarator(first);
+  const meta = evaluateLiteral(requireMetaInit(declarator), "meta");
+  validateMeta(meta);
+
+  return {
+    meta,
+    body: script.slice(0, first.start) + script.slice(first.end),
+  };
+}
+
+function rejectNondeterministicScript(script: string) {
+  if (!DETERMINISM_BLOCKLIST.test(script)) return;
+  throw new WorkflowError(
+    "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable",
+    WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+    { recoverable: false },
+  );
+}
+
+function firstWorkflowStatement(script: string): AnyNode {
   const ast = parse(script, {
     ecmaVersion: "latest",
     sourceType: "module",
@@ -954,110 +969,143 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
   }) as AnyNode;
 
   const first = ast.body?.[0] as AnyNode | undefined;
-  if (first?.type !== "ExportNamedDeclaration") {
-    throw new WorkflowError(
-      "`export const meta = { name, description, phases }` must be the first statement in the script",
-      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      { recoverable: false },
-    );
-  }
+  if (first?.type === "ExportNamedDeclaration") return first;
+  throw new WorkflowError(
+    "`export const meta = { name, description, phases }` must be the first statement in the script",
+    WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+    { recoverable: false },
+  );
+}
 
+function metaDeclarator(first: AnyNode): AnyNode {
   const declaration = first.declaration as AnyNode | null;
-  if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") {
-    throw new WorkflowError(
-      "meta export must be `export const meta = ...`",
-      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      {
-        recoverable: false,
-      },
-    );
-  }
-  if (declaration.declarations.length !== 1) {
-    throw new WorkflowError("meta export must declare only `meta`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
-      recoverable: false,
-    });
-  }
+  assertMetaConstDeclaration(declaration);
+  assertSingleMetaDeclaration(declaration);
 
   const declarator = declaration.declarations[0] as AnyNode;
-  if (declarator.id?.type !== "Identifier" || declarator.id.name !== "meta") {
-    throw new WorkflowError("meta export must declare `meta`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
-      recoverable: false,
-    });
-  }
-  if (!declarator.init)
-    throw new WorkflowError("meta must have a literal value", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
-      recoverable: false,
-    });
+  assertMetaName(declarator);
+  return declarator;
+}
 
-  const meta = evaluateLiteral(declarator.init, "meta");
-  validateMeta(meta);
+function assertMetaConstDeclaration(declaration: AnyNode | null): asserts declaration is AnyNode {
+  if (declaration?.type === "VariableDeclaration" && declaration.kind === "const") return;
+  throw new WorkflowError("meta export must be `export const meta = ...`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+    recoverable: false,
+  });
+}
 
-  return {
-    meta,
-    body: script.slice(0, first.start) + script.slice(first.end),
-  };
+function assertSingleMetaDeclaration(declaration: AnyNode) {
+  if (declaration.declarations.length === 1) return;
+  throw new WorkflowError("meta export must declare only `meta`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+    recoverable: false,
+  });
+}
+
+function assertMetaName(declarator: AnyNode) {
+  if (declarator.id?.type === "Identifier" && declarator.id.name === "meta") return;
+  throw new WorkflowError("meta export must declare `meta`", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+    recoverable: false,
+  });
+}
+
+function requireMetaInit(declarator: AnyNode): AnyNode {
+  if (declarator.init) return declarator.init;
+  throw new WorkflowError("meta must have a literal value", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+    recoverable: false,
+  });
 }
 
 function evaluateLiteral(node: AnyNode, path: string): unknown {
-  switch (node.type) {
-    case "ObjectExpression": {
-      const out: Record<string, unknown> = {};
-      for (const prop of node.properties as AnyNode[]) {
-        if (prop.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
-        if (prop.type !== "Property") throw new Error(`only plain properties allowed in ${path}`);
-        if (prop.computed) throw new Error(`computed keys not allowed in ${path}`);
-        if (prop.kind !== "init" || prop.method) throw new Error(`methods/accessors not allowed in ${path}`);
-        const key = propertyKey(prop.key as AnyNode, path);
-        if (key === "__proto__" || key === "constructor" || key === "prototype") {
-          throw new Error(`reserved key name not allowed in ${path}: ${key}`);
-        }
-        out[key] = evaluateLiteral(prop.value as AnyNode, `${path}.${key}`);
-      }
-      return out;
-    }
-    case "ArrayExpression":
-      return (node.elements as Array<AnyNode | null>).map((element, index) => {
-        if (!element) throw new Error(`sparse arrays not allowed in ${path}`);
-        if (element.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
-        return evaluateLiteral(element, `${path}[${index}]`);
-      });
-    case "Literal":
-      return node.value;
-    case "TemplateLiteral":
-      if (node.expressions.length > 0) throw new Error(`template interpolation not allowed in ${path}`);
-      return node.quasis.map((quasi: AnyNode) => quasi.value.cooked ?? quasi.value.raw).join("");
-    case "UnaryExpression":
-      if (node.operator === "-" && node.argument?.type === "Literal" && typeof node.argument.value === "number") {
-        return -node.argument.value;
-      }
-      throw new Error(`only negative-number unary allowed in ${path}`);
-    default:
-      throw new Error(`non-literal node type in ${path}: ${node.type}`);
+  if (node.type === "ObjectExpression") return evaluateLiteralObject(node, path);
+  if (node.type === "ArrayExpression") return evaluateLiteralArray(node, path);
+  if (node.type === "Literal") return node.value;
+  if (node.type === "TemplateLiteral") return evaluateStaticTemplate(node, path);
+  if (node.type === "UnaryExpression") return evaluateLiteralUnary(node, path);
+  throw new Error(`non-literal node type in ${path}: ${node.type}`);
+}
+
+function evaluateLiteralObject(node: AnyNode, path: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const prop of node.properties as AnyNode[]) {
+    const key = literalPropertyKey(prop, path);
+    out[key] = evaluateLiteral(prop.value as AnyNode, `${path}.${key}`);
   }
+  return out;
+}
+
+function literalPropertyKey(prop: AnyNode, path: string): string {
+  if (prop.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
+  if (prop.type !== "Property") throw new Error(`only plain properties allowed in ${path}`);
+  if (prop.computed) throw new Error(`computed keys not allowed in ${path}`);
+  if (prop.kind !== "init" || prop.method) throw new Error(`methods/accessors not allowed in ${path}`);
+
+  const key = propertyKey(prop.key as AnyNode, path);
+  if (key === "__proto__" || key === "constructor" || key === "prototype") {
+    throw new Error(`reserved key name not allowed in ${path}: ${key}`);
+  }
+  return key;
+}
+
+function evaluateLiteralArray(node: AnyNode, path: string): unknown[] {
+  return (node.elements as Array<AnyNode | null>).map((element, index) => {
+    if (!element) throw new Error(`sparse arrays not allowed in ${path}`);
+    if (element.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
+    return evaluateLiteral(element, `${path}[${index}]`);
+  });
+}
+
+function evaluateStaticTemplate(node: AnyNode, path: string): string {
+  if (node.expressions.length > 0) throw new Error(`template interpolation not allowed in ${path}`);
+  return node.quasis.map((quasi: AnyNode) => quasi.value.cooked ?? quasi.value.raw).join("");
+}
+
+function evaluateLiteralUnary(node: AnyNode, path: string): unknown {
+  if (node.operator === "-" && node.argument?.type === "Literal" && typeof node.argument.value === "number") {
+    return -node.argument.value;
+  }
+  throw new Error(`only negative-number unary allowed in ${path}`);
 }
 
 function propertyKey(node: AnyNode, path: string): string {
   if (node.type === "Identifier") return node.name;
-  if (node.type === "Literal" && (typeof node.value === "string" || typeof node.value === "number"))
+  if (node.type === "Literal" && (typeof node.value === "string" || typeof node.value === "number")) {
     return String(node.value);
+  }
   throw new Error(`unsupported key type in ${path}: ${node.type}`);
 }
 
 function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
-  if (!meta || typeof meta !== "object") throw new Error("meta must be an object");
-  const value = meta as WorkflowMeta;
-  if (typeof value.name !== "string" || !value.name.trim()) throw new Error("meta.name must be a non-empty string");
-  if (typeof value.description !== "string" || !value.description.trim())
-    throw new Error("meta.description must be a non-empty string");
-  if (value.model !== undefined && typeof value.model !== "string") throw new Error("meta.model must be a string");
-  if (value.phases !== undefined) {
-    if (!Array.isArray(value.phases)) throw new Error("meta.phases must be an array");
-    for (const phase of value.phases) {
-      if (!phase || typeof phase !== "object" || typeof (phase as WorkflowMetaPhase).title !== "string") {
-        throw new Error("each meta phase must have a title string");
-      }
-    }
-  }
+  const value = requireMetaObject(meta);
+  requireNonEmptyString(value.name, "meta.name");
+  requireNonEmptyString(value.description, "meta.description");
+  validateOptionalString(value.model, "meta.model");
+  validateMetaPhases(value.phases);
+}
+
+function requireMetaObject(meta: unknown): WorkflowMeta {
+  if (meta && typeof meta === "object") return meta as WorkflowMeta;
+  throw new Error("meta must be an object");
+}
+
+function requireNonEmptyString(value: unknown, field: string) {
+  if (typeof value === "string" && value.trim()) return;
+  throw new Error(`${field} must be a non-empty string`);
+}
+
+function validateOptionalString(value: unknown, field: string) {
+  if (value === undefined || typeof value === "string") return;
+  throw new Error(`${field} must be a string`);
+}
+
+function validateMetaPhases(phases: WorkflowMeta["phases"]) {
+  if (phases === undefined) return;
+  if (!Array.isArray(phases)) throw new Error("meta.phases must be an array");
+  for (const phase of phases) validateMetaPhase(phase);
+}
+
+function validateMetaPhase(phase: unknown) {
+  if (phase && typeof phase === "object" && typeof (phase as WorkflowMetaPhase).title === "string") return;
+  throw new Error("each meta phase must have a title string");
 }
 
 function createLimiter(limit: number) {
