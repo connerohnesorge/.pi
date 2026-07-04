@@ -1,18 +1,58 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { WorkflowAgentSnapshot } from "../src/display.ts";
+import {
+  DEFAULT_AGENT_TIMEOUT_MS,
+  DEFAULT_TOKEN_BUDGET,
+  MAX_AGENTS_PER_RUN,
+  MAX_CONCURRENCY,
+  USER_WORKFLOW_SAVED_DIR,
+  WORKFLOW_RUNS_DIR,
+  WORKFLOW_SAVED_DIR,
+  WORKFLOW_SETTINGS_FILE,
+} from "../src/config.ts";
+import {
+  createWorkflowSnapshot,
+  preview,
+  recomputeWorkflowSnapshot,
+  renderWorkflowLines,
+  renderWorkflowText,
+  type WorkflowAgentSnapshot,
+} from "../src/display.ts";
+import {
+  isAbortError,
+  isTimeoutError,
+  isWorkflowError,
+  WorkflowError,
+  WorkflowErrorCode,
+  wrapError,
+} from "../src/errors.ts";
+import { createWorkflowLogger } from "../src/logger.ts";
 import type { WorkflowMeta } from "../src/workflow.ts";
 
+const errors = { WorkflowError, WorkflowErrorCode, isWorkflowError, isAbortError, isTimeoutError, wrapError };
+const config = {
+  MAX_AGENTS_PER_RUN,
+  MAX_CONCURRENCY,
+  DEFAULT_AGENT_TIMEOUT_MS,
+  WORKFLOW_RUNS_DIR,
+  WORKFLOW_SAVED_DIR,
+  WORKFLOW_SETTINGS_FILE,
+  USER_WORKFLOW_SAVED_DIR,
+  DEFAULT_TOKEN_BUDGET,
+};
+const logger = { createWorkflowLogger };
+const display = { preview, createWorkflowSnapshot, recomputeWorkflowSnapshot, renderWorkflowText, renderWorkflowLines };
+
 async function loadErrors() {
-  return import("../src/errors.ts");
+  return errors;
 }
 
 async function loadConfig() {
-  return import("../src/config.ts");
+  return config;
 }
 
 async function loadLogger() {
-  return import("../src/logger.ts");
+  return logger;
 }
 
 // ─── Errors ────────────────────────────────────────────────────────────────────
@@ -351,5 +391,5 @@ describe("display", () => {
 });
 
 async function load() {
-  return import("../src/display.ts");
+  return display;
 }

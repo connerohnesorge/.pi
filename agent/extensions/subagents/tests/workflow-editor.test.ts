@@ -5,6 +5,31 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { type Terminal, TUI } from "@earendil-works/pi-tui";
+import {
+  buildForcedWorkflowPrompt,
+  colorizeWorkflow,
+  endsWithTrigger,
+  hasTrigger,
+  installWorkflowEditor,
+  RAINBOW,
+  registerWorkflowProgressCommands,
+  registerWorkflowTriggerCommand,
+  tokenizeAnsi,
+  WorkflowEditor,
+} from "../src/workflow-editor.ts";
+
+const workflowEditor = {
+  hasTrigger,
+  endsWithTrigger,
+  tokenizeAnsi,
+  colorizeWorkflow,
+  RAINBOW,
+  WorkflowEditor,
+  buildForcedWorkflowPrompt,
+  installWorkflowEditor,
+  registerWorkflowTriggerCommand,
+  registerWorkflowProgressCommands,
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -57,7 +82,7 @@ function makeTheme(): import("@earendil-works/pi-tui").EditorTheme {
 
 // Pure-function tests — import from source (tsx compiles on the fly)
 async function load() {
-  return import("../src/workflow-editor.ts");
+  return workflowEditor;
 }
 
 function testSettingsOptions(keywordTriggerEnabled = true, keywordTriggerWord?: string) {
