@@ -655,31 +655,56 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		return live;
 	}
 
-	function accountProgress(ctx: ExtensionContext, opts: { completedTurnTokens?: number } = {}): void {
-		if (confirmationIntent !== null || tweakDraftingFor !== null) {
-			clearActiveAccounting();
-			return;
-		}
+	function accountingBlockedByDrafting(): boolean {
+		if (confirmationIntent === null && tweakDraftingFor === null) return false;
+		clearActiveAccounting();
+		return true;
+	}
+
+	function reconcileAccountableGoal(ctx: ExtensionContext): boolean {
 		// Skip disk reconciliation for complete goals — they are pending archival at turn_end.
-		if (state.goal?.activePath && state.goal?.status !== "complete" && !reconcileFocusedGoalFromDisk(ctx, { preserveMemoryUsage: true })) return;
-		if (!state.goal || state.goal.status !== "active" || accounting.activeGoalId !== state.goal.id) {
-			beginAccounting();
-			return;
-		}
+		return !state.goal?.activePath
+			|| state.goal.status === "complete"
+			|| reconcileFocusedGoalFromDisk(ctx, { preserveMemoryUsage: true });
+	}
 
-		const now = Date.now();
-		const elapsedSeconds = accounting.lastAccountedAt === null ? 0 : Math.floor((now - accounting.lastAccountedAt) / 1000);
-		accounting.lastAccountedAt = now;
+	function shouldRestartAccounting(): boolean {
+		return !state.goal || state.goal.status !== "active" || accounting.activeGoalId !== state.goal.id;
+	}
 
-		const tokens = Math.max(0, Math.trunc(opts.completedTurnTokens ?? 0));
-		if (tokens === 0 && elapsedSeconds === 0) return;
+	function elapsedAccountingSeconds(now: number): number {
+		return accounting.lastAccountedAt === null ? 0 : Math.floor((now - accounting.lastAccountedAt) / 1000);
+	}
 
+	function completedTurnTokens(opts: { completedTurnTokens?: number }): number {
+		return Math.max(0, Math.trunc(opts.completedTurnTokens ?? 0));
+	}
+
+	function applyUsageDelta(ctx: ExtensionContext, tokens: number, elapsedSeconds: number): void {
+		if (!state.goal) return;
 		const next = cloneGoal(state.goal);
 		next.usage.tokensUsed += tokens;
 		next.usage.activeSeconds += elapsedSeconds;
 		next.updatedAt = nowIso();
 		state.goal = next;
 		persist(ctx);
+	}
+
+	function accountProgress(ctx: ExtensionContext, opts: { completedTurnTokens?: number } = {}): void {
+		if (accountingBlockedByDrafting()) return;
+		if (!reconcileAccountableGoal(ctx)) return;
+		if (shouldRestartAccounting()) {
+			beginAccounting();
+			return;
+		}
+
+		const now = Date.now();
+		const elapsedSeconds = elapsedAccountingSeconds(now);
+		accounting.lastAccountedAt = now;
+
+		const tokens = completedTurnTokens(opts);
+		if (tokens === 0 && elapsedSeconds === 0) return;
+		applyUsageDelta(ctx, tokens, elapsedSeconds);
 	}
 
 	function syncGoalPromptFromDisk(ctx: ExtensionContext): boolean {
@@ -851,21 +876,27 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	type LoadedGoalEntries = { focusEntry: GoalFocusEntry | null; legacyGoal: GoalRecord | null };
 
-	function latestGoalSessionEntries(ctx: ExtensionContext): LoadedGoalEntries {
-		let focusEntry: GoalFocusEntry | null = null;
-		let legacyGoal: GoalRecord | null = null;
-		let legacyStateSeen = false;
-		const entries = ctx.sessionManager.getBranch();
-		for (let i = entries.length - 1; i >= 0 && (!focusEntry || !legacyStateSeen); i--) {
-			const entry = entries[i] as { type?: string; customType?: string; data?: unknown };
-			if (entry.type !== "custom") continue;
-			if (!focusEntry && entry.customType === FOCUS_ENTRY) focusEntry = normalizeGoalFocusEntry(entry.data);
-			if (!legacyStateSeen && entry.customType === STATE_ENTRY) {
-				legacyGoal = normalizeGoalRecord(asRecord(entry.data)?.goal);
-				legacyStateSeen = true;
-			}
+	type GoalSessionEntry = { type?: string; customType?: string; data?: unknown };
+	type MutableLoadedGoalEntries = LoadedGoalEntries & { legacyStateSeen: boolean };
+
+	function inspectLatestGoalEntry(loaded: MutableLoadedGoalEntries, raw: unknown): boolean {
+		const entry = raw as GoalSessionEntry;
+		if (entry.type !== "custom") return false;
+		if (!loaded.focusEntry && entry.customType === FOCUS_ENTRY) loaded.focusEntry = normalizeGoalFocusEntry(entry.data);
+		if (!loaded.legacyStateSeen && entry.customType === STATE_ENTRY) {
+			loaded.legacyGoal = normalizeGoalRecord(asRecord(entry.data)?.goal);
+			loaded.legacyStateSeen = true;
 		}
-		return { focusEntry, legacyGoal };
+		return !!loaded.focusEntry && loaded.legacyStateSeen;
+	}
+
+	function latestGoalSessionEntries(ctx: ExtensionContext): LoadedGoalEntries {
+		const loaded: MutableLoadedGoalEntries = { focusEntry: null, legacyGoal: null, legacyStateSeen: false };
+		const entries = ctx.sessionManager.getBranch();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			if (inspectLatestGoalEntry(loaded, entries[i])) break;
+		}
+		return { focusEntry: loaded.focusEntry, legacyGoal: loaded.legacyGoal };
 	}
 
 	function activeLegacyGoal(ctx: ExtensionContext, legacyGoal: GoalRecord | null): GoalRecord | null {
@@ -912,13 +943,25 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		resetGetGoalNudgeState(focusedGoalId);
 	}
 
-	function syncGoalRuntimeAfterSet(previousGoalId: string | null): void {
-		if (!state.goal || state.goal.status !== "active" || !state.goal.autoContinue) clearContinuationState();
-		if (!state.goal || state.goal.status === "paused" || state.goal.status === "complete") clearActiveAccounting();
+	function currentGoalNeedsContinuationClear(): boolean {
+		return !state.goal || state.goal.status !== "active" || !state.goal.autoContinue;
+	}
+
+	function currentGoalNeedsAccountingClear(): boolean {
+		return !state.goal || state.goal.status === "paused" || state.goal.status === "complete";
+	}
+
+	function clearStaleTweakDrafting(previousGoalId: string | null): void {
 		// Drop any stale tweak-edit-gate that didn't belong to this goal.
-		if ((!state.goal || state.goal.id !== previousGoalId) && tweakDraftingFor !== null && tweakDraftingFor !== state.goal?.id) {
-			tweakDraftingFor = null;
-		}
+		if (state.goal?.id === previousGoalId) return;
+		if (tweakDraftingFor === null || tweakDraftingFor === state.goal?.id) return;
+		tweakDraftingFor = null;
+	}
+
+	function syncGoalRuntimeAfterSet(previousGoalId: string | null): void {
+		if (currentGoalNeedsContinuationClear()) clearContinuationState();
+		if (currentGoalNeedsAccountingClear()) clearActiveAccounting();
+		clearStaleTweakDrafting(previousGoalId);
 	}
 
 	function appendFocusChangeEntry(focusReason: GoalFocusReason | undefined, focusChanged: boolean): void {
@@ -1008,45 +1051,74 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		});
 	}
 
-	function sendQueuedContinuation(ctx: ExtensionContext, goalId: string): void {
+	type ContinuationReadiness = "ready" | "busy" | "unavailable";
+
+	function resetContinuationDispatch(): void {
 		continuationTimer = null;
 		continuationScheduledFor = null;
 		syncGoalTools();
+	}
+
+	function clearQueuedContinuation(goalId: string): void {
+		if (continuationQueuedFor === goalId) continuationQueuedFor = null;
+	}
+
+	function continuationDispatchGoal(goalId: string): GoalRecord | null {
 		if (!state.goal || state.goal.id !== goalId || state.goal.status !== "active" || !state.goal.autoContinue) {
-			if (continuationQueuedFor === goalId) continuationQueuedFor = null;
-			return;
+			clearQueuedContinuation(goalId);
+			return null;
 		}
+		return state.goal;
+	}
 
-		let ready: boolean;
+	function continuationReadiness(ctx: ExtensionContext): ContinuationReadiness {
 		try {
-			ready = !ctx.hasPendingMessages() && ctx.isIdle();
+			return !ctx.hasPendingMessages() && ctx.isIdle() ? "ready" : "busy";
 		} catch {
-			if (continuationQueuedFor === goalId) continuationQueuedFor = null;
-			return;
+			return "unavailable";
 		}
+	}
 
-		if (!ready) {
-			continuationScheduledFor = goalId;
-			continuationTimer = setTimeout(() => sendQueuedContinuation(ctx, goalId), CONTINUATION_IDLE_RETRY_MS);
-			continuationTimer.unref?.();
-			return;
-		}
-		continuationQueuedFor = goalId;
+	function retryQueuedContinuation(ctx: ExtensionContext, goalId: string): void {
+		continuationScheduledFor = goalId;
+		continuationTimer = setTimeout(() => sendQueuedContinuation(ctx, goalId), CONTINUATION_IDLE_RETRY_MS);
+		continuationTimer.unref?.();
+	}
+
+	function sendGoalContinuation(goal: GoalRecord): void {
+		continuationQueuedFor = goal.id;
 		pi.sendMessage<GoalEventDetails>(
 			{
 				customType: GOAL_EVENT_ENTRY,
-				content: continuationPrompt(state.goal),
+				content: continuationPrompt(goal),
 				display: false,
 				details: {
 					kind: "checkpoint",
-					goalId: state.goal.id,
-					status: state.goal.status,
-					objective: state.goal.objective,
+					goalId: goal.id,
+					status: goal.status,
+					objective: goal.objective,
 					timestamp: Date.now(),
 				},
 			},
 			{ triggerTurn: true, deliverAs: "followUp" },
 		);
+	}
+
+	function sendQueuedContinuation(ctx: ExtensionContext, goalId: string): void {
+		resetContinuationDispatch();
+		const goal = continuationDispatchGoal(goalId);
+		if (!goal) return;
+
+		const readiness = continuationReadiness(ctx);
+		if (readiness === "unavailable") {
+			clearQueuedContinuation(goalId);
+			return;
+		}
+		if (readiness === "busy") {
+			retryQueuedContinuation(ctx, goalId);
+			return;
+		}
+		sendGoalContinuation(goal);
 	}
 
 
@@ -1367,51 +1439,73 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		];
 	}
 
+	const AUDITOR_FIELD_LABELS = ["disabled", "provider", "model", "thinking_level"] as const;
+	type AuditorFieldLabel = typeof AUDITOR_FIELD_LABELS[number];
+	const AUDITOR_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+	function auditorConfigKey(field: AuditorFieldLabel): keyof GoalAuditorConfig {
+		return field === "thinking_level" ? "thinkingLevel" : field;
+	}
+
+	async function selectAuditorField(ctx: ExtensionContext, config: GoalAuditorConfig): Promise<AuditorFieldLabel | null> {
+		const options = auditorSettingsLines(config);
+		const selected = await ctx.ui.select("Goal auditor settings", options);
+		if (!selected) return null;
+		return AUDITOR_FIELD_LABELS[options.indexOf(selected)] ?? null;
+	}
+
+	function notifyAuditorSettingsSaved(ctx: ExtensionContext): void {
+		ctx.ui.notify(`Goal auditor settings saved:\n${auditorSettingsLines(loadGoalAuditorFileConfig(ctx.cwd)).join("\n")}`, "info");
+	}
+
+	function toggleAuditorDisabled(ctx: ExtensionContext, config: GoalAuditorConfig): void {
+		const next: GoalAuditorConfig = { ...config, disabled: !config.disabled };
+		saveGoalAuditorFileConfig(ctx.cwd, next);
+		notifyAuditorSettingsSaved(ctx);
+	}
+
+	function isAuditorThinkingLevel(value: string): value is NonNullable<GoalAuditorConfig["thinkingLevel"]> {
+		return (AUDITOR_THINKING_LEVELS as readonly string[]).includes(value);
+	}
+
+	function applyAuditorInput(ctx: ExtensionContext, config: GoalAuditorConfig, field: AuditorFieldLabel, input: string): boolean {
+		const key = auditorConfigKey(field);
+		const next: GoalAuditorConfig = { ...config };
+		const trimmed = input.trim();
+		if (!trimmed) {
+			delete next[key];
+		} else if (key === "thinkingLevel") {
+			if (!isAuditorThinkingLevel(trimmed)) {
+				ctx.ui.notify("thinking_level must be one of: off, minimal, low, medium, high, xhigh", "warning");
+				return false;
+			}
+			next.thinkingLevel = trimmed;
+		} else if (key === "provider" || key === "model") {
+			next[key] = trimmed;
+		}
+		saveGoalAuditorFileConfig(ctx.cwd, next);
+		notifyAuditorSettingsSaved(ctx);
+		return true;
+	}
+
+	async function editAuditorField(ctx: ExtensionContext, config: GoalAuditorConfig, field: AuditorFieldLabel): Promise<void> {
+		const key = auditorConfigKey(field);
+		const currentValue = auditorConfigValue(config, key);
+		const input = await ctx.ui.input(`Set auditor ${field}`, currentValue === "(default)" ? "Leave empty for default" : currentValue);
+		if (input !== undefined) applyAuditorInput(ctx, config, field, input);
+	}
+
 	async function handleGoalAuditorSettings(ctx: ExtensionContext): Promise<void> {
 		if (!ctx.hasUI) {
 			ctx.ui.notify(`Goal auditor settings file: ${goalAuditorConfigPath(ctx.cwd)}`, "info");
 			return;
 		}
-		const fieldLabels = ["disabled", "provider", "model", "thinking_level"] as const;
 		while (true) {
 			const config = loadGoalAuditorFileConfig(ctx.cwd);
-			const options = [
-				`disabled: ${auditorConfigValue(config, "disabled")}`,
-				`provider: ${auditorConfigValue(config, "provider")}`,
-				`model: ${auditorConfigValue(config, "model")}`,
-				`thinking_level: ${auditorConfigValue(config, "thinkingLevel")}`,
-			];
-			const selected = await ctx.ui.select("Goal auditor settings", options);
-			if (!selected) return;
-			const index = options.indexOf(selected);
-			const field = fieldLabels[index];
+			const field = await selectAuditorField(ctx, config);
 			if (!field) return;
-			const key = field === "thinking_level" ? "thinkingLevel" : field;
-			if (key === "disabled") {
-				// Toggle the disabled flag
-				const next: GoalAuditorConfig = { ...config, disabled: !config.disabled };
-				saveGoalAuditorFileConfig(ctx.cwd, next);
-				ctx.ui.notify(`Goal auditor settings saved:\n${auditorSettingsLines(loadGoalAuditorFileConfig(ctx.cwd)).join("\n")}`, "info");
-				continue;
-			}
-			const currentValue = auditorConfigValue(config, key as keyof GoalAuditorConfig);
-			const input = await ctx.ui.input(`Set auditor ${field}`, currentValue === "(default)" ? "Leave empty for default" : currentValue);
-			if (input === undefined) continue;
-			const next: GoalAuditorConfig = { ...config };
-			const trimmed = input.trim();
-			if (!trimmed) {
-				delete next[key as keyof GoalAuditorConfig];
-			} else if (key === "thinkingLevel") {
-				if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(trimmed)) {
-					ctx.ui.notify("thinking_level must be one of: off, minimal, low, medium, high, xhigh", "warning");
-					continue;
-				}
-				next.thinkingLevel = trimmed as GoalAuditorConfig["thinkingLevel"];
-			} else if (key === "provider" || key === "model") {
-				next[key] = trimmed;
-			}
-			saveGoalAuditorFileConfig(ctx.cwd, next);
-			ctx.ui.notify(`Goal auditor settings saved:\n${auditorSettingsLines(loadGoalAuditorFileConfig(ctx.cwd)).join("\n")}`, "info");
+			if (field === "disabled") toggleAuditorDisabled(ctx, config);
+			else await editAuditorField(ctx, config, field);
 		}
 	}
 
