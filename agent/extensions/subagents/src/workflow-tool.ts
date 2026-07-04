@@ -52,7 +52,7 @@ export function modelRoutingGuideline(registry?: ModelRegistry | (() => ModelReg
  * it can route an agent() to a reusable role that binds tools+model+prompt.
  * Returns undefined when no definitions are registered (nothing to advertise).
  */
-export function agentTypeGuideline(cwd: string = process.cwd()): string | undefined {
+function agentTypeGuideline(cwd: string = process.cwd()): string | undefined {
   let types: Array<{ name: string; description?: string }>;
   try {
     types = listAgentTypes(loadAgentRegistry(cwd));
