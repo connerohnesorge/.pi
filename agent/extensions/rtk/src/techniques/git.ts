@@ -57,6 +57,37 @@ function appendDiffHunkLine(result: string[], state: DiffCompactionState, line: 
 	}
 }
 
+function startDiffHunk(result: string[], state: DiffCompactionState, line: string): void {
+	state.inHunk = true;
+	state.hunkLines = 0;
+	const hunkInfo = line.match(/@@ .+ @@/)?.[0] ?? "@@";
+	result.push(`  ${hunkInfo}`);
+}
+
+interface DiffLineHandler {
+	matches(line: string, state: DiffCompactionState): boolean;
+	append(result: string[], state: DiffCompactionState, line: string, maxHunkLines: number): void;
+}
+
+const DIFF_LINE_HANDLERS: DiffLineHandler[] = [
+	{
+		matches: (line) => line.startsWith("diff --git"),
+		append: startDiffFile,
+	},
+	{
+		matches: (line) => line.startsWith("@@"),
+		append: startDiffHunk,
+	},
+	{
+		matches: (_line, state) => state.inHunk,
+		append: appendDiffHunkLine,
+	},
+];
+
+function appendMatchingDiffLine(result: string[], state: DiffCompactionState, line: string, maxHunkLines: number): void {
+	DIFF_LINE_HANDLERS.find((handler) => handler.matches(line, state))?.append(result, state, line, maxHunkLines);
+}
+
 function compactDiff(output: string, maxLines = 50): string {
 	const lines = output.split("\n");
 	const result: string[] = [];
@@ -69,22 +100,7 @@ function compactDiff(output: string, maxLines = 50): string {
 			break;
 		}
 
-		if (line.startsWith("diff --git")) {
-			startDiffFile(result, state, line);
-			continue;
-		}
-
-		if (line.startsWith("@@")) {
-			state.inHunk = true;
-			state.hunkLines = 0;
-			const hunkInfo = line.match(/@@ .+ @@/)?.[0] ?? "@@";
-			result.push(`  ${hunkInfo}`);
-			continue;
-		}
-
-		if (state.inHunk) {
-			appendDiffHunkLine(result, state, line, maxHunkLines);
-		}
+		appendMatchingDiffLine(result, state, line, maxHunkLines);
 	}
 
 	flushDiffFileSummary(result, state);
@@ -219,25 +235,31 @@ function compactLog(output: string, limit = 20): string {
 	return result.join("\n");
 }
 
+interface GitCompactor {
+	matches(command: string): boolean;
+	compact(output: string): string | null;
+}
+
+const GIT_COMPACTORS: GitCompactor[] = [
+	{
+		matches: (command) => command.startsWith("git diff"),
+		compact: (output) => (RAW_GIT_DIFF_PATTERN.test(output) ? compactDiff(output) : null),
+	},
+	{
+		matches: (command) => command.startsWith("git status"),
+		compact: (output) => (RAW_GIT_STATUS_PATTERN.test(output) ? compactStatus(output) : null),
+	},
+	{
+		matches: (command) => command.startsWith("git log"),
+		compact: compactLog,
+	},
+];
+
 export function compactGitOutput(output: string, command: string | undefined | null): string | null {
 	if (!isGitCommand(command)) {
 		return null;
 	}
 
 	const normalized = normalizeCommandForDetection(command);
-	if (!normalized) {
-		return null;
-	}
-
-	if (normalized.startsWith("git diff")) {
-		return RAW_GIT_DIFF_PATTERN.test(output) ? compactDiff(output) : null;
-	}
-	if (normalized.startsWith("git status")) {
-		return RAW_GIT_STATUS_PATTERN.test(output) ? compactStatus(output) : null;
-	}
-	if (normalized.startsWith("git log")) {
-		return compactLog(output);
-	}
-
-	return null;
+	return normalized ? (GIT_COMPACTORS.find((compactor) => compactor.matches(normalized))?.compact(output) ?? null) : null;
 }
