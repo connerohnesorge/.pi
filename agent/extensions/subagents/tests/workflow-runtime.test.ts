@@ -3,6 +3,7 @@ import test from "node:test";
 import type { AgentUsage } from "../src/agent.ts";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.ts";
 import { type JournalEntry, runWorkflow } from "../src/workflow.ts";
+import { fakeAgent } from "./helpers/workflow-manager-fixtures.ts";
 
 /** Agent runner that counts real invocations and echoes a per-call result. */
 function countingAgent() {
@@ -18,28 +19,42 @@ function countingAgent() {
   };
 }
 
-/** Minimal fake agent runner that reports a fixed usage via onUsage. */
-function fakeAgent(usage: Partial<AgentUsage>, result: unknown = "ok") {
-  return {
-    async run(_prompt: string, options: { onUsage?: (u: AgentUsage) => void }) {
-      options.onUsage?.({
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        total: 0,
-        cost: 0,
-        ...usage,
-      });
-      return result;
-    },
-  };
-}
-
 const twoAgentScript = `export const meta = { name: 'usage_demo', description: 'two agents' }
 const a = await agent('first', { label: 'a' })
 const b = await agent('second', { label: 'b' })
 return { a, b }`;
+
+function resumeJournalFrom(journal: JournalEntry[]) {
+  return new Map(journal.map((e) => [e.index, e]));
+}
+
+async function phaseProbe(script: string) {
+  const phases: Array<string | undefined> = [];
+  await runWorkflow(script, { agent: noopAgent, persistLogs: false, onAgentStart: (e) => phases.push(e.phase) });
+  return phases;
+}
+
+function assertAgentLimitRejects(script: string) {
+  return assert.rejects(
+    () =>
+      runWorkflow(script, {
+        agent: fakeAgent({ input: 1, output: 0, total: 1, cost: 0 }),
+        maxAgents: 2,
+        persistLogs: false,
+      }),
+    /limit/i,
+  );
+}
+
+async function assertWorkflowLogs(script: string, messages: string[]) {
+  const result = await runWorkflow(script, {
+    agent: countingAgent().runner,
+    persistLogs: false,
+  });
+  for (const message of messages) {
+    assert.ok(result.logs.some((l) => l.includes(message)), `should contain ${message}`);
+  }
+}
 
 function createDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -232,52 +247,31 @@ test("agents default to the first declared phase when the script omits phase()",
   // Regression for the "(no phase) has agents, declared phase 0/0" bug: a script
   // that declares meta.phases but never calls phase() should still group its
   // agents under the first declared phase, not an orphan "(no phase)" bucket.
-  const phases: Array<string | undefined> = [];
-  const noop = {
-    async run() {
-      return "ok";
-    },
-  };
-  await runWorkflow(
-    `export const meta = { name: 'p', description: 'd', phases: [{ title: 'Research' }, { title: 'Synthesize' }] }
+  assert.deepEqual(
+    await phaseProbe(`export const meta = { name: 'p', description: 'd', phases: [{ title: 'Research' }, { title: 'Synthesize' }] }
      await agent('a', { label: 'x' })
-     return {}`,
-    { agent: noop, persistLogs: false, onAgentStart: (e) => phases.push(e.phase) },
+     return {}`),
+    ["Research"],
   );
-  assert.deepEqual(phases, ["Research"]);
 });
 
 test("explicit phase() overrides the default first phase", async () => {
-  const phases: Array<string | undefined> = [];
-  const noop = {
-    async run() {
-      return "ok";
-    },
-  };
-  await runWorkflow(
-    `export const meta = { name: 'p', description: 'd', phases: [{ title: 'A' }, { title: 'B' }] }
+  assert.deepEqual(
+    await phaseProbe(`export const meta = { name: 'p', description: 'd', phases: [{ title: 'A' }, { title: 'B' }] }
      phase('B')
      await agent('a', { label: 'x' })
-     return {}`,
-    { agent: noop, persistLogs: false, onAgentStart: (e) => phases.push(e.phase) },
+     return {}`),
+    ["B"],
   );
-  assert.deepEqual(phases, ["B"]);
 });
 
 test("no declared phases => agent phase stays undefined (no synthetic phase)", async () => {
-  const phases: Array<string | undefined> = [];
-  const noop = {
-    async run() {
-      return "ok";
-    },
-  };
-  await runWorkflow(
-    `export const meta = { name: 'p', description: 'd' }
+  assert.deepEqual(
+    await phaseProbe(`export const meta = { name: 'p', description: 'd' }
      await agent('a', { label: 'x' })
-     return {}`,
-    { agent: noop, persistLogs: false, onAgentStart: (e) => phases.push(e.phase) },
+     return {}`),
+    [undefined],
   );
-  assert.deepEqual(phases, [undefined]);
 });
 
 test("runWorkflow routes models: explicit opts.model > phase model > default", async () => {
@@ -358,7 +352,7 @@ test("resume replays cached results without re-running agents", async () => {
   const r2 = await runWorkflow(resumeScript, {
     agent: second.runner,
     persistLogs: false,
-    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+    resumeJournal: resumeJournalFrom(journal),
   });
   assert.equal(second.state.calls, 0, "no live runs on a full cache hit");
   assert.equal(JSON.stringify(r2.result), JSON.stringify(r1.result));
@@ -378,7 +372,7 @@ test("resume re-runs only the changed call (hash mismatch)", async () => {
   await runWorkflow(editedScript, {
     agent: second.runner,
     persistLogs: false,
-    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+    resumeJournal: resumeJournalFrom(journal),
   });
   assert.equal(second.state.calls, 1, "only the edited call re-runs");
 });
@@ -407,7 +401,7 @@ test("resume re-runs the changed call AND everything after it (longest-unchanged
   await runWorkflow(editedScript, {
     agent: second.runner,
     persistLogs: false,
-    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+    resumeJournal: resumeJournalFrom(journal),
   });
   assert.equal(second.state.calls, 2, "edited call (1) + its suffix (2) re-run; only the prefix (0) is cached");
 });
@@ -435,7 +429,7 @@ test("resume in parallel(): editing one thunk re-runs that index and every later
   await runWorkflow(script("x-edited"), {
     agent: second.runner,
     persistLogs: false,
-    resumeJournal: new Map(journal.map((e) => [e.index, e])),
+    resumeJournal: resumeJournalFrom(journal),
   });
   assert.equal(second.state.calls, 2, "changed thunk (index 1) + later index (2) re-run; index 0 cached");
 });
@@ -537,15 +531,7 @@ test("non-recoverable agent-limit propagates out of pipeline() too", async () =>
   const script = `export const meta = { name: 'mp', description: 'agent limit pipeline' }
 const xs = await pipeline([0, 1, 2, 3], (n) => agent('x' + n, { label: 'p' + n }))
 return xs`;
-  await assert.rejects(
-    () =>
-      runWorkflow(script, {
-        agent: fakeAgent({ input: 1, output: 0, total: 1, cost: 0 }),
-        maxAgents: 2,
-        persistLogs: false,
-      }),
-    /limit/i,
-  );
+  await assertAgentLimitRejects(script);
 });
 
 test("phase sub-budget throws when a phase exceeds its ceiling (run total untouched)", async () => {
@@ -573,15 +559,7 @@ test("maxAgents is enforced under a parallel() fan-out (atomic slot reservation)
   const script = `export const meta = { name: 'ma', description: 'agent limit' }
 const xs = await parallel([0, 1, 2, 3].map((i) => () => agent('x' + i, { label: 'a' + i })))
 return xs`;
-  await assert.rejects(
-    () =>
-      runWorkflow(script, {
-        agent: fakeAgent({ input: 1, output: 0, total: 1, cost: 0 }),
-        maxAgents: 2,
-        persistLogs: false,
-      }),
-    /limit/i,
-  );
+  await assertAgentLimitRejects(script);
 });
 
 // ─── Additional edge case tests ─────────────────────────────────────────────────
@@ -710,15 +688,7 @@ test("runWorkflow log function works inside script", async () => {
 log('hello from script')
 return true`;
 
-  const result = await runWorkflow(script, {
-    agent: countingAgent().runner,
-    persistLogs: false,
-  });
-
-  assert.ok(
-    result.logs.some((l) => l.includes("hello from script")),
-    "should contain hello from script",
-  );
+  await assertWorkflowLogs(script, ["hello from script"]);
 });
 
 test("runWorkflow console.log works inside script", async () => {
@@ -727,19 +697,7 @@ console.log('console log')
 console.warn('console warn')
 return true`;
 
-  const result = await runWorkflow(script, {
-    agent: countingAgent().runner,
-    persistLogs: false,
-  });
-
-  assert.ok(
-    result.logs.some((l) => l.includes("console log")),
-    "should contain console log",
-  );
-  assert.ok(
-    result.logs.some((l) => l.includes("console warn")),
-    "should contain console warn",
-  );
+  await assertWorkflowLogs(script, ["console log", "console warn"]);
 });
 
 test("runWorkflow process.cwd() works inside script", async () => {
