@@ -185,6 +185,14 @@ function drilledState(model: NavigatorModel, depth: number, cursor?: number): Na
   return state;
 }
 
+function renderDrilledText(model: NavigatorModel, depth: number, cursor?: number): string {
+  return renderText(model, drilledState(model, depth, cursor));
+}
+
+function assertTextMatches(text: string, patterns: RegExp[]): void {
+  for (const pattern of patterns) assert.match(text, pattern);
+}
+
 test("NavigatorModel reads runs, phases, agents, and detail", () => {
   const model = new NavigatorModel(fakeManager());
   const runs = model.runs();
@@ -424,49 +432,39 @@ test("renderNavigator shows empty hint when no runs", () => {
 
 test("renderNavigator shows phases view", () => {
   const model = new NavigatorModel(fakeManager());
-  const state = drilledState(model, 1);
-  const text = renderText(model, state);
-  assert.match(text, /audit/);
-  assert.match(text, /running/);
-  assert.match(text, /Scan/);
-  assert.match(text, /Report/);
+  assertTextMatches(renderDrilledText(model, 1), [/audit/, /running/, /Scan/, /Report/]);
 });
 
 test("renderNavigator shows agents view", () => {
   const model = new NavigatorModel(fakeManager());
-  const state = drilledState(model, 2);
-  const text = renderText(model, state);
-  assert.match(text, /Scan · 2 agents/);
-  assert.match(text, /› ● scan a/);
-  assert.match(text, /scan b/);
-  assert.match(text, /enter open/);
+  assertTextMatches(renderDrilledText(model, 2), [/Scan · 2 agents/, /› ● scan a/, /scan b/, /enter open/]);
 });
 
 test("renderNavigator shows agent detail view", () => {
   const model = new NavigatorModel(fakeManager());
-  const state = drilledState(model, 3);
-  const text = renderText(model, state);
-  assert.match(text, /Prompt:/);
-  assert.match(text, /scan the code/);
-  assert.match(text, /Result:/);
-  assert.match(text, /found 2/);
-  assert.match(text, /Status:/);
-  assert.match(text, /Model:/);
-  assert.match(text, /model/); // shortModel strips provider prefix
-  assert.match(text, /j\/k scroll/); // detail view footer
+  assertTextMatches(renderDrilledText(model, 3), [
+    /Prompt:/,
+    /scan the code/,
+    /Result:/,
+    /found 2/,
+    /Status:/,
+    /Model:/,
+    /model/, // shortModel strips provider prefix
+    /j\/k scroll/, // detail view footer
+  ]);
 });
 
 test("renderNavigator shows agent error diagnostics in detail view", () => {
   const model = new NavigatorModel(errorDetailManager());
-  const state = drilledState(model, 3);
-  const text = renderText(model, state);
-  assert.match(text, /Error:/);
-  assert.match(text, /Subagent produced no assistant output/);
-  assert.match(text, /Error code:/);
-  assert.match(text, /AGENT_EMPTY_OUTPUT \(recoverable\)/);
-  assert.match(text, /History:/);
-  assert.match(text, /assistant tool read: \{"file":"README.md"\}/);
-  assert.match(text, /tool read: README content/);
+  assertTextMatches(renderDrilledText(model, 3), [
+    /Error:/,
+    /Subagent produced no assistant output/,
+    /Error code:/,
+    /AGENT_EMPTY_OUTPUT \(recoverable\)/,
+    /History:/,
+    /assistant tool read: \{"file":"README.md"\}/,
+    /tool read: README content/,
+  ]);
 });
 
 test("renderNavigator shows model info in agent rows", () => {
@@ -514,17 +512,16 @@ test("NavigatorModel.saved returns empty when storage is empty", () => {
 
 test("renderNavigator shows saved workflows in runs view with separator", () => {
   const model = new NavigatorModel(fakeManager(), savedStorage());
-  const state = new NavigatorState();
-  const text = renderText(model, state);
-
-  assert.match(text, /Workflows/);
-  assert.match(text, /◆ audit/); // runs section
-  assert.match(text, /saved/); // separator or section header
-  assert.match(text, /analyze/); // saved item
-  assert.match(text, /backup/);
-  assert.match(text, /deploy/);
-  assert.match(text, /~/); // user location
-  assert.match(text, /\./); // project location
+  assertTextMatches(renderText(model), [
+    /Workflows/,
+    /◆ audit/, // runs section
+    /saved/, // separator or section header
+    /analyze/, // saved item
+    /backup/,
+    /deploy/,
+    /~/, // user location
+    /\./, // project location
+  ]);
 });
 
 test("renderNavigator cursor tracks across runs and saved items", () => {
@@ -572,14 +569,15 @@ test("renderNavigator shows saved detail view", () => {
   const state = drilledState(model, 1, 1); // first saved item
   assert.equal(state.kind, "savedDetail");
 
-  const text = renderText(model, state);
-  assert.match(text, /analyze/);
-  assert.match(text, /Analyze deps/);
-  assert.match(text, /Location:/);
-  assert.match(text, /Script:/);
-  assert.match(text, /Saved at:/);
-  assert.match(text, /j\/k scroll/);
-  assert.match(text, /esc back/);
+  assertTextMatches(renderText(model, state), [
+    /analyze/,
+    /Analyze deps/,
+    /Location:/,
+    /Script:/,
+    /Saved at:/,
+    /j\/k scroll/,
+    /esc back/,
+  ]);
 });
 
 test("renderNavigator saved detail shows 'x delete' in footer", () => {
