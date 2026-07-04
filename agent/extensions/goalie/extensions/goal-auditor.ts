@@ -11,7 +11,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { GoalRecord } from "./goal-record.ts";
 import type { AuditorProgressCallback, GoalAuditorProgress } from "./goal-auditor-progress.ts";
-export type { AuditorProgressCallback } from "./goal-auditor-progress.ts";
 
 export interface GoalAuditorConfig {
 	provider?: string;
