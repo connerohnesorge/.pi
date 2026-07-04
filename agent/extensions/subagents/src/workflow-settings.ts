@@ -105,36 +105,45 @@ function readSettings(path: string): WorkflowSettings {
 function normalizeSettings(value: unknown): WorkflowSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const raw = value as Record<string, unknown>;
+  return {
+    ...normalizeTriggerSettings(raw),
+    ...normalizeRuntimeSettings(raw),
+    ...normalizeProgressSettings(raw),
+  };
+}
+
+function normalizeTriggerSettings(raw: Record<string, unknown>): WorkflowSettings {
   const settings: WorkflowSettings = {};
-  if (typeof raw.keywordTriggerEnabled === "boolean") {
-    settings.keywordTriggerEnabled = raw.keywordTriggerEnabled;
-  }
+  if (typeof raw.keywordTriggerEnabled === "boolean") settings.keywordTriggerEnabled = raw.keywordTriggerEnabled;
   const keywordTriggerWord = normalizeKeywordTriggerWord(raw.keywordTriggerWord);
   if (keywordTriggerWord !== undefined) settings.keywordTriggerWord = keywordTriggerWord;
-  if (raw.defaultAgentTimeoutMs === null) {
-    settings.defaultAgentTimeoutMs = null;
-  } else if (
-    typeof raw.defaultAgentTimeoutMs === "number" &&
-    Number.isFinite(raw.defaultAgentTimeoutMs) &&
-    raw.defaultAgentTimeoutMs > 0
-  ) {
-    settings.defaultAgentTimeoutMs = raw.defaultAgentTimeoutMs;
-  }
+  return settings;
+}
+
+function normalizeRuntimeSettings(raw: Record<string, unknown>): WorkflowSettings {
+  const settings: WorkflowSettings = {};
+  if (raw.defaultAgentTimeoutMs === null) settings.defaultAgentTimeoutMs = null;
+  else if (isPositiveNumber(raw.defaultAgentTimeoutMs)) settings.defaultAgentTimeoutMs = raw.defaultAgentTimeoutMs;
   const defaultConcurrency = normalizeInteger(raw.defaultConcurrency, 1, MAX_CONCURRENCY);
   if (defaultConcurrency !== undefined) settings.defaultConcurrency = defaultConcurrency;
   const defaultAgentRetries = normalizeInteger(raw.defaultAgentRetries, 0, MAX_AGENT_RETRIES);
   if (defaultAgentRetries !== undefined) settings.defaultAgentRetries = defaultAgentRetries;
+  return settings;
+}
+
+function normalizeProgressSettings(raw: Record<string, unknown>): WorkflowSettings {
+  const settings: WorkflowSettings = {};
   if (raw.progressPanelMode === "compact" || raw.progressPanelMode === "detailed") {
     settings.progressPanelMode = raw.progressPanelMode;
   }
-  if (
-    typeof raw.progressPanelMaxAgents === "number" &&
-    Number.isFinite(raw.progressPanelMaxAgents) &&
-    raw.progressPanelMaxAgents >= 1
-  ) {
+  if (isPositiveNumber(raw.progressPanelMaxAgents)) {
     settings.progressPanelMaxAgents = Math.min(1000, Math.floor(raw.progressPanelMaxAgents));
   }
   return settings;
+}
+
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function normalizeInteger(value: unknown, min: number, max: number): number | undefined {

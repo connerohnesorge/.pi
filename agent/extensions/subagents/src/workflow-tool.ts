@@ -11,7 +11,7 @@ import {
   type WorkflowSnapshot,
 } from "./display.ts";
 import { WorkflowError, WorkflowErrorCode } from "./errors.ts";
-import { parseWorkflowScript, type WorkflowRunResult } from "./workflow.ts";
+import { parseWorkflowScript, type WorkflowMeta, type WorkflowRunResult } from "./workflow.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.ts";
 import { loadWorkflowSettings } from "./workflow-settings.ts";
@@ -200,119 +200,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       return normalizeWorkflowToolArgs(args);
     },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const script = normalizeWorkflowScript(params.script);
-      const parsed = parseWorkflowScript(script);
-
-      // checkpoint() reaches the human only on a UI-bearing foreground run; a
-      // background run is detached, so checkpoint() falls back to its headless
-      // default. Map a checkpoint to ctx.ui.confirm (a yes/no gate) when available.
-      const uiCtx = ctx as
-        | { hasUI?: boolean; ui?: { confirm?(title: string, message: string): Promise<boolean> } }
-        | undefined;
-      const uiConfirm = uiCtx?.hasUI ? uiCtx.ui?.confirm : undefined;
-      const confirm = uiConfirm
-        ? (promptText: string) => uiConfirm.call(uiCtx?.ui, "Workflow checkpoint", promptText)
-        : undefined;
-
-      // Background execution is the default: return immediately so the turn ends
-      // and the user isn't blocked. The result is delivered back into the
-      // conversation when the run finishes (see installResultDelivery). Only an
-      // explicit `background: false` blocks for the result inline.
-      if (params.background ?? true) {
-        const { runId } = manager.startInBackground(script, params.args, {
-          maxAgents: params.maxAgents,
-          concurrency: params.concurrency,
-          agentRetries: params.agentRetries,
-          agentTimeoutMs: params.agentTimeoutMs,
-          tokenBudget: params.tokenBudget,
-        });
-        return {
-          content: [{ type: "text", text: backgroundStartedText(parsed.meta.name, runId) }],
-          details: { runId, background: true },
-        };
-      }
-
-      // Synchronous execution (blocking) — but routed through the manager so the
-      // run shows up live in the /workflows navigator and the task panel while it
-      // runs, then stays in history afterwards. We still block on the result and
-      // return it inline, so the model gets the full output in the same turn.
-      let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
-      const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, {
-        key: "workflow",
-        streamToolUpdates: true,
-        maxAgents: 4,
-        showResultPreviews: false,
-      });
-
-      let result: WorkflowRunResult;
-      try {
-        result = await manager.runSync(script, params.args, {
-          maxAgents: params.maxAgents,
-          concurrency: params.concurrency,
-          agentRetries: params.agentRetries,
-          agentTimeoutMs: params.agentTimeoutMs,
-          tokenBudget: params.tokenBudget,
-          confirm,
-          externalSignal: signal,
-          onProgress(live) {
-            snapshot = recomputeWorkflowSnapshot(live);
-            display.update(snapshot);
-          },
-        });
-      } catch (error) {
-        if (signal?.aborted || (error instanceof WorkflowError && error.code === WorkflowErrorCode.WORKFLOW_ABORTED)) {
-          for (const agent of snapshot.agents) {
-            if (agent.status === "running") {
-              agent.status = "skipped";
-              agent.error = "aborted";
-            }
-          }
-          snapshot = recomputeWorkflowSnapshot(snapshot);
-          display.complete(snapshot);
-          throw new Error("Workflow was aborted");
-        }
-        throw error;
-      }
-
-      if (result.agentCount === 0) {
-        throw new Error(
-          "workflow scripts must call agent() at least once; this workflow declared phases but did not run any subagents",
-        );
-      }
-
-      snapshot.result = result.result;
-      snapshot.durationMs = result.durationMs;
-      snapshot = recomputeWorkflowSnapshot(snapshot);
-      display.complete(snapshot);
-
-      // Format token usage (include cost when the provider reports it)
-      const tokenInfo = result.tokenUsage
-        ? `\n\nToken usage: ${result.tokenUsage.total.toLocaleString()} tokens${
-            result.tokenUsage.cost ? ` ($${result.tokenUsage.cost.toFixed(4)})` : ""
-          }`
-        : "";
-
-      const formattedResult =
-        result.result !== undefined ? `\n\`\`\`json\n${JSON.stringify(result.result, null, 2)}\n\`\`\`` : "";
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Workflow **${result.meta.name}** completed with **${result.agentCount}** agent(s).${tokenInfo}\n\n## Result${formattedResult}`,
-          },
-        ],
-        details: {
-          ...snapshot,
-          meta: result.meta,
-          phases: result.phases,
-          logs: result.logs,
-          result: result.result,
-          durationMs: result.durationMs,
-          tokenUsage: result.tokenUsage,
-          runId: result.runId,
-        },
-      };
+      return executeWorkflowTool(params, signal, onUpdate, ctx, manager);
     },
     renderCall(_args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold("workflow")), 0, 0);
@@ -336,6 +224,165 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       return new Text(clean || theme.fg("muted", "workflow"), 0, 0);
     },
   });
+}
+
+async function executeWorkflowTool(
+  params: WorkflowToolInput,
+  signal: AbortSignal | undefined,
+  onUpdate: any,
+  ctx: unknown,
+  manager: WorkflowManager,
+): Promise<unknown> {
+  const script = normalizeWorkflowScript(params.script);
+  const parsed = parseWorkflowScript(script);
+  if (params.background ?? true) return startBackgroundWorkflow(manager, script, params, parsed.meta.name);
+  return runForegroundWorkflow(manager, script, params, signal, onUpdate, ctx, parsed.meta);
+}
+
+function startBackgroundWorkflow(
+  manager: WorkflowManager,
+  script: string,
+  params: WorkflowToolInput,
+  workflowName: string,
+): unknown {
+  const { runId } = manager.startInBackground(script, params.args, workflowRunOptions(params));
+  return {
+    content: [{ type: "text", text: backgroundStartedText(workflowName, runId) }],
+    details: { runId, background: true },
+  };
+}
+
+async function runForegroundWorkflow(
+  manager: WorkflowManager,
+  script: string,
+  params: WorkflowToolInput,
+  signal: AbortSignal | undefined,
+  onUpdate: any,
+  ctx: unknown,
+  meta: WorkflowMeta,
+): Promise<unknown> {
+  let snapshot: WorkflowSnapshot = createWorkflowSnapshot(meta);
+  const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, {
+    key: "workflow",
+    streamToolUpdates: true,
+    maxAgents: 4,
+    showResultPreviews: false,
+  });
+  const result = await runSyncWorkflow(manager, script, params, signal, ctx, display, (next) => (snapshot = next));
+  assertWorkflowRanAgents(result);
+  snapshot = completeWorkflowSnapshot(snapshot, result);
+  display.complete(snapshot);
+  return formatWorkflowToolResult(result, snapshot);
+}
+
+async function runSyncWorkflow(
+  manager: WorkflowManager,
+  script: string,
+  params: WorkflowToolInput,
+  signal: AbortSignal | undefined,
+  ctx: unknown,
+  display: { update(snapshot: WorkflowSnapshot): void; complete(snapshot: WorkflowSnapshot): void },
+  setSnapshot: (snapshot: WorkflowSnapshot) => void,
+): Promise<WorkflowRunResult> {
+  let latest: WorkflowSnapshot | undefined;
+  try {
+    return await manager.runSync(script, params.args, {
+      ...workflowRunOptions(params),
+      confirm: workflowConfirm(ctx),
+      externalSignal: signal,
+      onProgress(live) {
+        latest = recomputeWorkflowSnapshot(live);
+        setSnapshot(latest);
+        display.update(latest);
+      },
+    });
+  } catch (error) {
+    handleWorkflowRunError(error, signal, latest, display);
+  }
+}
+
+function workflowRunOptions(params: WorkflowToolInput) {
+  return {
+    maxAgents: params.maxAgents,
+    concurrency: params.concurrency,
+    agentRetries: params.agentRetries,
+    agentTimeoutMs: params.agentTimeoutMs,
+    tokenBudget: params.tokenBudget,
+  };
+}
+
+function workflowConfirm(ctx: unknown): ((promptText: string) => Promise<boolean>) | undefined {
+  const uiCtx = ctx as { hasUI?: boolean; ui?: { confirm?(title: string, message: string): Promise<boolean> } } | undefined;
+  const uiConfirm = uiCtx?.hasUI ? uiCtx.ui?.confirm : undefined;
+  return uiConfirm ? (promptText: string) => uiConfirm.call(uiCtx?.ui, "Workflow checkpoint", promptText) : undefined;
+}
+
+function handleWorkflowRunError(
+  error: unknown,
+  signal: AbortSignal | undefined,
+  snapshot: WorkflowSnapshot | undefined,
+  display: { complete(snapshot: WorkflowSnapshot): void },
+): never {
+  if (signal?.aborted || (error instanceof WorkflowError && error.code === WorkflowErrorCode.WORKFLOW_ABORTED)) {
+    const aborted = markRunningAgentsSkipped(snapshot);
+    if (aborted) display.complete(aborted);
+    throw new Error("Workflow was aborted");
+  }
+  throw error;
+}
+
+function markRunningAgentsSkipped(snapshot: WorkflowSnapshot | undefined): WorkflowSnapshot | undefined {
+  if (!snapshot) return undefined;
+  for (const agent of snapshot.agents) {
+    if (agent.status === "running") {
+      agent.status = "skipped";
+      agent.error = "aborted";
+    }
+  }
+  return recomputeWorkflowSnapshot(snapshot);
+}
+
+function assertWorkflowRanAgents(result: WorkflowRunResult): void {
+  if (result.agentCount !== 0) return;
+  throw new Error(
+    "workflow scripts must call agent() at least once; this workflow declared phases but did not run any subagents",
+  );
+}
+
+function completeWorkflowSnapshot(snapshot: WorkflowSnapshot, result: WorkflowRunResult): WorkflowSnapshot {
+  snapshot.result = result.result;
+  snapshot.durationMs = result.durationMs;
+  return recomputeWorkflowSnapshot(snapshot);
+}
+
+function formatWorkflowToolResult(result: WorkflowRunResult, snapshot: WorkflowSnapshot): unknown {
+  return {
+    content: [{ type: "text", text: workflowResultText(result) }],
+    details: {
+      ...snapshot,
+      meta: result.meta,
+      phases: result.phases,
+      logs: result.logs,
+      result: result.result,
+      durationMs: result.durationMs,
+      tokenUsage: result.tokenUsage,
+      runId: result.runId,
+    },
+  };
+}
+
+function workflowResultText(result: WorkflowRunResult): string {
+  return `Workflow **${result.meta.name}** completed with **${result.agentCount}** agent(s).${tokenInfo(result)}\n\n## Result${formattedResult(result)}`;
+}
+
+function tokenInfo(result: WorkflowRunResult): string {
+  if (!result.tokenUsage) return "";
+  const cost = result.tokenUsage.cost ? ` ($${result.tokenUsage.cost.toFixed(4)})` : "";
+  return `\n\nToken usage: ${result.tokenUsage.total.toLocaleString()} tokens${cost}`;
+}
+
+function formattedResult(result: WorkflowRunResult): string {
+  return result.result !== undefined ? `\n\`\`\`json\n${JSON.stringify(result.result, null, 2)}\n\`\`\`` : "";
 }
 
 function resolveWorkflowToolDefaults(

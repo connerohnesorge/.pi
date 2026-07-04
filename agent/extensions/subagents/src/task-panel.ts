@@ -313,28 +313,72 @@ function renderRunBody(
  * cost, and a live token/s rate, followed by per-phase progress and per-agent rows
  * (capped at `maxAgents` per phase). `now` is injected for testability.
  */
-function renderDetailedRun(r: ReturnType<WorkflowManager["listRuns"]>[number], manager: WorkflowManager, theme: Theme, maxAgents: number, now: number): string[] {
+function renderDetailedRun(
+  r: ReturnType<WorkflowManager["listRuns"]>[number],
+  manager: WorkflowManager,
+  theme: Theme,
+  maxAgents: number,
+  now: number,
+): string[] {
   const live = manager.getRun(r.runId);
   const snap = live?.snapshot;
   const agents = (snap?.agents ?? r.agents) as WorkflowAgentSnapshot[];
-  const done = agents.filter((a) => a.status === "done").length;
-  const total = agents.reduce((n, a) => n + (a.tokens ?? 0), 0);
-  const usage = snap?.tokenUsage ?? r.tokenUsage;
-  const dim = (t: string) => theme.fg("dim", t);
-
+  const total = totalAgentTokens(agents);
   sampleTokens(r.runId, total, now);
-  const rate = r.status === "running" ? tokensPerSecond(r.runId) : 0;
-  const meta = [
-    `${done}/${agents.length} agents`,
-    snap?.currentPhase || "",
-    total > 0 ? `${fmtTokensShort(total)} tok` : "",
-    usage?.cost ? `$${usage.cost.toFixed(usage.cost >= 0.01 ? 2 : 4)}` : "",
-    rate > 0 ? `${Math.round(rate)} tok/s` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+
   const icon = r.status === "paused" ? "⏸" : "◆";
-  return [`  ${icon} ${theme.bold(r.workflowName)}  ${dim(meta)}`, ...(snap ? renderRunBody(snap, agents, maxAgents, theme) : [])];
+  const dim = (t: string) => theme.fg("dim", t);
+  const header = `  ${icon} ${theme.bold(r.workflowName)}  ${dim(detailedRunMeta(r, snap, agents, total))}`;
+  return [header, ...(snap ? renderRunBody(snap, agents, maxAgents, theme) : [])];
+}
+
+function detailedRunMeta(
+  r: ReturnType<WorkflowManager["listRuns"]>[number],
+  snap: WorkflowSnapshot | undefined,
+  agents: WorkflowAgentSnapshot[],
+  total: number,
+): string {
+  return compactMetaParts([
+    agentCountMeta(agents),
+    snap?.currentPhase || "",
+    tokenMeta(total),
+    costMeta(snap?.tokenUsage ?? r.tokenUsage),
+    rateMeta(r),
+  ]);
+}
+
+function agentCountMeta(agents: WorkflowAgentSnapshot[]): string {
+  return `${doneAgentCount(agents)}/${agents.length} agents`;
+}
+
+function tokenMeta(total: number): string {
+  return total > 0 ? `${fmtTokensShort(total)} tok` : "";
+}
+
+function costMeta(usage: WorkflowSnapshot["tokenUsage"]): string {
+  return usage?.cost ? formatCost(usage.cost) : "";
+}
+
+function rateMeta(r: ReturnType<WorkflowManager["listRuns"]>[number]): string {
+  if (r.status !== "running") return "";
+  const rate = tokensPerSecond(r.runId);
+  return rate > 0 ? `${Math.round(rate)} tok/s` : "";
+}
+
+function compactMetaParts(parts: string[]): string {
+  return parts.filter(Boolean).join(" · ");
+}
+
+function formatCost(cost: number): string {
+  return `$${cost.toFixed(cost >= 0.01 ? 2 : 4)}`;
+}
+
+function doneAgentCount(agents: WorkflowAgentSnapshot[]): number {
+  return agents.filter((a) => a.status === "done").length;
+}
+
+function totalAgentTokens(agents: WorkflowAgentSnapshot[]): number {
+  return agents.reduce((n, a) => n + (a.tokens ?? 0), 0);
 }
 
 export function renderPanelDetailed(

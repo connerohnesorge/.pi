@@ -90,33 +90,36 @@ interface AnsiToken {
  */
 export function tokenizeAnsi(line: string): AnsiToken[] {
   const tokens: AnsiToken[] = [];
-  let i = 0;
-  while (i < line.length) {
+  for (let i = 0; i < line.length; ) {
     if (line[i] === "\x1b") {
-      let j = i + 1;
-      const next = line[j];
-      if (next === "[") {
-        // CSI: ends at a final byte in 0x40–0x7e.
-        j++;
-        while (j < line.length && !(line[j] >= "@" && line[j] <= "~")) j++;
-        j++;
-      } else if (next === "]" || next === "_" || next === "P" || next === "^") {
-        // String sequence: ends at BEL (\x07) or ST (\x1b\\).
-        j++;
-        while (j < line.length && line[j] !== "\x07" && !(line[j] === "\x1b" && line[j + 1] === "\\")) j++;
-        if (line[j] === "\x07") j++;
-        else if (line[j] === "\x1b") j += 2;
-      } else {
-        j++; // lone ESC + one byte
-      }
-      tokens.push({ esc: line.slice(i, j) });
-      i = j;
+      const end = ansiEscapeEnd(line, i);
+      tokens.push({ esc: line.slice(i, end) });
+      i = end;
     } else {
-      tokens.push({ ch: line[i] });
-      i++;
+      tokens.push({ ch: line[i++] });
     }
   }
   return tokens;
+}
+
+function ansiEscapeEnd(line: string, start: number): number {
+  let j = start + 1;
+  const next = line[j];
+  if (next === "[") return csiEnd(line, j + 1);
+  if (next === "]" || next === "_" || next === "P" || next === "^") return stringEscapeEnd(line, j + 1);
+  return j + 1; // lone ESC + one byte
+}
+
+function csiEnd(line: string, i: number): number {
+  while (i < line.length && !(line[i] >= "@" && line[i] <= "~")) i++;
+  return i + 1;
+}
+
+function stringEscapeEnd(line: string, i: number): number {
+  while (i < line.length && line[i] !== "\x07" && !(line[i] === "\x1b" && line[i + 1] === "\\")) i++;
+  if (line[i] === "\x07") return i + 1;
+  if (line[i] === "\x1b") return i + 2;
+  return i;
 }
 
 /**
@@ -202,30 +205,39 @@ export class WorkflowEditor extends CustomEditor {
   override handleInput(data: string): void {
     // First Backspace right after a trigger word disarms (non-destructive).
     if (isBackspace(data) && this.isActive() && this.cursorAfterTrigger()) {
-      this.disabled = true;
-      this.modeState.suppressedKeywordText = this.getText().trim();
-      this.syncState();
-      this.tui.requestRender();
+      this.disableTriggerForCurrentText();
       return;
     }
     const before = this.getText();
     super.handleInput(data);
-    const after = this.getText();
-    if (after !== before) {
-      const now = hasTrigger(after, this.modeState.keywordTriggerWord);
-      const normalizedAfter = after.trim();
-      const suppressionCleared =
-        this.modeState.suppressedKeywordText !== undefined &&
-        normalizedAfter !== "" &&
-        normalizedAfter !== this.modeState.suppressedKeywordText;
-      if (suppressionCleared) {
-        this.modeState.suppressedKeywordText = undefined;
-      }
-      // A freshly typed trigger re-arms a previously disabled box.
-      if (now && (!this.wasTriggered || suppressionCleared)) this.disabled = false;
-      this.wasTriggered = now;
-    }
+    this.updateTriggerAfterEdit(before);
     this.syncState();
+  }
+
+  private disableTriggerForCurrentText(): void {
+    this.disabled = true;
+    this.modeState.suppressedKeywordText = this.getText().trim();
+    this.syncState();
+    this.tui.requestRender();
+  }
+
+  private updateTriggerAfterEdit(before: string): void {
+    const after = this.getText();
+    if (after === before) return;
+    const now = hasTrigger(after, this.modeState.keywordTriggerWord);
+    const suppressionCleared = this.clearSuppressionIfTextChanged(after.trim());
+    // A freshly typed trigger re-arms a previously disabled box.
+    if (now && (!this.wasTriggered || suppressionCleared)) this.disabled = false;
+    this.wasTriggered = now;
+  }
+
+  private clearSuppressionIfTextChanged(normalizedAfter: string): boolean {
+    const suppressionCleared =
+      this.modeState.suppressedKeywordText !== undefined &&
+      normalizedAfter !== "" &&
+      normalizedAfter !== this.modeState.suppressedKeywordText;
+    if (suppressionCleared) this.modeState.suppressedKeywordText = undefined;
+    return suppressionCleared;
   }
 
   override render(width: number): string[] {
@@ -313,71 +325,93 @@ export function registerWorkflowTriggerCommand(
   pi.registerCommand?.("workflows-trigger", {
     description: "Keyword workflow trigger: on | off | set <word> | reset | status",
     async handler(args: string, _ctx: ExtensionCommandContext) {
-      const raw = args.trim();
-      const [command = "status", ...rest] = raw.split(/\s+/);
-      const arg = command.toLowerCase();
-      const say = (content: string) => pi.sendMessage({ customType: "workflows-trigger", content, display: true });
-      if (arg === "on") {
-        state.keywordTriggerEnabled = true;
-        state.suppressedKeywordText = undefined;
-        const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerEnabled: true });
-        await say(
-          saved
-            ? `Workflows keyword trigger on — mentioning ${triggerDisplayName(state.keywordTriggerWord)} in an interactive message will auto-arm workflows mode. Saved for new sessions.`
-            : "Workflows keyword trigger on for this session, but the preference could not be saved.",
-        );
-        return;
-      }
-      if (arg === "off") {
-        state.keywordTriggerEnabled = false;
-        state.active = false;
-        state.suppressedKeywordText = undefined;
-        const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerEnabled: false });
-        await say(
-          saved
-            ? `Workflows keyword trigger off — messages can mention ${triggerDisplayName(state.keywordTriggerWord)} without forcing the workflow tool. Saved for new sessions. Use /workflows-trigger on to restore.`
-            : "Workflows keyword trigger off for this session, but the preference could not be saved. Use /workflows-trigger on to restore.",
-        );
-        return;
-      }
-      if (arg === "set") {
-        const requested = rest.join(" ");
-        const keywordTriggerWord = normalizeKeywordTriggerWord(requested);
-        if (!keywordTriggerWord) {
-          await say(
-            'Invalid trigger word. Use a non-empty term with no spaces and no leading "/", e.g. /workflows-trigger set pi-workflow',
-          );
-          return;
-        }
-        state.keywordTriggerWord = keywordTriggerWord;
-        state.suppressedKeywordText = undefined;
-        const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerWord });
-        await say(
-          saved
-            ? `Workflows keyword trigger word set to "${keywordTriggerWord}". Saved for new sessions.`
-            : `Workflows keyword trigger word set to "${keywordTriggerWord}" for this session, but the preference could not be saved.`,
-        );
-        return;
-      }
-      if (arg === "reset") {
-        state.keywordTriggerWord = DEFAULT_KEYWORD_TRIGGER_WORD;
-        state.suppressedKeywordText = undefined;
-        const saved = persistWorkflowTriggerSettings(settingsStore, {
-          keywordTriggerWord: DEFAULT_KEYWORD_TRIGGER_WORD,
-        });
-        await say(
-          saved
-            ? 'Workflows keyword trigger word reset to "workflow" (also matches "workflows"). Saved for new sessions.'
-            : 'Workflows keyword trigger word reset to "workflow" for this session, but the preference could not be saved.',
-        );
-        return;
-      }
-      const keywordTriggerWord = resolvedTriggerWord(state.keywordTriggerWord);
-      await say(
-        `Workflows keyword trigger is ${state.keywordTriggerEnabled ? "on" : "off"}; trigger word is "${keywordTriggerWord}". Changes are saved for new sessions. Usage: /workflows-trigger on | off | set <word> | reset | status`,
-      );
+      await handleWorkflowTriggerCommand(args, pi, state, settingsStore);
     },
   });
+}
+
+type TriggerSay = (content: string) => Promise<unknown>;
+
+async function handleWorkflowTriggerCommand(
+  args: string,
+  pi: ExtensionAPI,
+  state: WorkflowModeState,
+  settingsStore: WorkflowSettingsStore,
+): Promise<void> {
+  const [command = "status", ...rest] = args.trim().split(/\s+/);
+  const say: TriggerSay = (content) => pi.sendMessage({ customType: "workflows-trigger", content, display: true });
+  if (command.toLowerCase() === "on") return setWorkflowTriggerEnabled(true, state, settingsStore, say);
+  if (command.toLowerCase() === "off") return setWorkflowTriggerEnabled(false, state, settingsStore, say);
+  if (command.toLowerCase() === "set") return setWorkflowTriggerWord(rest.join(" "), state, settingsStore, say);
+  if (command.toLowerCase() === "reset") return resetWorkflowTriggerWord(state, settingsStore, say);
+  return reportWorkflowTriggerStatus(state, say);
+}
+
+async function setWorkflowTriggerEnabled(
+  enabled: boolean,
+  state: WorkflowModeState,
+  settingsStore: WorkflowSettingsStore,
+  say: TriggerSay,
+): Promise<void> {
+  state.keywordTriggerEnabled = enabled;
+  state.active = enabled ? state.active : false;
+  state.suppressedKeywordText = undefined;
+  const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerEnabled: enabled });
+  await say(workflowTriggerEnabledMessage(enabled, saved, state.keywordTriggerWord));
+}
+
+function workflowTriggerEnabledMessage(enabled: boolean, saved: boolean, keywordTriggerWord: string | undefined): string {
+  if (enabled) {
+    return saved
+      ? `Workflows keyword trigger on — mentioning ${triggerDisplayName(keywordTriggerWord)} in an interactive message will auto-arm workflows mode. Saved for new sessions.`
+      : "Workflows keyword trigger on for this session, but the preference could not be saved.";
+  }
+  return saved
+    ? `Workflows keyword trigger off — messages can mention ${triggerDisplayName(keywordTriggerWord)} without forcing the workflow tool. Saved for new sessions. Use /workflows-trigger on to restore.`
+    : "Workflows keyword trigger off for this session, but the preference could not be saved. Use /workflows-trigger on to restore.";
+}
+
+async function setWorkflowTriggerWord(
+  requested: string,
+  state: WorkflowModeState,
+  settingsStore: WorkflowSettingsStore,
+  say: TriggerSay,
+): Promise<void> {
+  const keywordTriggerWord = normalizeKeywordTriggerWord(requested);
+  if (!keywordTriggerWord) {
+    await say('Invalid trigger word. Use a non-empty term with no spaces and no leading "/", e.g. /workflows-trigger set pi-workflow');
+    return;
+  }
+  state.keywordTriggerWord = keywordTriggerWord;
+  state.suppressedKeywordText = undefined;
+  const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerWord });
+  await say(
+    saved
+      ? `Workflows keyword trigger word set to "${keywordTriggerWord}". Saved for new sessions.`
+      : `Workflows keyword trigger word set to "${keywordTriggerWord}" for this session, but the preference could not be saved.`,
+  );
+}
+
+async function resetWorkflowTriggerWord(
+  state: WorkflowModeState,
+  settingsStore: WorkflowSettingsStore,
+  say: TriggerSay,
+): Promise<void> {
+  state.keywordTriggerWord = DEFAULT_KEYWORD_TRIGGER_WORD;
+  state.suppressedKeywordText = undefined;
+  const saved = persistWorkflowTriggerSettings(settingsStore, { keywordTriggerWord: DEFAULT_KEYWORD_TRIGGER_WORD });
+  await say(
+    saved
+      ? 'Workflows keyword trigger word reset to "workflow" (also matches "workflows"). Saved for new sessions.'
+      : 'Workflows keyword trigger word reset to "workflow" for this session, but the preference could not be saved.',
+  );
+}
+
+async function reportWorkflowTriggerStatus(state: WorkflowModeState, say: TriggerSay): Promise<void> {
+  const keywordTriggerWord = resolvedTriggerWord(state.keywordTriggerWord);
+  await say(
+    `Workflows keyword trigger is ${state.keywordTriggerEnabled ? "on" : "off"}; trigger word is "${keywordTriggerWord}". Changes are saved for new sessions. Usage: /workflows-trigger on | off | set <word> | reset | status`,
+  );
 }
 
 /**
@@ -473,29 +507,10 @@ export function installWorkflowEditor(
   // the editor, because the editor's state is reset synchronously by submitValue()
   // BEFORE the input event fires (the actual prompt processing is async).
   pi.on("input", (event: { source?: string; text?: string }) => {
-    if (event.source !== "interactive" || !event.text) return { action: "continue" } as const;
-    // Arm either when the user typed the "workflow(s)" trigger, or when standing
-    // effort mode is on and the message is a substantive request.
-    const normalizedText = event.text.trim();
-    const suppressed = state.suppressedKeywordText === normalizedText;
-    if (suppressed) state.suppressedKeywordText = undefined;
-    const triggered = state.keywordTriggerEnabled && !suppressed && hasTrigger(event.text, state.keywordTriggerWord);
-    const byEffort = !triggered && !!effort && effort.level !== "off" && isSubstantive(event.text);
-    if (!triggered && !byEffort) return { action: "continue" } as const;
-    try {
-      if (savedTools === undefined) {
-        savedTools = pi.getActiveTools?.() ?? [];
-        const current = [...savedTools];
-        if (!current.includes(WORKFLOW_TOOL_NAME)) {
-          current.push(WORKFLOW_TOOL_NAME);
-        }
-        pi.setActiveTools?.(current);
-      }
-    } catch {
-      // Tool restriction is best-effort; the directive still forces the workflow.
-    }
-    const extra = byEffort && effort ? effortDirective(effort.level) : undefined;
-    return { action: "transform", text: buildForcedWorkflowPrompt(event.text, extra) } as const;
+    const decision = workflowInputDecision(event, state, effort);
+    if (!decision.force || !event.text) return { action: "continue" } as const;
+    savedTools = ensureWorkflowToolActive(pi, savedTools);
+    return { action: "transform", text: buildForcedWorkflowPrompt(event.text, decision.extraDirective) } as const;
   });
 
   // Restore the user's full tool set once the forced turn completes.
@@ -546,6 +561,41 @@ function resolvedTriggerWord(keywordTriggerWord: string | undefined): string {
 function triggerDisplayName(keywordTriggerWord: string | undefined): string {
   const word = resolvedTriggerWord(keywordTriggerWord);
   return word.toLowerCase() === DEFAULT_KEYWORD_TRIGGER_WORD ? "workflow/workflows" : `"${word}"`;
+}
+
+function workflowInputDecision(
+  event: { source?: string; text?: string },
+  state: WorkflowModeState,
+  effort?: EffortState,
+): { force: boolean; extraDirective?: string } {
+  if (event.source !== "interactive" || !event.text) return { force: false };
+  const triggered = keywordTriggerDecision(event.text, state);
+  const byEffort = !triggered && effortTriggersWorkflow(event.text, effort);
+  return { force: triggered || byEffort, extraDirective: byEffort && effort ? effortDirective(effort.level) : undefined };
+}
+
+function keywordTriggerDecision(text: string, state: WorkflowModeState): boolean {
+  const suppressed = state.suppressedKeywordText === text.trim();
+  if (suppressed) state.suppressedKeywordText = undefined;
+  return state.keywordTriggerEnabled && !suppressed && hasTrigger(text, state.keywordTriggerWord);
+}
+
+function effortTriggersWorkflow(text: string, effort?: EffortState): boolean {
+  return !!effort && effort.level !== "off" && isSubstantive(text);
+}
+
+function ensureWorkflowToolActive(pi: ExtensionAPI, savedTools: string[] | undefined): string[] | undefined {
+  if (savedTools !== undefined) return savedTools;
+  try {
+    const restore = pi.getActiveTools?.() ?? [];
+    const current = [...restore];
+    if (!current.includes(WORKFLOW_TOOL_NAME)) current.push(WORKFLOW_TOOL_NAME);
+    pi.setActiveTools?.(current);
+    return restore;
+  } catch {
+    // Tool restriction is best-effort; the directive still forces the workflow.
+    return savedTools;
+  }
 }
 
 function persistProgressSettings(settingsStore: WorkflowSettingsStore, settings: WorkflowSettings): boolean {
