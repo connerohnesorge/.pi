@@ -11,24 +11,22 @@ function runtimeStatus(rtkAvailable: boolean): RuntimeStatus {
 	return { rtkAvailable };
 }
 
-runTest("rewrite mode still requires RTK availability when guard is enabled", () => {
+function assertGuardedMode(mode: "rewrite" | "suggest") {
 	const config = cloneDefaultConfig();
-	config.mode = "rewrite";
+	config.mode = mode;
 	config.guardWhenRtkMissing = true;
 
 	assert.equal(shouldRequireRtkAvailabilityForCommandHandling(config), true);
 	assert.equal(shouldSkipCommandHandlingWhenRtkMissing(config, runtimeStatus(false)), true);
 	assert.equal(shouldSkipCommandHandlingWhenRtkMissing(config, runtimeStatus(true)), false);
+}
+
+runTest("rewrite mode still requires RTK availability when guard is enabled", () => {
+	assertGuardedMode("rewrite");
 });
 
 runTest("suggest mode uses RTK availability guard to avoid repeated missing-binary rewrite probes", () => {
-	const config = cloneDefaultConfig();
-	config.mode = "suggest";
-	config.guardWhenRtkMissing = true;
-
-	assert.equal(shouldRequireRtkAvailabilityForCommandHandling(config), true);
-	assert.equal(shouldSkipCommandHandlingWhenRtkMissing(config, runtimeStatus(false)), true);
-	assert.equal(shouldSkipCommandHandlingWhenRtkMissing(config, runtimeStatus(true)), false);
+	assertGuardedMode("suggest");
 });
 
 runTest("guard disabled never blocks command handling", () => {
