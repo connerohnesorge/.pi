@@ -43,19 +43,21 @@ function isFailureStart(line: string): boolean {
 	return FAILURE_START_PATTERNS.some((pattern) => pattern.test(line));
 }
 
+function parseTestCount(value: string | undefined): number {
+	return Number.parseInt(value ?? "0", 10) || 0;
+}
+
+function parseTestStatsMatch(match: RegExpMatchArray): Partial<TestSummary> {
+	return {
+		passed: parseTestCount(match[1]),
+		failed: parseTestCount(match[2]),
+		skipped: parseTestCount(match[3]),
+	};
+}
+
 function extractTestStats(output: string): Partial<TestSummary> {
-	for (const pattern of TEST_RESULT_PATTERNS) {
-		const match = output.match(pattern);
-		if (!match) {
-			continue;
-		}
-		return {
-			passed: Number.parseInt(match[1] ?? "0", 10) || 0,
-			failed: Number.parseInt(match[2] ?? "0", 10) || 0,
-			skipped: Number.parseInt(match[3] ?? "0", 10) || 0,
-		};
-	}
-	return {};
+	const match = TEST_RESULT_PATTERNS.map((pattern) => output.match(pattern)).find((match) => match !== null);
+	return match ? parseTestStatsMatch(match) : {};
 }
 
 function isTestCommand(command: string | undefined | null): boolean {
