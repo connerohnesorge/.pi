@@ -91,14 +91,26 @@ function preserveUserscriptMetadata(line: string, trimmed: string, state: Minima
 	return true;
 }
 
+function hasDelimitedCommentMarkers(patterns: CommentPatterns): boolean {
+	return Boolean(patterns.blockStart && patterns.blockEnd);
+}
+
+function startsDelimitedComment(trimmed: string, patterns: CommentPatterns, state: MinimalFilterState): boolean {
+	return (
+		!state.inDocstring &&
+		trimmed.includes(patterns.blockStart ?? "\0") &&
+		!trimmed.startsWith(patterns.docBlockStart ?? "\0")
+	);
+}
+
+function updateDelimitedCommentState(trimmed: string, patterns: CommentPatterns, state: MinimalFilterState): boolean {
+	const handled = state.inBlockComment || startsDelimitedComment(trimmed, patterns, state);
+	state.inBlockComment = handled && !trimmed.includes(patterns.blockEnd ?? "\0");
+	return handled;
+}
+
 function handleDelimitedComment(trimmed: string, patterns: CommentPatterns, state: MinimalFilterState): boolean {
-	if (!patterns.blockStart || !patterns.blockEnd) return false;
-	if (!state.inDocstring && trimmed.includes(patterns.blockStart) && !trimmed.startsWith(patterns.docBlockStart ?? "\0")) {
-		state.inBlockComment = true;
-	}
-	if (!state.inBlockComment) return false;
-	if (trimmed.includes(patterns.blockEnd)) state.inBlockComment = false;
-	return true;
+	return hasDelimitedCommentMarkers(patterns) && updateDelimitedCommentState(trimmed, patterns, state);
 }
 
 function handlePythonDocstring(line: string, trimmed: string, language: Language, state: MinimalFilterState, result: string[]): boolean {
@@ -231,29 +243,50 @@ function pushSkippedSectionNotice(result: string[], totalLines: number, keptLine
 	result.push(`    // ... ${totalLines - keptLines} lines omitted`);
 }
 
+interface TruncateState {
+	keptLines: number;
+	skippedSection: boolean;
+}
+
+function shouldKeepTruncateLine(line: string, keptLines: number, maxLines: number): boolean {
+	return isImportantTruncateLine(line.trim()) || keptLines < maxLines / 2;
+}
+
+function appendKeptTruncateLine(line: string, totalLines: number, state: TruncateState, result: string[]): void {
+	if (state.skippedSection) pushSkippedSectionNotice(result, totalLines, state.keptLines);
+	state.skippedSection = false;
+	result.push(line);
+	state.keptLines += 1;
+}
+
+function appendFinalTruncateNotice(result: string[], lines: string[], state: TruncateState): void {
+	if (!state.skippedSection && state.keptLines >= lines.length) return;
+	result.push(`// ... ${lines.length - state.keptLines} more lines (total: ${lines.length})`);
+}
+
+function visitTruncateLine(line: string, lines: string[], maxLines: number, state: TruncateState, result: string[]): void {
+	if (shouldKeepTruncateLine(line, state.keptLines, maxLines)) {
+		appendKeptTruncateLine(line, lines.length, state, result);
+	} else {
+		state.skippedSection = true;
+	}
+}
+
+function appendTruncatedLines(lines: string[], maxLines: number, state: TruncateState, result: string[]): void {
+	for (const line of lines) {
+		visitTruncateLine(line, lines, maxLines, state, result);
+		if (state.keptLines >= maxLines - 1) break;
+	}
+}
+
 export function smartTruncate(content: string, maxLines: number, _language: Language): string {
 	const lines = content.split("\n");
 	if (lines.length <= maxLines) return content;
 
 	const result: string[] = [];
-	let keptLines = 0;
-	let skippedSection = false;
-
-	for (const line of lines) {
-		if (isImportantTruncateLine(line.trim()) || keptLines < maxLines / 2) {
-			if (skippedSection) pushSkippedSectionNotice(result, lines.length, keptLines);
-			skippedSection = false;
-			result.push(line);
-			keptLines += 1;
-		} else {
-			skippedSection = true;
-		}
-		if (keptLines >= maxLines - 1) break;
-	}
-
-	if (skippedSection || keptLines < lines.length) {
-		result.push(`// ... ${lines.length - keptLines} more lines (total: ${lines.length})`);
-	}
+	const state: TruncateState = { keptLines: 0, skippedSection: false };
+	appendTruncatedLines(lines, maxLines, state, result);
+	appendFinalTruncateNotice(result, lines, state);
 	return result.join("\n");
 }
 
