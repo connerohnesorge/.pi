@@ -78,6 +78,21 @@ function consumeQuotedOrEscapedCharacter(state: PipelineParserState, character: 
 
 type SeparatorAdvance = number | "suffix" | "invalid" | "none";
 
+function readTopLevelSeparatorCharacters(
+	command: string,
+	index: number,
+	separator: "|" | "&",
+): { nextCharacter: string; previousCharacter: string } | null {
+	if (command[index] !== separator) {
+		return null;
+	}
+
+	return {
+		nextCharacter: command[index + 1] ?? "",
+		previousCharacter: index > 0 ? (command[index - 1] ?? "") : "",
+	};
+}
+
 function finishPipelineBeforeSuffix(
 	command: string,
 	index: number,
@@ -96,11 +111,11 @@ function consumePipeSeparator(
 	segments: string[],
 	separators: string[],
 ): SeparatorAdvance {
-	const nextCharacter = command[index + 1] ?? "";
-	const previousCharacter = index > 0 ? (command[index - 1] ?? "") : "";
-	if (command[index] !== "|") {
+	const context = readTopLevelSeparatorCharacters(command, index, "|");
+	if (!context) {
 		return "none";
 	}
+	const { nextCharacter, previousCharacter } = context;
 	if (nextCharacter === "|") {
 		return separators.length === 0 ? "invalid" : finishPipelineBeforeSuffix(command, index, state, segments);
 	}
@@ -126,11 +141,11 @@ function consumeAmpersandSeparator(
 	segments: string[],
 	separators: string[],
 ): SeparatorAdvance {
-	const nextCharacter = command[index + 1] ?? "";
-	const previousCharacter = index > 0 ? (command[index - 1] ?? "") : "";
-	if (command[index] !== "&") {
+	const context = readTopLevelSeparatorCharacters(command, index, "&");
+	if (!context) {
 		return "none";
 	}
+	const { nextCharacter, previousCharacter } = context;
 	if (nextCharacter === "&") {
 		return separators.length === 0 ? "invalid" : finishPipelineBeforeSuffix(command, index, state, segments);
 	}
