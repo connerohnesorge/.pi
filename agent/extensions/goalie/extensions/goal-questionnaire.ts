@@ -201,59 +201,65 @@ async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: GoalQue
 
 		enterQuestion(questions[0]);
 
-		function handleInput(data: string) {
-			if (inputMode) {
-				if (matchesKey(data, Key.escape)) {
-					const q = currentQuestion();
-					if (q && q.options.length === 0 && !isMulti) submit(true);
-					else {
-						exitEditor();
-						refresh();
-					}
-					return;
-				}
-				if (isMulti && (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")))) {
+		function selectTab(delta: number) {
+			currentTab = (currentTab + delta + totalTabs) % totalTabs;
+			const nextQ = currentQuestion();
+			if (nextQ) enterQuestion(nextQ);
+			else optionIndex = 0;
+			refresh();
+		}
+
+		function handleInputMode(data: string): boolean {
+			if (!inputMode) return false;
+			if (matchesKey(data, Key.escape)) {
+				const q = currentQuestion();
+				if (q && q.options.length === 0 && !isMulti) submit(true);
+				else {
 					exitEditor();
-					currentTab = matchesKey(data, Key.tab) ? (currentTab + 1) % totalTabs : (currentTab - 1 + totalTabs) % totalTabs;
-					const nextQ = currentQuestion();
-					if (nextQ) enterQuestion(nextQ);
-					else optionIndex = 0;
 					refresh();
-					return;
 				}
-				editor.handleInput(data);
-				refresh();
-				return;
+				return true;
 			}
-
-			const q = currentQuestion();
-			const opts = displayOptions();
-
-			if (isMulti) {
-				if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
-					currentTab = (currentTab + 1) % totalTabs;
-					const nextQ = currentQuestion();
-					if (nextQ) enterQuestion(nextQ);
-					else optionIndex = 0;
-					refresh();
-					return;
-				}
-				if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
-					currentTab = (currentTab - 1 + totalTabs) % totalTabs;
-					const nextQ = currentQuestion();
-					if (nextQ) enterQuestion(nextQ);
-					else optionIndex = 0;
-					refresh();
-					return;
-				}
+			if (isMulti && (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")))) {
+				exitEditor();
+				selectTab(matchesKey(data, Key.tab) ? 1 : -1);
+				return true;
 			}
+			editor.handleInput(data);
+			refresh();
+			return true;
+		}
 
-			if (currentTab === questions.length) {
-				if (matchesKey(data, Key.enter) && allAnswered()) submit(false);
-				else if (matchesKey(data, Key.escape)) submit(true);
-				return;
+		function handleTabNavigation(data: string): boolean {
+			if (!isMulti) return false;
+			if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
+				selectTab(1);
+				return true;
 			}
+			if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
+				selectTab(-1);
+				return true;
+			}
+			return false;
+		}
 
+		function handleSubmitTab(data: string): boolean {
+			if (currentTab !== questions.length) return false;
+			if (matchesKey(data, Key.enter) && allAnswered()) submit(false);
+			else if (matchesKey(data, Key.escape)) submit(true);
+			return true;
+		}
+
+		function startCustomAnswer(q: GoalQuestionnaireQuestion) {
+			inputMode = true;
+			inputQuestionId = q.id;
+			const draft = drafts.get(q.id);
+			const existing = answers.get(q.id);
+			editor.setText(draft ?? (existing?.wasCustom ? existing.answer : ""));
+			refresh();
+		}
+
+		function handleQuestionInput(data: string, q: GoalQuestionnaireQuestion | undefined, opts: Array<{ label: string; isCustom?: boolean }>) {
 			if (matchesKey(data, Key.up)) {
 				optionIndex = Math.max(0, optionIndex - 1);
 				refresh();
@@ -264,26 +270,85 @@ async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: GoalQue
 				refresh();
 				return;
 			}
-
 			if (matchesKey(data, Key.enter) && q) {
-				if (q.options.length === 0 || opts[optionIndex]?.isCustom) {
-					inputMode = true;
-					inputQuestionId = q.id;
-					const draft = drafts.get(q.id);
-					const existing = answers.get(q.id);
-					editor.setText(draft ?? (existing?.wasCustom ? existing.answer : ""));
-					refresh();
-					return;
-				}
-				const opt = opts[optionIndex];
-				if (opt) {
-					saveAnswer(q.id, opt.label, false);
+				if (q.options.length === 0 || opts[optionIndex]?.isCustom) startCustomAnswer(q);
+				else if (opts[optionIndex]) {
+					saveAnswer(q.id, opts[optionIndex].label, false);
 					advanceAfterAnswer();
 				}
 				return;
 			}
-
 			if (matchesKey(data, Key.escape)) submit(true);
+		}
+
+		function handleInput(data: string) {
+			if (handleInputMode(data)) return;
+			const q = currentQuestion();
+			const opts = displayOptions();
+			if (handleTabNavigation(data)) return;
+			if (handleSubmitTab(data)) return;
+			handleQuestionInput(data, q, opts);
+		}
+
+		function renderTabs(add: (s: string) => void) {
+			if (!isMulti) return;
+			const tabs: string[] = ["← "];
+			for (let i = 0; i < questions.length; i++) {
+				const isActive = i === currentTab;
+				const isAnswered = answers.has(questions[i].id);
+				const label = ` ${isAnswered ? "■" : "□"} ${questions[i].id} `;
+				tabs.push(isActive ? theme.bg("selectedBg", theme.fg("text", label)) : theme.fg(isAnswered ? "success" : "muted", label));
+				tabs.push(" ");
+			}
+			const submitText = " ✓ Submit ";
+			tabs.push(currentTab === questions.length ? theme.bg("selectedBg", theme.fg("text", submitText)) : theme.fg(allAnswered() ? "success" : "dim", submitText));
+			tabs.push(" →");
+			add(` ${tabs.join("")}`);
+		}
+
+		function renderOptions(add: (s: string) => void, opts: Array<{ label: string; isCustom?: boolean }>, q: GoalQuestionnaireQuestion | undefined) {
+			for (let i = 0; i < opts.length; i++) {
+				const opt = opts[i];
+				const selected = i === optionIndex;
+				const prefix = selected ? theme.fg("accent", "> ") : "  ";
+				const recTag = !opt.isCustom && q?.recommended === i ? theme.fg("success", " ★") : "";
+				add(prefix + theme.fg(selected ? "accent" : "text", `${i + 1}. ${opt.label}`) + recTag);
+			}
+		}
+
+		function renderInputMode(lines: string[], add: (s: string) => void, addWrapped: (s: string) => void, safeWidth: number, q: GoalQuestionnaireQuestion, opts: Array<{ label: string; isCustom?: boolean }>) {
+			addWrapped(theme.fg("text", ` ${q.question}`));
+			if (q.context) addWrapped(theme.fg("muted", ` ${q.context}`));
+			lines.push("");
+			if (q.options.length > 0) {
+				renderOptions(add, opts, q);
+				lines.push("");
+			}
+			add(theme.fg("muted", " Your answer:"));
+			for (const line of editor.render(safeWidth - 2)) add(` ${line}`);
+			lines.push("");
+			add(theme.fg("dim", " Enter to submit • Esc to cancel"));
+		}
+
+		function renderSubmitSummary(lines: string[], add: (s: string) => void) {
+			add(theme.fg("accent", theme.bold(" Ready to submit")));
+			lines.push("");
+			for (const question of questions) {
+				const answer = answers.get(question.id);
+				add(`${theme.fg("muted", ` ${question.id}: `)}${answer ? theme.fg("text", `${answer.wasCustom ? "(wrote) " : ""}${answer.answer}`) : theme.fg("warning", "(unanswered)")}`);
+			}
+			lines.push("");
+			add(allAnswered() ? theme.fg("success", " Press Enter to submit") : theme.fg("warning", ` Unanswered: ${questions.filter((qq) => !answers.has(qq.id)).map((qq) => qq.id).join(", ")}`));
+		}
+
+		function renderQuestion(lines: string[], add: (s: string) => void, addWrapped: (s: string) => void, q: GoalQuestionnaireQuestion, opts: Array<{ label: string; isCustom?: boolean }>) {
+			addWrapped(theme.fg("text", ` ${q.question}`));
+			if (q.context) addWrapped(theme.fg("muted", ` ${q.context}`));
+			const existing = answers.get(q.id);
+			if (existing) add(theme.fg("dim", ` Current: ${existing.wasCustom ? "(wrote) " : ""}${existing.answer}`));
+			lines.push("");
+			if (opts.length > 0) renderOptions(add, opts, q);
+			else add(theme.fg("muted", " Press Enter to write your answer"));
 		}
 
 		function render(width: number): string[] {
@@ -296,62 +361,12 @@ async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: GoalQue
 			const addWrapped = (s: string) => lines.push(...wrapTextWithAnsi(s, safeWidth));
 
 			add(theme.fg("accent", "─".repeat(safeWidth)));
-			if (isMulti) {
-				const tabs: string[] = ["← "];
-				for (let i = 0; i < questions.length; i++) {
-					const isActive = i === currentTab;
-					const isAnswered = answers.has(questions[i].id);
-					const label = ` ${isAnswered ? "■" : "□"} ${questions[i].id} `;
-					tabs.push(isActive ? theme.bg("selectedBg", theme.fg("text", label)) : theme.fg(isAnswered ? "success" : "muted", label));
-					tabs.push(" ");
-				}
-				const submitText = " ✓ Submit ";
-				tabs.push(currentTab === questions.length ? theme.bg("selectedBg", theme.fg("text", submitText)) : theme.fg(allAnswered() ? "success" : "dim", submitText));
-				tabs.push(" →");
-				add(` ${tabs.join("")}`);
-				lines.push("");
-			}
+			renderTabs(add);
+			if (isMulti) lines.push("");
 
-			function renderOptions() {
-				for (let i = 0; i < opts.length; i++) {
-					const opt = opts[i];
-					const selected = i === optionIndex;
-					const prefix = selected ? theme.fg("accent", "> ") : "  ";
-					const recTag = !opt.isCustom && q?.recommended === i ? theme.fg("success", " ★") : "";
-					add(prefix + theme.fg(selected ? "accent" : "text", `${i + 1}. ${opt.label}`) + recTag);
-				}
-			}
-
-			if (inputMode && q) {
-				addWrapped(theme.fg("text", ` ${q.question}`));
-				if (q.context) addWrapped(theme.fg("muted", ` ${q.context}`));
-				lines.push("");
-				if (q.options.length > 0) {
-					renderOptions();
-					lines.push("");
-				}
-				add(theme.fg("muted", " Your answer:"));
-				for (const line of editor.render(safeWidth - 2)) add(` ${line}`);
-				lines.push("");
-				add(theme.fg("dim", " Enter to submit • Esc to cancel"));
-			} else if (currentTab === questions.length) {
-				add(theme.fg("accent", theme.bold(" Ready to submit")));
-				lines.push("");
-				for (const question of questions) {
-					const answer = answers.get(question.id);
-					add(`${theme.fg("muted", ` ${question.id}: `)}${answer ? theme.fg("text", `${answer.wasCustom ? "(wrote) " : ""}${answer.answer}`) : theme.fg("warning", "(unanswered)")}`);
-				}
-				lines.push("");
-				add(allAnswered() ? theme.fg("success", " Press Enter to submit") : theme.fg("warning", ` Unanswered: ${questions.filter((qq) => !answers.has(qq.id)).map((qq) => qq.id).join(", ")}`));
-			} else if (q) {
-				addWrapped(theme.fg("text", ` ${q.question}`));
-				if (q.context) addWrapped(theme.fg("muted", ` ${q.context}`));
-				const existing = answers.get(q.id);
-				if (existing) add(theme.fg("dim", ` Current: ${existing.wasCustom ? "(wrote) " : ""}${existing.answer}`));
-				lines.push("");
-				if (opts.length > 0) renderOptions();
-				else add(theme.fg("muted", " Press Enter to write your answer"));
-			}
+			if (inputMode && q) renderInputMode(lines, add, addWrapped, safeWidth, q, opts);
+			else if (currentTab === questions.length) renderSubmitSummary(lines, add);
+			else if (q) renderQuestion(lines, add, addWrapped, q, opts);
 
 			lines.push("");
 			if (!inputMode) add(theme.fg("dim", isMulti ? " Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel" : " ↑↓ navigate • Enter select • Esc cancel"));
