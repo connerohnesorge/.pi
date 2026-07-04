@@ -105,6 +105,50 @@ export function shortModel(model: string | undefined): string | undefined {
   return slash > 0 ? model.slice(slash + 1) : model;
 }
 
+function workflowRunRow(p: PersistedRunState, live?: { snapshot: WorkflowSnapshot; status: string }): RunRow {
+  if (live) return workflowRunRowFromSnapshot(p.runId, live.status, live.snapshot);
+  return workflowRunRowFromPersisted(p);
+}
+
+function workflowRunRowFromSnapshot(runId: string, status: string, snapshot: WorkflowSnapshot): RunRow {
+  return runRow(runId, snapshot.name, status, snapshot.agents, snapshot.tokenUsage);
+}
+
+function workflowRunRowFromPersisted(p: PersistedRunState): RunRow {
+  return runRow(p.runId, p.workflowName, p.status, p.agents, p.tokenUsage);
+}
+
+function runRow(
+  runId: string,
+  name: string,
+  status: string,
+  agents: Array<{ status: string }>,
+  tokenUsage?: { total: number; cost?: number },
+): RunRow {
+  return {
+    runId,
+    name,
+    status,
+    done: countDone(agents),
+    total: agents.length,
+    tokens: tokenTotal(tokenUsage),
+    cost: tokenCost(tokenUsage),
+  };
+}
+
+function countDone(agents: Array<{ status: string }>): number {
+  return agents.filter((a) => a.status === "done").length;
+}
+
+function tokenTotal(tokenUsage?: { total: number }): number {
+  return tokenUsage ? tokenUsage.total : 0;
+}
+
+function tokenCost(tokenUsage?: { cost?: number }): number {
+  if (!tokenUsage) return 0;
+  return tokenUsage.cost ?? 0;
+}
+
 /** Reads run/phase/agent data from the manager, preferring live snapshots. */
 export class NavigatorModel {
   constructor(
@@ -121,19 +165,7 @@ export class NavigatorModel {
   }
 
   runs(): RunRow[] {
-    return this.manager.listRuns().map((p) => {
-      const live = this.manager.getRun(p.runId);
-      const agents = (live?.snapshot.agents ?? p.agents) as WorkflowAgentSnapshot[];
-      return {
-        runId: p.runId,
-        name: live?.snapshot.name ?? p.workflowName,
-        status: live?.status ?? p.status,
-        done: agents.filter((a) => a.status === "done").length,
-        total: agents.length,
-        tokens: (live?.snapshot.tokenUsage ?? p.tokenUsage)?.total ?? 0,
-        cost: (live?.snapshot.tokenUsage ?? p.tokenUsage)?.cost ?? 0,
-      };
-    });
+    return this.manager.listRuns().map((p) => workflowRunRow(p, this.manager.getRun(p.runId)));
   }
 
   /** Return saved workflows sorted by name, or [] when no storage configured. */
