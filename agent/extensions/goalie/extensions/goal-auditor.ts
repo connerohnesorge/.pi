@@ -44,17 +44,32 @@ function asThinkingLevel(value: unknown): ThinkingLevel | undefined {
 	return text && THINKING_LEVELS.has(text) ? text as ThinkingLevel : undefined;
 }
 
-export function parseGoalAuditorConfig(raw: unknown): GoalAuditorConfig {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-	const record = raw as Record<string, unknown>;
-	const config: GoalAuditorConfig = {};
-	const provider = asNonEmptyString(record.provider);
-	const model = asNonEmptyString(record.model);
-	const thinkingLevel = asThinkingLevel(record.thinkingLevel ?? record.thinking_level);
-	if (provider) config.provider = provider;
-	if (model) config.model = model;
+function asConfigRecord(raw: unknown): Record<string, unknown> | undefined {
+	return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined;
+}
+
+function setStringConfig(config: GoalAuditorConfig, key: "provider" | "model", value: unknown): void {
+	const text = asNonEmptyString(value);
+	if (text) config[key] = text;
+}
+
+function setThinkingConfig(config: GoalAuditorConfig, value: unknown): void {
+	const thinkingLevel = asThinkingLevel(value);
 	if (thinkingLevel) config.thinkingLevel = thinkingLevel;
-	if (record.disabled === true || record.disabled === "true") config.disabled = true;
+}
+
+function setDisabledConfig(config: GoalAuditorConfig, value: unknown): void {
+	if (value === true || value === "true") config.disabled = true;
+}
+
+export function parseGoalAuditorConfig(raw: unknown): GoalAuditorConfig {
+	const record = asConfigRecord(raw);
+	if (!record) return {};
+	const config: GoalAuditorConfig = {};
+	setStringConfig(config, "provider", record.provider);
+	setStringConfig(config, "model", record.model);
+	setThinkingConfig(config, record.thinkingLevel ?? record.thinking_level);
+	setDisabledConfig(config, record.disabled);
 	return config;
 }
 
@@ -170,34 +185,41 @@ function makeAuditorResourceLoader(): ResourceLoader {
 	};
 }
 
-function resolveAuditorModel(ctx: ExtensionContext, config: GoalAuditorConfig): { model: Model<any> | undefined; error?: string } {
-	if (!config.model && !config.provider) return { model: ctx.model };
-	if (config.provider && config.model) {
-		const model = ctx.modelRegistry.find(config.provider, config.model);
-		return model ? { model } : { model: undefined, error: `Configured auditor model not found: ${config.provider}/${config.model}` };
-	}
-	if (config.provider) {
-		const matches = ctx.modelRegistry.getAvailable().filter((model) => model.provider === config.provider);
-		return matches[0] ? { model: matches[0] } : { model: undefined, error: `No available auditor model for provider: ${config.provider}` };
-	}
-	if (!config.model) return { model: ctx.model };
-	const slash = config.model.indexOf("/");
-	if (slash > 0) {
-		const provider = config.model.slice(0, slash);
-		const modelId = config.model.slice(slash + 1);
-		const model = ctx.modelRegistry.find(provider, modelId);
-		return model ? { model } : { model: undefined, error: `Configured auditor model not found: ${config.model}` };
-	}
-	const matches = ctx.modelRegistry.getAvailable().filter((model) => model.id === config.model || model.name === config.model);
-	if (matches.length === 1) return { model: matches[0] };
-	return { model: undefined, error: `Configured auditor model is ambiguous or unavailable: ${config.model}` };
+type ResolvedAuditorModel = { model: Model<any> | undefined; error?: string };
+
+function foundModel(model: Model<any> | undefined, error: string): ResolvedAuditorModel {
+	return model ? { model } : { model: undefined, error };
+}
+
+function resolveProviderModel(ctx: ExtensionContext, provider: string, modelId?: string): ResolvedAuditorModel {
+	if (modelId) return foundModel(ctx.modelRegistry.find(provider, modelId), `Configured auditor model not found: ${provider}/${modelId}`);
+	return foundModel(
+		ctx.modelRegistry.getAvailable().find((model) => model.provider === provider),
+		`No available auditor model for provider: ${provider}`,
+	);
+}
+
+function resolveNamedModel(ctx: ExtensionContext, modelName: string): ResolvedAuditorModel {
+	const slash = modelName.indexOf("/");
+	if (slash > 0) return resolveProviderModel(ctx, modelName.slice(0, slash), modelName.slice(slash + 1));
+	const matches = ctx.modelRegistry.getAvailable().filter((model) => model.id === modelName || model.name === modelName);
+	return matches.length === 1
+		? { model: matches[0] }
+		: { model: undefined, error: `Configured auditor model is ambiguous or unavailable: ${modelName}` };
+}
+
+function resolveAuditorModel(ctx: ExtensionContext, config: GoalAuditorConfig): ResolvedAuditorModel {
+	if (config.provider) return resolveProviderModel(ctx, config.provider, config.model);
+	return config.model ? resolveNamedModel(ctx, config.model) : { model: ctx.model };
 }
 
 function modelLabel(model: Model<any> | undefined): string | undefined {
 	return model ? `${model.provider}/${model.id}` : undefined;
 }
 
-export async function runGoalCompletionAuditor(args: {
+type AuditorSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+
+type RunGoalCompletionAuditorArgs = {
 	ctx: ExtensionContext;
 	goal: GoalRecord;
 	completionSummary?: string | null;
@@ -210,125 +232,144 @@ export async function runGoalCompletionAuditor(args: {
 	 * Defaults to the real createAgentSession from @earendil-works/pi-coding-agent.
 	 */
 	createSession?: typeof createAgentSession;
-}): Promise<GoalAuditorResult> {
+};
+
+type AuditorRunState = {
+	outputParts: string[];
+	progress: GoalAuditorProgress;
+	startedAt: number;
+	onProgress?: AuditorProgressCallback;
+};
+
+function disapprovedResult(args: {
+	outputParts?: string[];
+	model?: Model<any>;
+	thinkingLevel?: ThinkingLevel;
+	error?: string;
+}): GoalAuditorResult {
+	return {
+		approved: false,
+		disapproved: true,
+		output: args.outputParts?.join("\n\n").trim() ?? "",
+		model: modelLabel(args.model),
+		thinkingLevel: args.thinkingLevel,
+		error: args.error,
+	};
+}
+
+function emitAuditorProgress(state: AuditorRunState): void {
+	state.progress.elapsedMs = Date.now() - state.startedAt;
+	state.onProgress?.({ ...state.progress });
+}
+
+function assistantText(message: any): string[] {
+	if (message?.role !== "assistant") return [];
+	return (message.content ?? [])
+		.filter((part: any) => part.type === "text" && typeof part.text === "string")
+		.map((part: any) => part.text);
+}
+
+function updateRecentOutput(state: AuditorRunState, text: string, lineCount: number): void {
+	state.progress.recentOutput = text.split("\n").filter((line) => line.trim()).slice(-lineCount);
+}
+
+function handleAuditorToolEvent(event: any, state: AuditorRunState): boolean {
+	if (event.type === "tool_execution_start") {
+		state.progress.currentTool = event.toolName;
+		state.progress.currentToolArgs = typeof event.args === "object" && event.args !== null
+			? JSON.stringify(event.args).slice(0, 120)
+			: String(event.args ?? "").slice(0, 120);
+		state.progress.currentToolStartedAt = Date.now();
+		state.progress.phase = "tool_executing";
+		emitAuditorProgress(state);
+		return true;
+	}
+	if (event.type !== "tool_execution_end") return false;
+	state.progress.currentTool = undefined;
+	state.progress.currentToolArgs = undefined;
+	state.progress.currentToolStartedAt = undefined;
+	state.progress.phase = "running";
+	emitAuditorProgress(state);
+	return true;
+}
+
+function handleAuditorEvent(event: any, state: AuditorRunState): void {
+	if (handleAuditorToolEvent(event, state)) return;
+	if (event.type === "message_update") {
+		state.progress.phase = "producing_report";
+		for (const text of assistantText(event.message)) updateRecentOutput(state, text, 5);
+		emitAuditorProgress(state);
+		return;
+	}
+	if (event.type !== "message_end") return;
+	state.outputParts.push(...assistantText(event.message));
+	updateRecentOutput(state, state.outputParts.join("\n\n"), 8);
+	emitAuditorProgress(state);
+}
+
+async function createAuditorSession(args: RunGoalCompletionAuditorArgs, model: Model<any> | undefined, thinkingLevel: ThinkingLevel | undefined): Promise<AuditorSession> {
+	const createSession = args.createSession ?? createAgentSession;
+	const { session } = await createSession({
+		cwd: args.ctx.cwd,
+		model,
+		thinkingLevel,
+		modelRegistry: args.ctx.modelRegistry,
+		resourceLoader: makeAuditorResourceLoader(),
+		sessionManager: SessionManager.inMemory(args.ctx.cwd),
+		settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+		tools: ["read", "grep", "find", "ls", "bash"],
+	});
+	return session;
+}
+
+async function runAuditorPrompt(args: RunGoalCompletionAuditorArgs, session: AuditorSession, state: AuditorRunState): Promise<void> {
+	const unsubscribe = session.subscribe((event) => handleAuditorEvent(event, state));
+	const abortSession = () => { session.abort(); };
+	args.signal?.addEventListener("abort", abortSession, { once: true });
+	emitAuditorProgress(state);
+	try {
+		if (args.signal?.aborted) return;
+		await session.prompt(buildGoalAuditorPrompt(args));
+	} finally {
+		args.signal?.removeEventListener("abort", abortSession);
+		state.progress.phase = "done";
+		emitAuditorProgress(state);
+		unsubscribe();
+	}
+}
+
+function auditorError(args: RunGoalCompletionAuditorArgs, error: unknown): string {
+	return args.signal?.aborted || (error instanceof Error && error.name === "AbortError")
+		? "Auditor aborted."
+		: (error instanceof Error ? error.message : String(error));
+}
+
+async function runResolvedAuditor(
+	args: RunGoalCompletionAuditorArgs,
+	model: Model<any> | undefined,
+	thinkingLevel: ThinkingLevel | undefined,
+): Promise<GoalAuditorResult> {
+	const outputParts: string[] = [];
+	try {
+		const session = await createAuditorSession(args, model, thinkingLevel);
+		await runAuditorPrompt(args, session, {
+			outputParts,
+			progress: { recentOutput: [], phase: "running", elapsedMs: 0 },
+			startedAt: Date.now(),
+			onProgress: args.onProgress,
+		});
+		if (args.signal?.aborted) return disapprovedResult({ outputParts, model, thinkingLevel, error: "Auditor aborted." });
+		const output = outputParts.join("\n\n").trim();
+		return { ...parseAuditorDecision(output), output, model: modelLabel(model), thinkingLevel };
+	} catch (error) {
+		return disapprovedResult({ outputParts, model, thinkingLevel, error: auditorError(args, error) });
+	}
+}
+
+export async function runGoalCompletionAuditor(args: RunGoalCompletionAuditorArgs): Promise<GoalAuditorResult> {
 	const config = loadGoalAuditorConfig(args.ctx.cwd);
 	const resolved = resolveAuditorModel(args.ctx, config);
-	const model = resolved.model;
-	const thinkingLevel = config.thinkingLevel;
-	const outputParts: string[] = [];
-	if (resolved.error) {
-		return { approved: false, disapproved: true, output: "", model: modelLabel(model), thinkingLevel, error: resolved.error };
-	}
-	try {
-		const createSession = args.createSession ?? createAgentSession;
-		const { session } = await createSession({
-			cwd: args.ctx.cwd,
-			model,
-			thinkingLevel,
-			modelRegistry: args.ctx.modelRegistry,
-			resourceLoader: makeAuditorResourceLoader(),
-			sessionManager: SessionManager.inMemory(args.ctx.cwd),
-			settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
-			tools: ["read", "grep", "find", "ls", "bash"],
-		});
-		const startedAt = Date.now();
-		const progress: GoalAuditorProgress = {
-			recentOutput: [],
-			phase: "running",
-			elapsedMs: 0,
-		};
-		function emitProgress(): void {
-			progress.elapsedMs = Date.now() - startedAt;
-			args.onProgress?.({ ...progress });
-		}
-		const unsubscribe = session.subscribe((event) => {
-			if (event.type === "tool_execution_start") {
-				progress.currentTool = event.toolName;
-				progress.currentToolArgs = typeof event.args === "object" && event.args !== null
-					? JSON.stringify(event.args).slice(0, 120)
-					: String(event.args ?? "").slice(0, 120);
-				progress.currentToolStartedAt = Date.now();
-				progress.phase = "tool_executing";
-				emitProgress();
-				return;
-			}
-			if (event.type === "tool_execution_end") {
-				progress.currentTool = undefined;
-				progress.currentToolArgs = undefined;
-				progress.currentToolStartedAt = undefined;
-				progress.phase = "running";
-				emitProgress();
-				return;
-			}
-			if (event.type === "message_update") {
-				progress.phase = "producing_report";
-				const message = event.message as any;
-				if (message?.role === "assistant") {
-					for (const part of message.content ?? []) {
-						if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
-							// Keep the last 5 non-empty text lines for live display
-							const lines = part.text.split("\n").filter((l: string) => l.trim());
-							progress.recentOutput = [...lines.slice(-5)];
-						}
-					}
-				}
-				emitProgress();
-				return;
-			}
-			if (event.type !== "message_end") return;
-			const message = event.message as any;
-			if (message.role !== "assistant") return;
-			for (const part of message.content ?? []) {
-				if (part.type === "text" && typeof part.text === "string") outputParts.push(part.text);
-			}
-			// Show the accumulated output in progress
-			const fullText = outputParts.join("\n\n");
-			const lines = fullText.split("\n").filter((l: string) => l.trim());
-			progress.recentOutput = lines.slice(-8);
-			emitProgress();
-		});
-		// Wire the external AbortSignal to abort the running session when fired
-		// This is the mechanism that makes Esc-to-skip actually stop the auditor.
-		const abortSession = () => { session.abort(); };
-		args.signal?.addEventListener("abort", abortSession, { once: true });
-
-		// Emit initial progress
-		emitProgress();
-		try {
-			if (args.signal?.aborted) return { approved: false, disapproved: true, output: "", model: modelLabel(model), thinkingLevel, error: "Auditor aborted." };
-			await session.prompt(buildGoalAuditorPrompt(args));
-		} finally {
-			args.signal?.removeEventListener("abort", abortSession);
-			progress.phase = "done";
-			emitProgress();
-			unsubscribe();
-		}
-		// session.abort() does NOT throw — the agent loop returns normally with
-		// whatever output was captured before the abort. Check the signal after
-		// prompt completes and treat any abort as auditor-aborted regardless of
-		// whether an exception propagated.
-		if (args.signal?.aborted) {
-			return {
-				approved: false,
-				disapproved: true,
-				output: outputParts.join("\n\n").trim(),
-				model: modelLabel(model),
-				thinkingLevel,
-				error: "Auditor aborted.",
-			};
-		}
-		const output = outputParts.join("\n\n").trim();
-		const decision = parseAuditorDecision(output);
-		return { ...decision, output, model: modelLabel(model), thinkingLevel };
-	} catch (error) {
-		const isAborted = args.signal?.aborted || (error instanceof Error && error.name === "AbortError");
-		return {
-			approved: false,
-			disapproved: true,
-			output: outputParts.join("\n\n").trim(),
-			model: modelLabel(model),
-			thinkingLevel,
-			error: isAborted ? "Auditor aborted." : (error instanceof Error ? error.message : String(error)),
-		};
-	}
+	return resolved.error
+		? disapprovedResult({ model: resolved.model, thinkingLevel: config.thinkingLevel, error: resolved.error })
+		: runResolvedAuditor(args, resolved.model, config.thinkingLevel);
 }
