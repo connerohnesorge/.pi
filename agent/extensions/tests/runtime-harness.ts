@@ -1,4 +1,4 @@
-export type RuntimeHandler = (...args: any[]) => any;
+type RuntimeHandler = (...args: any[]) => any;
 
 export function createRuntimeRegistries() {
 	const commands = new Map<string, any>();
