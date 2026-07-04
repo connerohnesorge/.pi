@@ -715,6 +715,139 @@ function renderSinglePane(
   return out;
 }
 
+function renderScrollableBody(
+  state: NavigatorState,
+  body: string[],
+  viewportRows: number,
+  theme: ThemeLike,
+): string[] {
+  // Fixed-height detail viewport: j/k scrolls without shrinking the overlay.
+  const viewport = Math.max(5, viewportRows - 4);
+  const maxScroll = Math.max(0, body.length - viewport);
+  state.scroll = Math.min(Math.max(0, state.scroll), maxScroll);
+  const out = body.slice(state.scroll, state.scroll + viewport);
+  if (body.length > viewport) {
+    const end = Math.min(state.scroll + viewport, body.length);
+    out.push(theme.fg("dim", `  [${state.scroll + 1}-${end} / ${body.length}]`));
+  }
+  return out;
+}
+
+function renderRunsView(state: NavigatorState, model: NavigatorModel, theme: ThemeLike): string[] {
+  const runs = model.runs();
+  const saved = model.saved();
+  const total = runs.length + saved.length;
+  const dim = (t: string) => theme.fg("dim", t);
+  const sel = (i: number, text: string) =>
+    i === state.cursor ? theme.fg("accent", theme.bold(`❯ ${text}`)) : `  ${text}`;
+
+  state.clamp(total);
+  const lines = [theme.bold("Workflows")];
+  if (total === 0) lines.push(dim("  No runs yet. Start one with a background workflow."));
+
+  runs.forEach((r, i) => {
+    const icon = STATUS_ICON[r.status] ?? "?";
+    const meta = [`${r.done}/${r.total}`, fmtTokens(r.tokens), r.cost > 0 ? `$${r.cost.toFixed(4)}` : ""]
+      .filter(Boolean)
+      .join(" · ");
+    lines.push(sel(i, `${icon} ${r.name}  ${dim(`${r.runId} · ${r.status} · ${meta}`)}`));
+  });
+
+  if (saved.length > 0) {
+    const sepOffset = runs.length;
+    if (runs.length > 0) lines.push(dim("  ── saved ──"));
+    saved.forEach((w, i) => {
+      const loc = w.location === "user" ? "~" : ".";
+      const desc = w.description ? dim(`  ${w.description}`) : "";
+      lines.push(sel(sepOffset + i, `${w.name}${desc}  ${dim(loc)}`));
+    });
+  }
+  return lines;
+}
+
+function renderRunPaneView(
+  state: NavigatorState,
+  model: NavigatorModel,
+  width: number,
+  theme: ThemeLike,
+  viewportRows: number,
+): string[] {
+  if (!state.runId) return [];
+  const count = state.kind === "agents" && state.phase ? model.agents(state.runId, state.phase).length : model.phases(state.runId).length;
+  state.clamp(count);
+  const phases = model.phases(state.runId);
+  const bodyCap = Math.max(1, viewportRows - 2 - 2 - 2);
+  return [
+    ...twoPaneHeader(model, state.runId, phases, width, theme),
+    ...renderPhasesAgents(state, model, state.runId, width, theme, bodyCap),
+  ];
+}
+
+function agentMetaLines(a: WorkflowAgentSnapshot, theme: ThemeLike): string[] {
+  const dim = (t: string) => theme.fg("dim", t);
+  return [
+    dim("Status: ") + (a.status ?? ""),
+    ...(a.model ? [dim("Model: ") + (shortModel(a.model) ?? "")] : []),
+    ...(a.error ? [dim("Error: ") + a.error] : []),
+    ...(a.errorCode ? [`${dim("Error code: ")}${a.errorCode}${a.recoverable ? " (recoverable)" : ""}`] : []),
+  ];
+}
+
+function agentHistoryLines(a: WorkflowAgentSnapshot, width: number, theme: ThemeLike): string[] {
+  const history = a.history ?? [];
+  const lines = history.flatMap((entry) => wrap(`${historyLabel(entry)}: ${entry.text}`, width));
+  return lines.length ? ["", theme.fg("dim", "History:"), ...lines] : [];
+}
+
+function agentDetailBody(a: WorkflowAgentSnapshot, width: number, theme: ThemeLike): string[] {
+  const dim = (t: string) => theme.fg("dim", t);
+  return [
+    ...agentMetaLines(a, theme),
+    "",
+    dim("Prompt:"),
+    ...wrap(a.prompt ?? "", width),
+    "",
+    dim("Result:"),
+    ...wrap(a.resultPreview ?? "(none)", width),
+    ...agentHistoryLines(a, width, theme),
+  ];
+}
+
+function renderAgentDetailView(
+  state: NavigatorState,
+  model: NavigatorModel,
+  width: number,
+  theme: ThemeLike,
+  viewportRows: number,
+): string[] {
+  if (!state.runId || state.agentId == null) return [];
+  const a = model.agentDetail(state.runId, state.agentId);
+  const lines = [theme.bold(a ? a.label : "agent")];
+  return a ? [...lines, ...renderScrollableBody(state, agentDetailBody(a, width, theme), viewportRows, theme)] : lines;
+}
+
+function renderSavedDetailView(
+  state: NavigatorState,
+  model: NavigatorModel,
+  width: number,
+  theme: ThemeLike,
+  viewportRows: number,
+): string[] {
+  if (!state.savedName) return [];
+  const w = model.saved().find((s) => s.name === state.savedName);
+  const dim = (t: string) => theme.fg("dim", t);
+  const lines = [theme.bold(w ? w.name : "saved workflow")];
+  if (!w) return lines;
+
+  const body: string[] = [];
+  if (w.description) body.push(dim("Description: ") + w.description);
+  body.push(dim("Location: ") + (w.location === "user" ? "user (~/.pi)" : "project (.pi)"));
+  body.push(dim("Saved at: ") + w.savedAt);
+  if (w.parameters) body.push(dim("Parameters: ") + JSON.stringify(w.parameters));
+  body.push("", dim("Script:"), ...wrap(w.script, width));
+  return [...lines, ...renderScrollableBody(state, body, viewportRows, theme)];
+}
+
 /** Build the lines for the current view. Pure: depends only on state + model + theme. */
 export function renderNavigator(
   state: NavigatorState,
@@ -723,107 +856,14 @@ export function renderNavigator(
   theme: ThemeLike = PLAIN,
   viewportRows = 24,
 ): string[] {
-  const lines: string[] = [];
-  const sel = (i: number, text: string) =>
-    i === state.cursor ? theme.fg("accent", theme.bold(`❯ ${text}`)) : `  ${text}`;
-  const dim = (t: string) => theme.fg("dim", t);
-
-  // Render a detail body inside a FIXED-height viewport so j/k scrolls within a
-  // stable box (clamping state.scroll) instead of slicing to the end — which
-  // shrank the overlay and looked like it was collapsing.
-  const pushScrollable = (body: string[]) => {
-    const viewport = Math.max(5, viewportRows - 4); // reserve title + blank + footer + indicator
-    const maxScroll = Math.max(0, body.length - viewport);
-    state.scroll = Math.min(Math.max(0, state.scroll), maxScroll);
-    lines.push(...body.slice(state.scroll, state.scroll + viewport));
-    if (body.length > viewport) {
-      const end = Math.min(state.scroll + viewport, body.length);
-      lines.push(dim(`  [${state.scroll + 1}-${end} / ${body.length}]`));
-    }
+  const views: Record<ViewKind, () => string[]> = {
+    runs: () => renderRunsView(state, model, theme),
+    phases: () => renderRunPaneView(state, model, width, theme, viewportRows),
+    agents: () => renderRunPaneView(state, model, width, theme, viewportRows),
+    detail: () => renderAgentDetailView(state, model, width, theme, viewportRows),
+    savedDetail: () => renderSavedDetailView(state, model, width, theme, viewportRows),
   };
-
-  if (state.kind === "runs") {
-    const runs = model.runs();
-    const saved = model.saved();
-    const total = runs.length + saved.length;
-    state.clamp(total);
-    lines.push(theme.bold("Workflows"));
-    if (total === 0) {
-      lines.push(dim("  No runs yet. Start one with a background workflow."));
-    }
-    // Render runs
-    runs.forEach((r, i) => {
-      const icon = STATUS_ICON[r.status] ?? "?";
-      const meta = [`${r.done}/${r.total}`, fmtTokens(r.tokens), r.cost > 0 ? `$${r.cost.toFixed(4)}` : ""]
-        .filter(Boolean)
-        .join(" · ");
-      lines.push(sel(i, `${icon} ${r.name}  ${dim(`${r.runId} · ${r.status} · ${meta}`)}`));
-    });
-    // Render saved workflows after a separator
-    if (saved.length > 0) {
-      const sepOffset = runs.length;
-      if (runs.length > 0) lines.push(dim("  ── saved ──"));
-      saved.forEach((w, i) => {
-        const loc = w.location === "user" ? "~" : ".";
-        const desc = w.description ? dim(`  ${w.description}`) : "";
-        lines.push(sel(sepOffset + i, `${w.name}${desc}  ${dim(loc)}`));
-      });
-    }
-  } else if (state.kind === "phases" && state.runId) {
-    const phases = model.phases(state.runId);
-    state.clamp(phases.length);
-    // Two-line header (name + description/status) then the combined frame.
-    lines.push(...twoPaneHeader(model, state.runId, phases, width, theme));
-    // Body cap: total height minus 2 header + 2 frame rules + blank + footer.
-    const bodyCap = Math.max(1, viewportRows - 2 /*header*/ - 2 /*rules*/ - 2 /*blank+footer*/);
-    lines.push(...renderPhasesAgents(state, model, state.runId, width, theme, bodyCap));
-  } else if (state.kind === "agents" && state.runId && state.phase) {
-    const agents = model.agents(state.runId, state.phase);
-    state.clamp(agents.length);
-    const phases = model.phases(state.runId);
-    lines.push(...twoPaneHeader(model, state.runId, phases, width, theme));
-    const bodyCap = Math.max(1, viewportRows - 2 - 2 - 2);
-    lines.push(...renderPhasesAgents(state, model, state.runId, width, theme, bodyCap));
-  } else if (state.kind === "detail" && state.runId && state.agentId != null) {
-    const a = model.agentDetail(state.runId, state.agentId);
-    lines.push(theme.bold(a ? a.label : "agent"));
-    if (a) {
-      const body: string[] = [];
-      body.push(dim("Status: ") + (a.status ?? ""));
-      if (a.model) body.push(dim("Model: ") + (shortModel(a.model) ?? ""));
-      if (a.error) body.push(dim("Error: ") + a.error);
-      if (a.errorCode) body.push(`${dim("Error code: ")}${a.errorCode}${a.recoverable ? " (recoverable)" : ""}`);
-      body.push("", dim("Prompt:"));
-      body.push(...wrap(a.prompt ?? "", width));
-      body.push("", dim("Result:"));
-      body.push(...wrap(a.resultPreview ?? "(none)", width));
-      if (a.history?.length) {
-        body.push("", dim("History:"));
-        for (const entry of a.history) {
-          body.push(...wrap(`${historyLabel(entry)}: ${entry.text}`, width));
-        }
-      }
-      pushScrollable(body);
-    }
-  } else if (state.kind === "savedDetail" && state.savedName) {
-    const saved = model.saved();
-    const w = saved.find((s) => s.name === state.savedName);
-    lines.push(theme.bold(w ? w.name : "saved workflow"));
-    if (w) {
-      const body: string[] = [];
-      if (w.description) body.push(dim("Description: ") + w.description);
-      body.push(dim("Location: ") + (w.location === "user" ? "user (~/.pi)" : "project (.pi)"));
-      body.push(dim("Saved at: ") + w.savedAt);
-      if (w.parameters) body.push(dim("Parameters: ") + JSON.stringify(w.parameters));
-      body.push("", dim("Script:"));
-      body.push(...wrap(w.script, width));
-      pushScrollable(body);
-    }
-  }
-
-  lines.push("");
-  lines.push(footerHint(state, model, theme));
-  return lines;
+  return [...views[state.kind](), "", footerHint(state, model, theme)];
 }
 
 /**
@@ -922,40 +962,41 @@ export type NavAction =
   | { type: "deleteSaved" }
   | { type: "none" };
 
+const NONE_ACTION: NavAction = { type: "none" };
+const KEY_ACTIONS: Record<string, NavAction> = {
+  up: { type: "move", delta: -1 },
+  k: { type: "move", delta: -1 },
+  down: { type: "move", delta: 1 },
+  j: { type: "move", delta: 1 },
+  enter: { type: "drill" },
+  return: { type: "drill" },
+  right: { type: "drill" },
+  escape: { type: "back" },
+  esc: { type: "back" },
+  left: { type: "back" },
+  q: { type: "close" },
+  p: { type: "pause" },
+  x: { type: "stop" },
+  r: { type: "restart" },
+  s: { type: "save" },
+};
+const KEY_KIND_ACTIONS: Record<string, NavAction> = {
+  "enter|detail": NONE_ACTION,
+  "return|detail": NONE_ACTION,
+  "right|detail": NONE_ACTION,
+  "enter|savedDetail": NONE_ACTION,
+  "return|savedDetail": NONE_ACTION,
+  "right|savedDetail": NONE_ACTION,
+  "x|savedDetail": { type: "deleteSaved" },
+};
+const KEY_ITEM_ACTIONS: Record<string, NavAction> = {
+  "x|saved": { type: "deleteSaved" },
+  "s|saved": NONE_ACTION,
+};
+
 export function keyToAction(keyId: string | undefined, kind: ViewKind, itemKind?: "run" | "saved"): NavAction {
-  switch (keyId) {
-    case "up":
-      return { type: "move", delta: -1 };
-    case "down":
-      return { type: "move", delta: 1 };
-    case "k":
-      return { type: "move", delta: -1 };
-    case "j":
-      return { type: "move", delta: 1 };
-    case "enter":
-    case "return":
-    case "right":
-      if (kind === "detail" || kind === "savedDetail") return { type: "none" };
-      return { type: "drill" };
-    case "escape":
-    case "esc":
-    case "left":
-      return { type: "back" };
-    case "q":
-      return { type: "close" };
-    case "p":
-      return { type: "pause" };
-    case "x":
-      if (kind === "savedDetail" || itemKind === "saved") return { type: "deleteSaved" };
-      return { type: "stop" };
-    case "r":
-      return { type: "restart" };
-    case "s":
-      if (itemKind === "saved") return { type: "none" };
-      return { type: "save" };
-    default:
-      return { type: "none" };
-  }
+  const key = keyId ?? "";
+  return KEY_ITEM_ACTIONS[`${key}|${itemKind ?? ""}`] ?? KEY_KIND_ACTIONS[`${key}|${kind}`] ?? KEY_ACTIONS[key] ?? NONE_ACTION;
 }
 
 function currentCount(state: NavigatorState, model: NavigatorModel): number {
@@ -972,6 +1013,80 @@ export interface NavigatorOptions {
   cwd?: string;
   /** Overlay anchor position: "center" (default) or "right-center" for sidebar. */
   anchor?: OverlayAnchor;
+}
+
+function deleteSelectedSaved(state: NavigatorState, model: NavigatorModel, ui: ExtensionUIContext): void {
+  if (state.kind === "runs") {
+    const item = model.saved()[state.cursor - model.runs().length];
+    if (!item) return;
+    model.deleteSaved(item.name);
+    ui.notify(`Deleted /${item.name}`, "info");
+    return;
+  }
+  if (state.kind === "savedDetail" && state.savedName) {
+    model.deleteSaved(state.savedName);
+    ui.notify(`Deleted /${state.savedName}`, "info");
+    state.back();
+  }
+}
+
+function pauseOrStopRun(
+  manager: WorkflowManager,
+  state: NavigatorState,
+  model: NavigatorModel,
+  ui: ExtensionUIContext,
+  verb: "pause" | "stop",
+): void {
+  const id = state.activeRunId(model);
+  if (!id) return;
+  const ok = verb === "pause" ? manager.pause(id) : manager.stop(id);
+  const label = verb === "pause" ? "Paused" : "Stopped";
+  const fail = verb === "pause" ? "Cannot pause" : "Cannot stop";
+  ui.notify(ok ? `${label} ${id}` : `${fail} ${id}`, "info");
+}
+
+function restartRun(manager: WorkflowManager, state: NavigatorState, model: NavigatorModel, ui: ExtensionUIContext): void {
+  const id = state.activeRunId(model);
+  const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+  if (!run?.script) {
+    ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
+    return;
+  }
+  const { runId: newId } = manager.startInBackground(run.script, run.args);
+  ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
+}
+
+function saveRun(
+  pi: ExtensionAPI,
+  manager: WorkflowManager,
+  state: NavigatorState,
+  model: NavigatorModel,
+  ui: ExtensionUIContext,
+  opts: NavigatorOptions,
+): void {
+  const id = state.activeRunId(model);
+  const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+  if (!run?.script) {
+    ui.notify("No saved run script to save", "warning");
+    return;
+  }
+  if (!opts.storage) {
+    ui.notify("Saving is not available (no storage)", "error");
+    return;
+  }
+
+  let saved: ReturnType<WorkflowStorage["save"]>;
+  const name = run.workflowName || "workflow";
+  try {
+    saved = opts.storage.save({ name, description: run.workflowName, script: run.script, location: "project" });
+  } catch (error) {
+    ui.notify(error instanceof Error ? error.message : String(error), "error");
+    return;
+  }
+  registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
+    opts.storage?.list().some((w) => w.name === saved.name) ?? false,
+  );
+  ui.notify(`Saved /${name}`, "info");
 }
 
 /**
@@ -997,95 +1112,27 @@ export function openWorkflowNavigator(
         for (const ev of events) manager.off(ev, onEvent);
       };
 
+      const close = () => {
+        cleanup();
+        done(undefined);
+        return true;
+      };
+      const actionHandlers: Record<NavAction["type"], (action: NavAction) => boolean | void> = {
+        move: (action) => state.move(action.type === "move" ? action.delta : 0, currentCount(state, model)),
+        drill: () => state.drill(model),
+        back: () => (state.back() ? undefined : close()),
+        close,
+        deleteSaved: () => deleteSelectedSaved(state, model, ui),
+        pause: () => pauseOrStopRun(manager, state, model, ui, "pause"),
+        stop: () => pauseOrStopRun(manager, state, model, ui, "stop"),
+        restart: () => restartRun(manager, state, model, ui),
+        save: () => saveRun(pi, manager, state, model, ui, opts),
+        none: () => true,
+      };
       const act = (data: string) => {
         const itemKind = state.kind === "runs" ? state.itemKindAt(model, state.cursor) : undefined;
         const action = keyToAction(parseKey(data), state.kind, itemKind);
-        switch (action.type) {
-          case "move":
-            state.move(action.delta, currentCount(state, model));
-            break;
-          case "drill":
-            state.drill(model);
-            break;
-          case "back":
-            if (!state.back()) {
-              cleanup();
-              done(undefined);
-            }
-            break;
-          case "close":
-            cleanup();
-            done(undefined);
-            return;
-          case "deleteSaved": {
-            if (state.kind === "runs") {
-              const saved = model.saved();
-              const runCount = model.runs().length;
-              const item = saved[state.cursor - runCount];
-              if (item) {
-                model.deleteSaved(item.name);
-                ui.notify(`Deleted /${item.name}`, "info");
-              }
-            } else if (state.kind === "savedDetail" && state.savedName) {
-              model.deleteSaved(state.savedName);
-              ui.notify(`Deleted /${state.savedName}`, "info");
-              state.back();
-            }
-            break;
-          }
-          case "pause": {
-            const id = state.activeRunId(model);
-            if (id) ui.notify(manager.pause(id) ? `Paused ${id}` : `Cannot pause ${id}`, "info");
-            break;
-          }
-          case "stop": {
-            const id = state.activeRunId(model);
-            if (id) ui.notify(manager.stop(id) ? `Stopped ${id}` : `Cannot stop ${id}`, "info");
-            break;
-          }
-          case "restart": {
-            const id = state.activeRunId(model);
-            const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
-            if (!run?.script) {
-              ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
-              break;
-            }
-            const { runId: newId } = manager.startInBackground(run.script, run.args);
-            ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
-            break;
-          }
-          case "save": {
-            const id = state.activeRunId(model);
-            const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
-            if (!run?.script) {
-              ui.notify("No saved run script to save", "warning");
-            } else if (!opts.storage) {
-              ui.notify("Saving is not available (no storage)", "error");
-            } else {
-              const storage = opts.storage;
-              const name = run.workflowName || "workflow";
-              let saved: ReturnType<WorkflowStorage["save"]>;
-              try {
-                saved = storage.save({
-                  name,
-                  description: run.workflowName,
-                  script: run.script,
-                  location: "project",
-                });
-              } catch (error) {
-                ui.notify(error instanceof Error ? error.message : String(error), "error");
-                break;
-              }
-              registerSavedWorkflow(pi, opts.cwd ?? process.cwd(), saved, undefined, () =>
-                storage.list().some((w) => w.name === saved.name),
-              );
-              ui.notify(`Saved /${name}`, "info");
-            }
-            break;
-          }
-          default:
-            return;
-        }
+        if (actionHandlers[action.type](action)) return;
         rerender();
       };
 
