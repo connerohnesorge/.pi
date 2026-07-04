@@ -3,7 +3,7 @@
  * Built-in workflow for comprehensive research across multiple sources.
  */
 
-export interface DeepResearchConfig {
+interface DeepResearchConfig {
   /** Number of distinct search angles/queries to explore. */
   angles: number;
   /** Minimum distinct sources required for a claim to survive cross-checking. */

@@ -3,7 +3,7 @@
  * Agents cross-check each other's findings for higher quality results.
  */
 
-export interface AdversarialReviewConfig {
+interface AdversarialReviewConfig {
   /** Number of independent reviewers per finding. */
   reviewerCount: number;
   /** Whether to filter out findings that don't survive cross-checking. */

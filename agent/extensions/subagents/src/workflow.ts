@@ -151,7 +151,7 @@ export interface WorkflowRunResult<T = unknown> {
   };
 }
 
-export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {
+interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {
   label?: string;
   phase?: string;
   schema?: TSchemaDef;

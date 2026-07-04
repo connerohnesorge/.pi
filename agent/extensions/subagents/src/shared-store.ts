@@ -90,16 +90,6 @@ export class SharedStore {
     }
   }
 
-  /**
-   * Replace all entries with a snapshot (for full resets).
-   * Prefer `applyDelta` for resume replay — see journal integration above.
-   */
-  restore(snap: Record<string, unknown>): void {
-    this.map.clear();
-    for (const [k, v] of Object.entries(snap)) {
-      this.map.set(k, v);
-    }
-  }
 
   /** Clear all entries (called when the run ends). */
   dispose(): void {
