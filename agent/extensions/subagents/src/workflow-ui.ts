@@ -554,6 +554,98 @@ function renderTwoPaneFrame(a: TwoPaneArgs): string[] {
  * branch (cursor in left/Phases pane) and the "agents" branch (cursor in
  * right/agents pane after drilling in). Returns the full frame as lines.
  */
+function renderPhasePaneRows(
+  phases: PhaseRow[],
+  win: ScrollWin,
+  rows: number,
+  selected: (idx: number) => boolean,
+  agentsForPhase: (phase: PhaseRow) => AgentRow[],
+  width: number,
+  theme: ThemeLike,
+): string[] {
+  return renderWindowRows(phases, win, rows, width, theme, (phase, idx) =>
+    leftPhaseRow(phase, idx, selected(idx), agentsForPhase(phase), width, theme),
+  );
+}
+
+function renderAgentPaneRows(
+  agents: AgentRow[],
+  win: ScrollWin,
+  rows: number,
+  selected: (idx: number) => boolean,
+  width: number,
+  theme: ThemeLike,
+): string[] {
+  if (agents.length === 0) return renderEmptyAgentsRows(rows, width, theme);
+  const modelColStart = computeModelColStart(agents, width);
+  return renderWindowRows(agents, win, rows, width, theme, (agent, idx) =>
+    rightAgentRow(agent, selected(idx), modelColStart, width, theme),
+  );
+}
+
+/**
+ * Render the combined Phases | agents two-pane view. Shared by the "phases"
+ * branch (cursor in left/Phases pane) and the "agents" branch (cursor in
+ * right/agents pane after drilling in). Returns the full frame as lines.
+ */
+interface PhaseAgentPaneContext {
+  phases: PhaseRow[];
+  inAgents: boolean;
+  selPhaseIdx: number;
+  selPhase?: PhaseRow;
+  agents: AgentRow[];
+}
+
+function phaseAgentPaneContext(state: NavigatorState, model: NavigatorModel, runId: string): PhaseAgentPaneContext {
+  const phases = model.phases(runId);
+  const inAgents = state.kind === "agents";
+  const found = inAgents ? phases.findIndex((p) => p.title === state.phase) : state.cursor;
+  const selPhaseIdx = found < 0 ? 0 : found;
+  const selPhase = phases[selPhaseIdx];
+  return { phases, inAgents, selPhaseIdx, selPhase, agents: selPhase ? model.agents(runId, selPhase.title) : [] };
+}
+
+function renderWidePhaseAgentPanes(
+  state: NavigatorState,
+  model: NavigatorModel,
+  runId: string,
+  width: number,
+  theme: ThemeLike,
+  bodyCap: number,
+  ctx: PhaseAgentPaneContext,
+): string[] {
+  const leftW = computeLeftWidth(ctx.phases, width);
+  const rightInner = width - leftW - 1;
+  const leftRows = scrollWindow(ctx.phases.length, ctx.inAgents ? ctx.selPhaseIdx : state.cursor, bodyCap);
+  const rightRows = scrollWindow(ctx.agents.length, ctx.inAgents ? state.cursor : 0, bodyCap);
+  const bodyRows = Math.max(1, Math.min(bodyCap, Math.max(leftRows.count, rightRows.count)));
+  const n = ctx.agents.length;
+
+  return renderTwoPaneFrame({
+    width,
+    bodyRows,
+    left: renderPhasePaneRows(
+      ctx.phases,
+      leftRows,
+      bodyRows,
+      (idx) => !ctx.inAgents && idx === state.cursor,
+      (phase) => model.agents(runId, phase.title),
+      leftW - 2,
+      theme,
+    ),
+    right: renderAgentPaneRows(ctx.agents, rightRows, bodyRows, (idx) => ctx.inAgents && idx === state.cursor, rightInner, theme),
+    leftTitle: "Phases",
+    rightTitle: `${ctx.selPhase ? ctx.selPhase.title : "(none)"} · ${n} ${pluralize("agent", n)}`,
+    leftW,
+    theme,
+  });
+}
+
+/**
+ * Render the combined Phases | agents two-pane view. Shared by the "phases"
+ * branch (cursor in left/Phases pane) and the "agents" branch (cursor in
+ * right/agents pane after drilling in). Returns the full frame as lines.
+ */
 function renderPhasesAgents(
   state: NavigatorState,
   model: NavigatorModel,
@@ -562,85 +654,50 @@ function renderPhasesAgents(
   theme: ThemeLike,
   bodyCap: number,
 ): string[] {
-  const phases = model.phases(runId);
-  // Which phase is selected drives the right pane. In "phases" view it's the
-  // cursor; in "agents" view it's the drilled-in phase (state.phase).
-  const inAgents = state.kind === "agents";
-  let selPhaseIdx = inAgents ? phases.findIndex((p) => p.title === state.phase) : state.cursor;
-  if (selPhaseIdx < 0) selPhaseIdx = 0;
-  const selPhase = phases[selPhaseIdx];
-  const agents = selPhase ? model.agents(runId, selPhase.title) : [];
-
-  // Narrow-terminal degrade: single pane (spec §7.1).
-  if (width < LW_MIN + RW_MIN - 1) {
-    return renderSinglePane(state, phases, selPhaseIdx, agents, width, theme, bodyCap, inAgents);
-  }
-
-  const leftW = computeLeftWidth(phases, width);
-  const rightW = width - leftW + 1; // shared divider overlaps 1 cell
-  const leftInner = leftW - 2;
-  const rightInner = rightW - 2;
-
-  // Vertical scroll so the active item stays visible (spec §7.2).
-  const leftRows = scrollWindow(phases.length, inAgents ? selPhaseIdx : state.cursor, bodyCap);
-  const rightRows = scrollWindow(agents.length, inAgents ? state.cursor : 0, bodyCap);
-  const bodyRows = Math.max(1, Math.min(bodyCap, Math.max(leftRows.count, rightRows.count)));
-
-  // Left column (Phases).
-  const left: string[] = [];
-  for (let k = 0; k < bodyRows; k++) {
-    const idx = leftRows.start + k;
-    if (idx >= phases.length) {
-      left.push(" ".repeat(leftInner));
-      continue;
-    }
-    const p = phases[idx];
-    const selected = !inAgents && idx === state.cursor;
-    const ag = model.agents(runId, p.title);
-    let row = leftPhaseRow(p, idx, selected, ag, leftInner, theme);
-    if (k === bodyRows - 1 && leftRows.more) {
-      row = truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), leftInner, "", true);
-    }
-    left.push(row);
-  }
-
-  // Right column (agents of selected phase).
-  const modelColStart = computeModelColStart(agents, rightInner);
-  const right: string[] = [];
-  if (agents.length === 0) {
-    const msg = truncateToWidth(theme.fg("dim", "no agents"), rightInner, "", true);
-    for (let k = 0; k < bodyRows; k++) right.push(k === 0 ? msg : " ".repeat(rightInner));
-  } else {
-    for (let k = 0; k < bodyRows; k++) {
-      const idx = rightRows.start + k;
-      if (idx >= agents.length) {
-        right.push(" ".repeat(rightInner));
-        continue;
-      }
-      const selected = inAgents && idx === state.cursor;
-      let row = rightAgentRow(agents[idx], selected, modelColStart, rightInner, theme);
-      if (k === bodyRows - 1 && rightRows.more) {
-        row = truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), rightInner, "", true);
-      }
-      right.push(row);
-    }
-  }
-
-  const n = agents.length;
-  const rightTitle = `${selPhase ? selPhase.title : "(none)"} · ${n} ${pluralize("agent", n)}`;
-  return renderTwoPaneFrame({
-    width,
-    bodyRows,
-    left,
-    right,
-    leftTitle: "Phases",
-    rightTitle,
-    leftW,
-    theme,
-  });
+  const ctx = phaseAgentPaneContext(state, model, runId);
+  return width < LW_MIN + RW_MIN - 1
+    ? renderSinglePane(state, ctx.phases, ctx.selPhaseIdx, ctx.agents, width, theme, bodyCap, ctx.inAgents)
+    : renderWidePhaseAgentPanes(state, model, runId, width, theme, bodyCap, ctx);
 }
 
 /** Model column start aligned across agent rows (spec §4.3), clamped to field. */
+
+function blankRow(width: number): string {
+  return " ".repeat(width);
+}
+
+function overflowRow(width: number, theme: ThemeLike): string {
+  return truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), width, "", true);
+}
+
+function renderWindowRows<T>(
+  items: T[],
+  win: ScrollWin,
+  rows: number,
+  width: number,
+  theme: ThemeLike,
+  renderItem: (item: T, idx: number) => string,
+): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < rows; k++) {
+    const idx = win.start + k;
+    const row = idx < items.length ? renderItem(items[idx], idx) : blankRow(width);
+    out.push(k === rows - 1 && win.more ? overflowRow(width, theme) : row);
+  }
+  return out;
+}
+
+function renderEmptyAgentsRows(rows: number, width: number, theme: ThemeLike): string[] {
+  return Array.from({ length: rows }, (_, i) =>
+    i === 0 ? truncateToWidth(theme.fg("dim", "no agents"), width, "", true) : blankRow(width),
+  );
+}
+
+function frameRows(rows: string[], theme: ThemeLike): string[] {
+  const bc = (s: string) => theme.fg("muted", s);
+  return rows.map((row) => bc(BX.v) + row + bc(BX.v));
+}
+
 function computeModelColStart(agents: AgentRow[], innerW: number): number {
   let maxName = 0;
   for (const a of agents) maxName = Math.max(maxName, visibleWidth(a.label));
@@ -664,6 +721,57 @@ function scrollWindow(total: number, active: number, cap: number): ScrollWin {
 }
 
 /** Narrow-terminal single pane (spec §7.1): show the active pane full width. */
+function renderBox(title: string, rows: string[], width: number, theme: ThemeLike): string[] {
+  const innerW = Math.max(1, width - 2);
+  const bc = (str: string) => theme.fg("muted", str);
+  return [
+    bc(BX.tl) + topTitleSegment(title, innerW, false, theme) + bc(BX.tr),
+    ...frameRows(rows, theme),
+    bc(BX.bl) + bc(BX.h.repeat(innerW)) + bc(BX.br),
+  ];
+}
+
+function renderSinglePaneAgents(
+  state: NavigatorState,
+  phases: PhaseRow[],
+  selPhaseIdx: number,
+  agents: AgentRow[],
+  width: number,
+  theme: ThemeLike,
+  bodyCap: number,
+): string[] {
+  const innerW = Math.max(1, width - 2);
+  const n = agents.length;
+  const selPhase = phases[selPhaseIdx];
+  const win = scrollWindow(agents.length, state.cursor, bodyCap);
+  const rows = Math.max(1, win.count);
+  return renderBox(
+    `${selPhase ? selPhase.title : "(none)"} · ${n} ${pluralize("agent", n)}`,
+    renderAgentPaneRows(agents, win, rows, (idx) => idx === state.cursor, innerW, theme),
+    width,
+    theme,
+  );
+}
+
+function renderSinglePanePhases(
+  state: NavigatorState,
+  phases: PhaseRow[],
+  width: number,
+  theme: ThemeLike,
+  bodyCap: number,
+): string[] {
+  const innerW = Math.max(1, width - 2);
+  const win = scrollWindow(phases.length, state.cursor, bodyCap);
+  const rows = Math.max(1, win.count);
+  return renderBox(
+    "Phases",
+    renderPhasePaneRows(phases, win, rows, (idx) => idx === state.cursor, () => [], innerW, theme),
+    width,
+    theme,
+  );
+}
+
+/** Narrow-terminal single pane (spec §7.1): show the active pane full width. */
 function renderSinglePane(
   state: NavigatorState,
   phases: PhaseRow[],
@@ -674,45 +782,9 @@ function renderSinglePane(
   bodyCap: number,
   inAgents: boolean,
 ): string[] {
-  const innerW = Math.max(1, width - 2);
-  const bc = (s: string) => theme.fg("muted", s);
-  const out: string[] = [];
-  if (inAgents) {
-    const selPhase = phases[selPhaseIdx];
-    const n = agents.length;
-    const title = `${selPhase ? selPhase.title : "(none)"} · ${n} ${pluralize("agent", n)}`;
-    out.push(bc(BX.tl) + topTitleSegment(title, innerW, false, theme) + bc(BX.tr));
-    const win = scrollWindow(agents.length, state.cursor, bodyCap);
-    const modelColStart = computeModelColStart(agents, innerW);
-    const rows = Math.max(1, win.count);
-    for (let k = 0; k < rows; k++) {
-      const idx = win.start + k;
-      if (idx >= agents.length) {
-        out.push(bc(BX.v) + " ".repeat(innerW) + bc(BX.v));
-        continue;
-      }
-      let row = rightAgentRow(agents[idx], idx === state.cursor, modelColStart, innerW, theme);
-      if (k === rows - 1 && win.more) row = truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), innerW, "", true);
-      out.push(bc(BX.v) + row + bc(BX.v));
-    }
-  } else {
-    out.push(bc(BX.tl) + topTitleSegment("Phases", innerW, false, theme) + bc(BX.tr));
-    const win = scrollWindow(phases.length, state.cursor, bodyCap);
-    const rows = Math.max(1, win.count);
-    for (let k = 0; k < rows; k++) {
-      const idx = win.start + k;
-      if (idx >= phases.length) {
-        out.push(bc(BX.v) + " ".repeat(innerW) + bc(BX.v));
-        continue;
-      }
-      const p = phases[idx];
-      let row = leftPhaseRow(p, idx, idx === state.cursor, [], innerW, theme);
-      if (k === rows - 1 && win.more) row = truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), innerW, "", true);
-      out.push(bc(BX.v) + row + bc(BX.v));
-    }
-  }
-  out.push(bc(BX.bl) + bc(BX.h.repeat(innerW)) + bc(BX.br));
-  return out;
+  return inAgents
+    ? renderSinglePaneAgents(state, phases, selPhaseIdx, agents, width, theme, bodyCap)
+    : renderSinglePanePhases(state, phases, width, theme, bodyCap);
 }
 
 function renderScrollableBody(
@@ -1045,9 +1117,15 @@ function pauseOrStopRun(
   ui.notify(ok ? `${label} ${id}` : `${fail} ${id}`, "info");
 }
 
+
+function activePersistedRun(manager: WorkflowManager, state: NavigatorState, model: NavigatorModel): PersistedRunState | undefined {
+  const id = state.activeRunId(model);
+  return id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+}
+
 function restartRun(manager: WorkflowManager, state: NavigatorState, model: NavigatorModel, ui: ExtensionUIContext): void {
   const id = state.activeRunId(model);
-  const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+  const run = activePersistedRun(manager, state, model);
   if (!run?.script) {
     ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
     return;
@@ -1064,8 +1142,7 @@ function saveRun(
   ui: ExtensionUIContext,
   opts: NavigatorOptions,
 ): void {
-  const id = state.activeRunId(model);
-  const run = id ? manager.listRuns().find((r) => r.runId === id) : undefined;
+  const run = activePersistedRun(manager, state, model);
   if (!run?.script) {
     ui.notify("No saved run script to save", "warning");
     return;
