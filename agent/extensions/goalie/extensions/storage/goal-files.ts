@@ -137,35 +137,37 @@ ${goal.objective.trim()}
 `;
 }
 
-function findJsonObjectEnd(content: string): number {
-	let depth = 0;
-	let inString = false;
-	let escaped = false;
+interface JsonScanState {
+	depth: number;
+	inString: boolean;
+	escaped: boolean;
+}
 
+function scanJsonStringChar(char: string, state: JsonScanState): void {
+	if (state.escaped) {
+		state.escaped = false;
+	} else if (char === "\\") {
+		state.escaped = true;
+	} else if (char === "\"") {
+		state.inString = false;
+	}
+}
+
+function scanJsonObjectChar(char: string, state: JsonScanState): boolean {
+	if (char === "\"") state.inString = true;
+	if (char === "{") state.depth++;
+	if (char === "}") state.depth--;
+	return char === "}" && state.depth === 0;
+}
+
+function findJsonObjectEnd(content: string): number {
+	const state: JsonScanState = { depth: 0, inString: false, escaped: false };
 	for (let i = 0; i < content.length; i++) {
-		const char = content[i];
-		if (inString) {
-			if (escaped) {
-				escaped = false;
-			} else if (char === "\\") {
-				escaped = true;
-			} else if (char === "\"") {
-				inString = false;
-			}
+		if (state.inString) {
+			scanJsonStringChar(content[i] ?? "", state);
 			continue;
 		}
-		if (char === "\"") {
-			inString = true;
-			continue;
-		}
-		if (char === "{") {
-			depth++;
-			continue;
-		}
-		if (char === "}") {
-			depth--;
-			if (depth === 0) return i;
-		}
+		if (scanJsonObjectChar(content[i] ?? "", state)) return i;
 	}
 	return -1;
 }

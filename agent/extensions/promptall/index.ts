@@ -118,15 +118,29 @@ type PromptPickerInputActions = {
 
 type PromptPickerInputResult = "render" | "done";
 
+type PromptPickerKeyAction = {
+	keybinding?: string;
+	matches?: (data: string) => boolean;
+	run(actions: PromptPickerInputActions, pageSize: number): void;
+	result: PromptPickerInputResult;
+};
+
+const PROMPT_PICKER_KEY_ACTIONS: PromptPickerKeyAction[] = [
+	{ keybinding: "tui.select.up", run: (actions) => actions.move(-1), result: "render" },
+	{ keybinding: "tui.select.down", run: (actions) => actions.move(1), result: "render" },
+	{ keybinding: "tui.select.pageUp", run: (actions, pageSize) => actions.move(-pageSize), result: "render" },
+	{ keybinding: "tui.select.pageDown", run: (actions, pageSize) => actions.move(pageSize), result: "render" },
+	{ keybinding: "tui.select.confirm", run: (actions) => actions.confirm(), result: "done" },
+	{ keybinding: "tui.select.cancel", run: (actions) => actions.cancel(), result: "done" },
+	{ keybinding: "tui.editor.deleteCharBackward", matches: (data) => matchesKey(data, Key.backspace), run: (actions) => actions.backspaceQuery(), result: "render" },
+	{ keybinding: "tui.editor.deleteToLineStart", run: (actions) => actions.clearQuery(), result: "render" },
+];
+
 function handlePromptPickerInput(data: string, keybindings: PickerKeybindings, pageSize: number, actions: PromptPickerInputActions): PromptPickerInputResult {
-	if (keybindings.matches(data, "tui.select.up")) return runInputAction(() => actions.move(-1), "render");
-	if (keybindings.matches(data, "tui.select.down")) return runInputAction(() => actions.move(1), "render");
-	if (keybindings.matches(data, "tui.select.pageUp")) return runInputAction(() => actions.move(-pageSize), "render");
-	if (keybindings.matches(data, "tui.select.pageDown")) return runInputAction(() => actions.move(pageSize), "render");
-	if (keybindings.matches(data, "tui.select.confirm")) return runInputAction(actions.confirm, "done");
-	if (keybindings.matches(data, "tui.select.cancel")) return runInputAction(actions.cancel, "done");
-	if (keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) return runInputAction(actions.backspaceQuery, "render");
-	if (keybindings.matches(data, "tui.editor.deleteToLineStart")) return runInputAction(actions.clearQuery, "render");
+	const keyAction = PROMPT_PICKER_KEY_ACTIONS.find(
+		(action) => (action.keybinding ? keybindings.matches(data, action.keybinding) : false) || action.matches?.(data),
+	);
+	if (keyAction) return runInputAction(() => keyAction.run(actions, pageSize), keyAction.result);
 
 	const printable = decodePrintableInput(data);
 	if (printable) actions.appendQuery(printable);
