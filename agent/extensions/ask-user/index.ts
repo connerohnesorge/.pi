@@ -365,6 +365,57 @@ function resolveShortcut(
 
 type AskMode = "select" | "freeform" | "comment";
 
+type HelpMode = Exclude<AskMode, "select">;
+
+function buildTextInputHelpHints(
+   theme: Theme,
+   keybindings: KeybindingsManager,
+   mode: HelpMode,
+   overlayHint: string | null,
+): Array<string | null> {
+   return [
+      keybindingHint(theme, keybindings, "tui.input.submit", mode === "comment" ? "submit/skip" : "submit"),
+      keybindingHint(theme, keybindings, "tui.input.newLine", "newline"),
+      literalHint(theme, "esc", "back"),
+      overlayHint,
+      alternateCancelHint(theme, keybindings),
+   ];
+}
+
+function buildMultiSelectHelpHints(
+   theme: Theme,
+   keybindings: KeybindingsManager,
+   commentHint: string | null,
+   overlayHint: string | null,
+): Array<string | null> {
+   return [
+      literalHint(theme, "↑↓", "navigate"),
+      literalHint(theme, "space", "toggle"),
+      commentHint,
+      overlayHint,
+      keybindingHint(theme, keybindings, "tui.select.confirm", "submit"),
+      keybindingHint(theme, keybindings, "tui.select.cancel", "cancel"),
+   ];
+}
+
+function buildSingleSelectHelpHints(
+   theme: Theme,
+   keybindings: KeybindingsManager,
+   commentHint: string | null,
+   overlayHint: string | null,
+): Array<string | null> {
+   return [
+      literalHint(theme, "type", "filter"),
+      keybindingHint(theme, keybindings, "tui.editor.deleteCharBackward", "erase"),
+      literalHint(theme, "↑↓", "navigate"),
+      commentHint,
+      overlayHint,
+      keybindingHint(theme, keybindings, "tui.select.confirm", "select"),
+      literalHint(theme, "esc", "clear/cancel"),
+      alternateCancelHint(theme, keybindings),
+   ];
+}
+
 const ASK_OVERLAY_MAX_HEIGHT_RATIO = 0.85;
 const ASK_OVERLAY_WIDTH = "92%";
 const ASK_OVERLAY_MIN_WIDTH = 40;
@@ -1343,38 +1394,13 @@ class AskComponent extends Container {
          ? literalHint(theme, this.shortcuts.commentToggle.spec, "toggle context")
          : null;
 
-      if (this.mode === "freeform" || this.mode === "comment") {
-         setDimHelpText(this.helpText, theme, [
-            keybindingHint(theme, this.keybindings, "tui.input.submit", this.mode === "comment" ? "submit/skip" : "submit"),
-            keybindingHint(theme, this.keybindings, "tui.input.newLine", "newline"),
-            literalHint(theme, "esc", "back"),
-            overlayHint,
-            alternateCancelHint(theme, this.keybindings),
-         ]);
-         return;
-      }
+      const hints = this.mode === "freeform" || this.mode === "comment"
+         ? buildTextInputHelpHints(theme, this.keybindings, this.mode, overlayHint)
+         : this.allowMultiple
+            ? buildMultiSelectHelpHints(theme, this.keybindings, commentHint, overlayHint)
+            : buildSingleSelectHelpHints(theme, this.keybindings, commentHint, overlayHint);
 
-      if (this.allowMultiple) {
-         setDimHelpText(this.helpText, theme, [
-            literalHint(theme, "↑↓", "navigate"),
-            literalHint(theme, "space", "toggle"),
-            commentHint,
-            overlayHint,
-            keybindingHint(theme, this.keybindings, "tui.select.confirm", "submit"),
-            keybindingHint(theme, this.keybindings, "tui.select.cancel", "cancel"),
-         ]);
-      } else {
-         setDimHelpText(this.helpText, theme, [
-            literalHint(theme, "type", "filter"),
-            keybindingHint(theme, this.keybindings, "tui.editor.deleteCharBackward", "erase"),
-            literalHint(theme, "↑↓", "navigate"),
-            commentHint,
-            overlayHint,
-            keybindingHint(theme, this.keybindings, "tui.select.confirm", "select"),
-            literalHint(theme, "esc", "clear/cancel"),
-            alternateCancelHint(theme, this.keybindings),
-         ]);
-      }
+      setDimHelpText(this.helpText, theme, hints);
    }
 
    private ensureSingleSelectList(): WrappedSingleSelectList {
