@@ -70,6 +70,76 @@ interface WorktreeState {
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
+export type RedirectResult = { path: string } | { block: string };
+
+function normalizePathInput(p: string): string {
+	const normalized = p.replace(UNICODE_SPACES, " ");
+	const withoutAtPrefix = normalized.startsWith("@")
+		? normalized.slice(1)
+		: normalized;
+	if (withoutAtPrefix === "~") return os.homedir();
+	if (withoutAtPrefix.startsWith("~/")) {
+		return path.join(os.homedir(), withoutAtPrefix.slice(2));
+	}
+	return withoutAtPrefix;
+}
+
+function isWithinDirectory(filePath: string, directory: string): boolean {
+	const relative = path.relative(directory, filePath);
+	return (
+		relative === "" ||
+		(!relative.startsWith("..") && !path.isAbsolute(relative))
+	);
+}
+
+function redirectRelativePath(
+	filePath: string,
+	wtPath: string,
+): RedirectResult {
+	const candidate = path.resolve(wtPath, filePath);
+	return isWithinDirectory(candidate, wtPath)
+		? { path: candidate }
+		: { block: `Blocked relative path outside active worktree: ${filePath}` };
+}
+
+function redirectRepoPath(
+	expanded: string,
+	info: WorktreeInfo,
+): RedirectResult {
+	if (
+		isWithinDirectory(expanded, path.join(info.repoRoot, ".pi", "worktrees"))
+	) {
+		return { block: `Blocked path outside active worktree: ${expanded}` };
+	}
+	return { path: path.join(info.path, path.relative(info.repoRoot, expanded)) };
+}
+
+function redirectExternalPath(
+	expanded: string,
+	allowExternalAbsolute: boolean,
+): RedirectResult {
+	return allowExternalAbsolute
+		? { path: expanded }
+		: { block: `Blocked absolute path outside active worktree: ${expanded}` };
+}
+
+export function redirectWorktreePath(
+	filePath: string,
+	info: WorktreeInfo,
+	options: { allowExternalAbsolute: boolean },
+): RedirectResult {
+	const expanded = normalizePathInput(filePath);
+	if (!path.isAbsolute(expanded))
+		return redirectRelativePath(filePath, info.path);
+	if (isWithinDirectory(expanded, info.path))
+		return { path: path.resolve(expanded) };
+	if (isWithinDirectory(expanded, info.repoRoot))
+		return redirectRepoPath(expanded, info);
+	return redirectExternalPath(expanded, options.allowExternalAbsolute);
+}
+
+type BlockResult = { block: true; reason: string };
+
 function getShellCommand(command: string): { file: string; args: string[] } {
 	if (process.platform === "win32") {
 		return {
@@ -81,10 +151,7 @@ function getShellCommand(command: string): { file: string; args: string[] } {
 	return { file: "/bin/sh", args: ["-c", command] };
 }
 
-function isToolCallEventType(
-	toolName: string,
-	event: ToolCallEvent,
-): boolean {
+function isToolCallEventType(toolName: string, event: ToolCallEvent): boolean {
 	return event.toolName === toolName;
 }
 
@@ -330,125 +397,59 @@ export default function worktreeExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	function normalizePathInput(p: string): string {
-		const normalized = p.replace(UNICODE_SPACES, " ");
-		const withoutAtPrefix = normalized.startsWith("@")
-			? normalized.slice(1)
-			: normalized;
-		if (withoutAtPrefix === "~") return os.homedir();
-		if (withoutAtPrefix.startsWith("~/")) {
-			return path.join(os.homedir(), withoutAtPrefix.slice(2));
-		}
-		return withoutAtPrefix;
-	}
-
-	function isWithinDirectory(filePath: string, directory: string): boolean {
-		const relative = path.relative(directory, filePath);
-		return (
-			relative === "" ||
-			(!relative.startsWith("..") && !path.isAbsolute(relative))
-		);
-	}
-
 	function redirectPath(
 		filePath: string,
 		options: { allowExternalAbsolute: boolean },
-	): { path: string } | { block: string } {
-		if (!worktreeState) return { path: filePath };
-		const { info } = worktreeState;
-		const expanded = normalizePathInput(filePath);
-
-		if (path.isAbsolute(expanded) && isWithinDirectory(expanded, info.path)) {
-			return { path: path.resolve(expanded) };
-		}
-
-		if (
-			path.isAbsolute(expanded) &&
-			isWithinDirectory(expanded, info.repoRoot)
-		) {
-			if (
-				isWithinDirectory(
-					expanded,
-					path.join(info.repoRoot, ".pi", "worktrees"),
-				)
-			) {
-				return {
-					block: `Blocked path outside active worktree: ${expanded}`,
-				};
-			}
-			return {
-				path: path.join(info.path, path.relative(info.repoRoot, expanded)),
-			};
-		}
-
-		if (!path.isAbsolute(expanded)) {
-			const candidate = path.resolve(info.path, expanded);
-			if (!isWithinDirectory(candidate, info.path)) {
-				return {
-					block: `Blocked relative path outside active worktree: ${filePath}`,
-				};
-			}
-			return { path: candidate };
-		}
-
-		if (!options.allowExternalAbsolute) {
-			return {
-				block: `Blocked absolute path outside active worktree: ${expanded}`,
-			};
-		}
-
-		return { path: expanded };
+	): RedirectResult {
+		return worktreeState
+			? redirectWorktreePath(filePath, worktreeState.info, options)
+			: { path: filePath };
 	}
 
-	function blockReason(reason: string): { block: true; reason: string } {
+	function blockReason(reason: string): BlockResult {
 		return { block: true, reason };
 	}
 
-	function redirectToolPath(
+	function redirectEventPath(
 		event: ToolCallEvent,
-	): { block: true; reason: string } | undefined {
+		allowExternalAbsolute: boolean,
+	): BlockResult | undefined {
+		if (typeof event.input.path !== "string") return undefined;
+		const redirected = redirectPath(event.input.path, {
+			allowExternalAbsolute,
+		});
+		if ("block" in redirected) return blockReason(redirected.block);
+		event.input.path = redirected.path;
+	}
+
+	function redirectBashTool(event: ToolCallEvent): BlockResult | undefined {
+		if (typeof event.input.command !== "string") return undefined;
+		const rewritten = rewriteBashCommand(event.input.command);
+		if ("block" in rewritten) return blockReason(rewritten.block);
+		event.input.command = `cd ${shellQuote(worktreeState!.info.path)} && ${rewritten.command}`;
+	}
+
+	const explicitPathTools = new Map<string, boolean>([
+		["read", true],
+		["write", false],
+		["edit", false],
+	]);
+	const defaultPathTools = new Set(["grep", "find", "ls"]);
+
+	function redirectToolPath(event: ToolCallEvent): BlockResult | undefined {
 		if (!worktreeState) return undefined;
+		if (isToolCallEventType("bash", event)) return redirectBashTool(event);
 
-		if (isToolCallEventType("bash", event)) {
-			if (typeof event.input.command !== "string") return undefined;
-			const rewritten = rewriteBashCommand(event.input.command);
-			if ("block" in rewritten) return blockReason(rewritten.block);
-			event.input.command = `cd ${shellQuote(worktreeState.info.path)} && ${rewritten.command}`;
-			return undefined;
+		const allowExternalAbsolute = explicitPathTools.get(event.toolName);
+		if (allowExternalAbsolute !== undefined) {
+			return redirectEventPath(event, allowExternalAbsolute);
 		}
 
-		if (
-			isToolCallEventType("read", event) ||
-			isToolCallEventType("write", event) ||
-			isToolCallEventType("edit", event)
-		) {
-			if (typeof event.input.path === "string") {
-				const redirected = redirectPath(event.input.path, {
-					allowExternalAbsolute: isToolCallEventType("read", event),
-				});
-				if ("block" in redirected) return blockReason(redirected.block);
-				event.input.path = redirected.path;
-			}
-			return undefined;
+		if (!defaultPathTools.has(event.toolName)) return undefined;
+		if (typeof event.input.path !== "string") {
+			event.input.path = worktreeState.info.path;
 		}
-
-		if (
-			isToolCallEventType("grep", event) ||
-			isToolCallEventType("find", event) ||
-			isToolCallEventType("ls", event)
-		) {
-			if (typeof event.input.path === "string") {
-				const redirected = redirectPath(event.input.path, {
-					allowExternalAbsolute: true,
-				});
-				if ("block" in redirected) return blockReason(redirected.block);
-				event.input.path = redirected.path;
-			} else {
-				event.input.path = worktreeState.info.path;
-			}
-		}
-
-		return undefined;
+		return redirectEventPath(event, true);
 	}
 
 	pi.registerFlag("worktree", {
@@ -467,45 +468,47 @@ export default function worktreeExtension(pi: ExtensionAPI) {
 		default: false,
 	});
 
-	pi.on("session_start", async (event, ctx) => {
-		const { code, stdout } = await git(["rev-parse", "--show-toplevel"]);
-		if (code !== 0) return;
-		const repoRoot = stdout.trim();
-		await ensureLocalPiIgnored(repoRoot);
+	async function findBaseBranch(repoRoot: string): Promise<string | undefined> {
+		for (const branch of ["main", "master"]) {
+			const res = await git(
+				["rev-parse", "--verify", `refs/heads/${branch}`],
+				repoRoot,
+			);
+			if (res.code === 0) return branch;
+		}
+	}
 
+	async function resumeMarkedWorktree(
+		repoRoot: string,
+		event: { reason: string },
+		ctx: any,
+	): Promise<boolean> {
 		const existing = readWorktreeMarker(repoRoot);
-		if (existing) {
-			if (
-				event.reason !== "startup" &&
-				(await canResumeWorktree(existing, repoRoot))
-			) {
-				activateWorktree(existing);
-				ctx.ui.setStatus("worktree", `🌿 ${existing.branch}`);
-				return;
-			}
-			removeWorktreeMarker(repoRoot);
-		}
-
+		if (!existing) return false;
 		if (
-			event.reason !== "startup" ||
-			(!pi.getFlag("worktree") && !pi.getFlag("wt") && !pi.getFlag("w"))
+			event.reason !== "startup" &&
+			(await canResumeWorktree(existing, repoRoot))
 		) {
-			return;
+			activateWorktree(existing);
+			ctx.ui.setStatus("worktree", `🌿 ${existing.branch}`);
+			return true;
 		}
+		removeWorktreeMarker(repoRoot);
+		return false;
+	}
 
-		const branchChecks = await Promise.all(
-			["main", "master"].map(async (branch) => ({
-				branch,
-				exists:
-					(
-						await git(
-							["rev-parse", "--verify", `refs/heads/${branch}`],
-							repoRoot,
-						)
-					).code === 0,
-			})),
+	function shouldCreateWorktree(event: { reason: string }): boolean {
+		return (
+			event.reason === "startup" &&
+			(pi.getFlag("worktree") || pi.getFlag("wt") || pi.getFlag("w"))
 		);
-		const base = branchChecks.find(({ exists }) => exists)?.branch;
+	}
+
+	async function createSessionWorktree(
+		repoRoot: string,
+		ctx: any,
+	): Promise<void> {
+		const base = await findBaseBranch(repoRoot);
 		if (!base) {
 			ctx.ui.notify("No main or master branch found", "error");
 			return;
@@ -519,7 +522,6 @@ export default function worktreeExtension(pi: ExtensionAPI) {
 			"worktrees",
 			`pi-wt-${worktreeId}`,
 		);
-
 		const res = await git(
 			["worktree", "add", "-b", branch, wtDir, base],
 			repoRoot,
@@ -534,7 +536,21 @@ export default function worktreeExtension(pi: ExtensionAPI) {
 		saveWorktreeMarker(repoRoot, info);
 		ctx.ui.setStatus("worktree", `🌿 ${branch}`);
 		ctx.ui.notify(`🌿 Worktree created: ${branch}`, "info");
-	});
+	}
+
+	async function onSessionStart(
+		event: { reason: string },
+		ctx: any,
+	): Promise<void> {
+		const { code, stdout } = await git(["rev-parse", "--show-toplevel"]);
+		if (code !== 0) return;
+		const repoRoot = stdout.trim();
+		await ensureLocalPiIgnored(repoRoot);
+		if (await resumeMarkedWorktree(repoRoot, event, ctx)) return;
+		if (shouldCreateWorktree(event)) await createSessionWorktree(repoRoot, ctx);
+	}
+
+	pi.on("session_start", onSessionStart);
 
 	pi.on("tool_call", (event) => {
 		if (!worktreeState) return;
@@ -546,64 +562,81 @@ export default function worktreeExtension(pi: ExtensionAPI) {
 		return { operations: worktreeState.bashOperations };
 	});
 
-	pi.on("session_shutdown", async (event, ctx) => {
+	function notifyDirtyWorktree(ctx: any, branch: string): void {
+		if (ctx.hasUI)
+			ctx.ui.notify(`Worktree has uncommitted changes: ${branch}`, "warning");
+	}
+
+	async function removeGitWorktree(
+		wtPath: string,
+		branch: string,
+		repoRoot: string,
+		isDirty: boolean,
+	): Promise<boolean> {
+		const removeArgs = isDirty
+			? ["worktree", "remove", "--force", wtPath]
+			: ["worktree", "remove", wtPath];
+		const removeResult = await git(removeArgs, repoRoot);
+		if (removeResult.code !== 0) {
+			terminalMessage(
+				`Failed to delete worktree: ${removeResult.stderr.trim() || removeResult.stdout.trim()}`,
+			);
+			return false;
+		}
+
+		const deleteBranchResult = await git(["branch", "-d", branch], repoRoot);
+		terminalMessage(
+			deleteBranchResult.code === 0
+				? "Worktree and branch deleted"
+				: `Worktree deleted; branch kept: ${branch}`,
+		);
+		return true;
+	}
+
+	function keptWorktreeMessage(wtPath: string, isDirty: boolean): void {
+		terminalMessage(
+			isDirty
+				? `Worktree has uncommitted changes; kept at: ${wtPath}`
+				: `Kept at: ${wtPath}`,
+		);
+	}
+
+	async function onSessionShutdown(
+		event: { reason: string },
+		ctx: any,
+	): Promise<void> {
 		if (!worktreeState || event.reason !== "quit") return;
-
 		const { path: wtPath, branch, repoRoot } = worktreeState.info;
-
 		const statusResult = await git(
 			["status", "--porcelain", "--untracked-files=normal"],
 			wtPath,
 		);
 		if (statusResult.code !== 0) {
 			terminalMessage(
-				`Could not inspect worktree status; keeping ${branch}: ${
-					statusResult.stderr.trim() || statusResult.stdout.trim()
-				}`,
+				`Could not inspect worktree status; keeping ${branch}: ${statusResult.stderr.trim() || statusResult.stdout.trim()}`,
 			);
 			return;
 		}
 
 		const isDirty = statusResult.stdout.trim().length > 0;
-
-		if (isDirty) {
-			if (ctx.hasUI) {
-				ctx.ui.notify(`Worktree has uncommitted changes: ${branch}`, "warning");
-			}
-		}
+		if (isDirty) notifyDirtyWorktree(ctx, branch);
 
 		// Pi stops the TUI before final shutdown handlers run, so ctx.ui.confirm()
 		// is not visible here in interactive mode.
 		const shouldDelete = await confirmInTerminal(branch, wtPath, isDirty);
-
 		if (shouldDelete) {
-			const removeArgs = isDirty
-				? ["worktree", "remove", "--force", wtPath]
-				: ["worktree", "remove", wtPath];
-			const removeResult = await git(removeArgs, repoRoot);
-			if (removeResult.code !== 0) {
-				terminalMessage(
-					`Failed to delete worktree: ${
-						removeResult.stderr.trim() || removeResult.stdout.trim()
-					}`,
-				);
-				return;
-			}
-
-			const deleteBranchResult = await git(["branch", "-d", branch], repoRoot);
-			if (deleteBranchResult.code === 0) {
-				terminalMessage("Worktree and branch deleted");
-			} else {
-				terminalMessage(`Worktree deleted; branch kept: ${branch}`);
-			}
+			const removed = await removeGitWorktree(
+				wtPath,
+				branch,
+				repoRoot,
+				isDirty,
+			);
+			if (!removed) return;
 		} else {
-			if (isDirty) {
-				terminalMessage(`Worktree has uncommitted changes; kept at: ${wtPath}`);
-			} else {
-				terminalMessage(`Kept at: ${wtPath}`);
-			}
+			keptWorktreeMessage(wtPath, isDirty);
 		}
-
 		removeWorktreeMarker(repoRoot);
-	});
+	}
+
+	pi.on("session_shutdown", onSessionShutdown);
 }
