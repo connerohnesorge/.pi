@@ -14,20 +14,29 @@ function firstNonBlank(values: Array<string | undefined>): string | undefined {
 	return values.find((value) => value?.trim());
 }
 
-function resolveTemporaryDirectory(): string {
-	if (process.platform !== "win32") {
-		return firstNonBlank([process.env.TMPDIR, process.env.TMP]) ?? "/tmp";
-	}
+function joinIfSet(base: string | undefined, ...paths: string[]): string | undefined {
+	return base ? join(base, ...paths) : undefined;
+}
 
-	return (
-		firstNonBlank([
-			process.env.TEMP,
-			process.env.TMP,
-			process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Temp") : undefined,
-			process.env.USERPROFILE ? join(process.env.USERPROFILE, "AppData", "Local", "Temp") : undefined,
-			process.env.SystemRoot || process.env.WINDIR ? join((process.env.SystemRoot ?? process.env.WINDIR)!, "Temp") : undefined,
-		]) ?? "C:/Windows/Temp"
-	);
+function resolveNonWindowsTemporaryDirectory(): string {
+	return firstNonBlank([process.env.TMPDIR, process.env.TMP]) ?? "/tmp";
+}
+
+function resolveWindowsTemporaryDirectory(): string {
+	const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+	const candidates = [
+		process.env.TEMP,
+		process.env.TMP,
+		joinIfSet(process.env.LOCALAPPDATA, "Temp"),
+		joinIfSet(process.env.USERPROFILE, "AppData", "Local", "Temp"),
+		joinIfSet(windowsRoot, "Temp"),
+	];
+
+	return firstNonBlank(candidates) ?? "C:/Windows/Temp";
+}
+
+function resolveTemporaryDirectory(): string {
+	return process.platform === "win32" ? resolveWindowsTemporaryDirectory() : resolveNonWindowsTemporaryDirectory();
 }
 
 function getTemporaryRtkHistoryDbPath(): string {
