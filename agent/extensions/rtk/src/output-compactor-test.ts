@@ -351,6 +351,18 @@ runTest("build output uses plain-text status markers", () => {
 	assertNoOutputEmoji(compacted);
 });
 
+runTest("build output summarizes warnings and error blocks", () => {
+	assert.equal(compactBashOutput("npm run build", "warning: unused import\n"), "\n[WARN] 1 warning(s)");
+
+	assert.equal(
+		compactBashOutput(
+			"npm run build",
+			"error: failed to compile\n  --> src/main.rs:1:1\n   |\n1 | nope\n\n\nnext line\n",
+		),
+		"[ERROR] 1 error(s):\nerror: failed to compile\n  --> src/main.rs:1:1\n   |",
+	);
+});
+
 runTest("git status output uses plain-text labels", () => {
 	const compacted = compactBashOutput(
 		"git status --short --branch",
