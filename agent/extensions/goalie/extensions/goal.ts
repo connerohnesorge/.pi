@@ -171,51 +171,74 @@ function goalDetails(goal: GoalRecord | null): GoalStateEntry {
 	return { version: 3, goal: goal ? cloneGoal(goal) : null };
 }
 
+const GOAL_RESULT_PLAIN_PREFIXES = [
+	"Goal audit ",
+	"Goal completion rejected",
+	"Goal complete.",
+	"Goal paused.",
+	"Goal aborted.",
+	"Goal confirmed and created.",
+] as const;
+
+function firstTextContent(content: Array<{ type: string; text?: string }>): string {
+	return content.find((item) => item.type === "text" && typeof item.text === "string")?.text ?? "";
+}
+
+function isGoalStateEntry(value: unknown): value is GoalStateEntry {
+	return !!value && typeof value === "object" && "goal" in value;
+}
+
+function shouldRenderPlainGoalResult(text: string): boolean {
+	return GOAL_RESULT_PLAIN_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+
 function renderGoalResult(result: { details?: unknown; content: Array<{ type: string; text?: string }> }, theme: Theme): Text {
-	const first = result.content.find((item) => item.type === "text" && typeof item.text === "string");
-	const firstText = first?.text ?? "";
-	const details = result.details as GoalStateEntry | undefined;
-	if (!details || typeof details !== "object" || !("goal" in details)) {
+	const firstText = firstTextContent(result.content);
+	if (!isGoalStateEntry(result.details) || shouldRenderPlainGoalResult(firstText)) {
 		return new Text(firstText, 0, 0);
 	}
-	if (
-		firstText.startsWith("Goal audit ")
-		|| firstText.startsWith("Goal completion rejected")
-		|| firstText.startsWith("Goal complete.")
-		|| firstText.startsWith("Goal paused.")
-		|| firstText.startsWith("Goal aborted.")
-		|| firstText.startsWith("Goal confirmed and created.")
-	) {
-		return new Text(firstText, 0, 0);
-	}
-	return new Text(theme.fg("accent", "Goal ") + theme.fg("muted", oneLineSummary(details.goal)), 0, 0);
+	return new Text(theme.fg("accent", "Goal ") + theme.fg("muted", oneLineSummary(result.details.goal)), 0, 0);
 }
 
 function renderStoppingGoalCall(toolName: string, reason: unknown, theme: Theme): Text {
 	return new Text(theme.fg("toolTitle", `${toolName} `) + theme.fg("warning", truncateText(String(reason ?? ""), 80)), 0, 0);
 }
 
+const GOAL_EVENT_KINDS = ["stale", "drafting", "checkpoint"] as const;
+const DRAFTING_FOCUSES = ["sisyphus", "goal"] as const;
+const GOAL_STATUSES = ["active", "paused", "complete"] as const;
+
+function enumValue<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+	return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : undefined;
+}
+
+function nullableEnumValue<T extends string>(value: unknown, allowed: readonly T[]): T | null | undefined {
+	return value === null ? null : enumValue(value, allowed);
+}
+
+function optionalString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+	return typeof value === "number" ? value : undefined;
+}
+
+function optionalNullableString(value: unknown): string | null | undefined {
+	return value === null ? null : optionalString(value);
+}
+
 function normalizeGoalEventDetails(value: unknown): GoalEventDetails {
-	const raw = asRecord(value);
-	const kind: GoalEventKind = raw?.kind === "stale" ? "stale" : raw?.kind === "drafting" ? "drafting" : "checkpoint";
-	const goalId = typeof raw?.goalId === "string" ? raw.goalId : "unknown";
-	const focus: DraftingFocus | undefined = raw?.focus === "sisyphus" ? "sisyphus" : raw?.focus === "goal" ? "goal" : undefined;
-	const status = raw?.status === "active" || raw?.status === "paused" || raw?.status === "complete" ? (raw.status as GoalStatus) : undefined;
-	const currentStatus =
-		raw?.currentStatus === "active" || raw?.currentStatus === "paused" || raw?.currentStatus === "complete"
-			? (raw.currentStatus as GoalStatus)
-			: raw?.currentStatus === null
-				? null
-				: undefined;
+	const raw = asRecord(value) ?? {};
 	return {
-		kind,
-		goalId,
-		status,
-		objective: typeof raw?.objective === "string" ? raw.objective : undefined,
-		timestamp: typeof raw?.timestamp === "number" ? raw.timestamp : undefined,
-		currentGoalId: typeof raw?.currentGoalId === "string" || raw?.currentGoalId === null ? raw.currentGoalId : undefined,
-		currentStatus,
-		focus,
+		kind: enumValue<GoalEventKind>(raw.kind, GOAL_EVENT_KINDS) ?? "checkpoint",
+		goalId: optionalString(raw.goalId) ?? "unknown",
+		status: enumValue<GoalStatus>(raw.status, GOAL_STATUSES),
+		objective: optionalString(raw.objective),
+		timestamp: optionalNumber(raw.timestamp),
+		currentGoalId: optionalNullableString(raw.currentGoalId),
+		currentStatus: nullableEnumValue<GoalStatus>(raw.currentStatus, GOAL_STATUSES),
+		focus: enumValue<DraftingFocus>(raw.focus, DRAFTING_FOCUSES),
 	};
 }
 
@@ -225,23 +248,34 @@ interface GoalAuditEventDetails {
 	auditor?: string;
 }
 
-function renderGoalEvent(message: { details?: GoalEventDetails }, options: { expanded: boolean }, theme: Theme): Text {
-	const details = normalizeGoalEventDetails(message.details);
-	const label =
-		details.kind === "stale" ? "stale checkpoint"
-			: details.kind === "drafting" ? (details.focus === "sisyphus" ? "sisyphus drafting" : "goal drafting")
-				: "checkpoint";
-	if (!options.expanded) {
-		return new Text(theme.fg("customMessageLabel", "Goal ") + theme.fg("customMessageText", label), 0, 0);
-	}
-	const lines = [`Status: ${details.status === "active" ? "running" : details.status ?? "unknown"}`];
+function goalEventLabel(details: GoalEventDetails): string {
+	if (details.kind === "stale") return "stale checkpoint";
+	if (details.kind !== "drafting") return "checkpoint";
+	return details.focus === "sisyphus" ? "sisyphus drafting" : "goal drafting";
+}
+
+function goalEventStatusLabel(status: GoalStatus | undefined): string {
+	return status === "active" ? "running" : status ?? "unknown";
+}
+
+function goalEventDetailLines(details: GoalEventDetails): string[] {
+	const lines = [`Status: ${goalEventStatusLabel(details.status)}`];
 	if (details.objective) lines.push(`Objective: ${details.objective}`);
 	lines.push(`Goal id: ${details.goalId}`);
 	if (details.currentGoalId || details.currentStatus) {
 		lines.push(`Current: ${details.currentGoalId ?? "none"}${details.currentStatus ? ` (${details.currentStatus})` : ""}`);
 	}
+	return lines;
+}
+
+function renderGoalEvent(message: { details?: GoalEventDetails }, options: { expanded: boolean }, theme: Theme): Text {
+	const details = normalizeGoalEventDetails(message.details);
+	const label = goalEventLabel(details);
+	if (!options.expanded) {
+		return new Text(theme.fg("customMessageLabel", "Goal ") + theme.fg("customMessageText", label), 0, 0);
+	}
 	return new Text(
-		theme.fg("customMessageLabel", `Goal ${label}`) + "\n" + theme.fg("customMessageText", lines.join("\n")),
+		theme.fg("customMessageLabel", `Goal ${label}`) + "\n" + theme.fg("customMessageText", goalEventDetailLines(details).join("\n")),
 		0,
 		0,
 	);
