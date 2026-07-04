@@ -181,30 +181,52 @@ function consumeTopLevelSeparator(
 	return index + 1;
 }
 
+type PipelineScanResult = "invalid" | "suffix" | "complete";
+
+type PipelineScanStep = { status: "scanning"; nextIndex: number } | { status: "invalid" | "suffix" };
+
+function scanSimpleTopLevelPipelineStep(
+	command: string,
+	index: number,
+	state: PipelineParserState,
+	segments: string[],
+	separators: string[],
+): PipelineScanStep {
+	const character = command[index] ?? "";
+	if (consumeQuotedOrEscapedCharacter(state, character)) {
+		return { status: "scanning", nextIndex: index + 1 };
+	}
+
+	const advance = consumeTopLevelSeparator(command, index, state, segments, separators);
+	if (advance === "invalid" || advance === "suffix") {
+		return { status: advance };
+	}
+	return { status: "scanning", nextIndex: advance === "none" ? index + 1 : advance };
+}
+
+function scanSimpleTopLevelPipeline(
+	command: string,
+	state: PipelineParserState,
+	segments: string[],
+	separators: string[],
+): PipelineScanResult {
+	for (let index = 0; index < command.length; ) {
+		const step = scanSimpleTopLevelPipelineStep(command, index, state, segments, separators);
+		if (step.status !== "scanning") {
+			return step.status;
+		}
+		index = step.nextIndex;
+	}
+	return "complete";
+}
+
 function parseSimpleTopLevelPipeline(command: string): ParsedPipeline | null {
 	const segments: string[] = [];
 	const separators: string[] = [];
 	const state: PipelineParserState = { quote: null, escaped: false, segmentStart: 0, suffix: "" };
 
-	for (let index = 0; index < command.length; ) {
-		const character = command[index] ?? "";
-		if (consumeQuotedOrEscapedCharacter(state, character)) {
-			index += 1;
-			continue;
-		}
-
-		const advance = consumeTopLevelSeparator(command, index, state, segments, separators);
-		if (advance === "invalid") {
-			return null;
-		}
-		if (advance === "suffix") {
-			break;
-		}
-		if (advance === "none") {
-			index += 1;
-			continue;
-		}
-		index = advance;
+	if (scanSimpleTopLevelPipeline(command, state, segments, separators) === "invalid") {
+		return null;
 	}
 
 	if (separators.length === 0) {
