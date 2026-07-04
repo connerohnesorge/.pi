@@ -416,6 +416,35 @@ function buildSingleSelectHelpHints(
    ];
 }
 
+function buildOverlayToggleHint(theme: Theme, displayMode: AskDisplayMode, shortcut: ResolvedShortcut): string | null {
+   if (displayMode !== "overlay") return null;
+   if (shortcut.disabled) return null;
+   return literalHint(theme, shortcut.spec, "hide");
+}
+
+function buildCommentToggleHint(theme: Theme, allowComment: boolean, shortcut: ResolvedShortcut): string | null {
+   if (!allowComment) return null;
+   if (shortcut.disabled) return null;
+   return literalHint(theme, shortcut.spec, "toggle context");
+}
+
+function buildCurrentModeHelpHints(
+   theme: Theme,
+   keybindings: KeybindingsManager,
+   mode: AskMode,
+   allowMultiple: boolean,
+   commentHint: string | null,
+   overlayHint: string | null,
+): Array<string | null> {
+   if (mode === "freeform" || mode === "comment") {
+      return buildTextInputHelpHints(theme, keybindings, mode, overlayHint);
+   }
+   if (allowMultiple) {
+      return buildMultiSelectHelpHints(theme, keybindings, commentHint, overlayHint);
+   }
+   return buildSingleSelectHelpHints(theme, keybindings, commentHint, overlayHint);
+}
+
 const ASK_OVERLAY_MAX_HEIGHT_RATIO = 0.85;
 const ASK_OVERLAY_WIDTH = "92%";
 const ASK_OVERLAY_MIN_WIDTH = 40;
@@ -1387,18 +1416,17 @@ class AskComponent extends Container {
 
    private updateHelpText(): void {
       const theme = this.theme;
-      const overlayHint = this.displayMode === "overlay" && !this.shortcuts.overlayToggle.disabled
-         ? literalHint(theme, this.shortcuts.overlayToggle.spec, "hide")
-         : null;
-      const commentHint = this.allowComment && !this.shortcuts.commentToggle.disabled
-         ? literalHint(theme, this.shortcuts.commentToggle.spec, "toggle context")
-         : null;
+      const overlayHint = buildOverlayToggleHint(theme, this.displayMode, this.shortcuts.overlayToggle);
+      const commentHint = buildCommentToggleHint(theme, this.allowComment, this.shortcuts.commentToggle);
 
-      const hints = this.mode === "freeform" || this.mode === "comment"
-         ? buildTextInputHelpHints(theme, this.keybindings, this.mode, overlayHint)
-         : this.allowMultiple
-            ? buildMultiSelectHelpHints(theme, this.keybindings, commentHint, overlayHint)
-            : buildSingleSelectHelpHints(theme, this.keybindings, commentHint, overlayHint);
+      const hints = buildCurrentModeHelpHints(
+         theme,
+         this.keybindings,
+         this.mode,
+         this.allowMultiple,
+         commentHint,
+         overlayHint,
+      );
 
       setDimHelpText(this.helpText, theme, hints);
    }
