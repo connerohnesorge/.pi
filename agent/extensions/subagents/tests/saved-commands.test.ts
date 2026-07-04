@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { withFakeHomeAsync } from "./helpers/fake-home.ts";
+import { parseCommandArgs, registerAllSavedWorkflows, registerSavedWorkflow } from "../src/saved-commands.ts";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.ts";
 
+const savedCommands = { parseCommandArgs, registerAllSavedWorkflows, registerSavedWorkflow };
+
 async function load() {
-  return import("../src/saved-commands.ts");
+  return savedCommands;
 }
 
 describe("parseCommandArgs", () => {

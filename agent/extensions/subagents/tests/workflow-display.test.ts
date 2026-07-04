@@ -13,7 +13,30 @@
 
 import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
+import {
+  createToolUpdateWorkflowDisplay,
+  createWidgetWorkflowDisplay,
+  createWorkflowSnapshot,
+  preview,
+  recomputeWorkflowSnapshot,
+  renderWorkflowLines,
+  renderWorkflowText,
+} from "../src/display.ts";
+import { deliverText } from "../src/task-panel.ts";
 import type { WorkflowMeta } from "../src/workflow.ts";
+import { backgroundStartedText, createWorkflowTool } from "../src/workflow-tool.ts";
+
+const display = {
+  createWorkflowSnapshot,
+  renderWorkflowText,
+  recomputeWorkflowSnapshot,
+  renderWorkflowLines,
+  createWidgetWorkflowDisplay,
+  createToolUpdateWorkflowDisplay,
+  preview,
+};
+const taskPanel = { deliverText };
+const workflowTool = { backgroundStartedText, createWorkflowTool };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -47,15 +70,15 @@ function agent(
 // ─── Module loading helpers ─────────────────────────────────────────────────
 
 async function loadDisplay() {
-  return import("../src/display.ts");
+  return display;
 }
 
 async function loadTaskPanel() {
-  return import("../src/task-panel.ts");
+  return taskPanel;
 }
 
 async function loadTool() {
-  return import("../src/workflow-tool.ts");
+  return workflowTool;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
