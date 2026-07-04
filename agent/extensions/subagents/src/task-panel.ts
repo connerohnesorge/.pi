@@ -51,13 +51,19 @@ export interface TaskPanelOptions {
 function summarizeResult(result: unknown): string {
   if (typeof result === "string") return result;
   if (result == null) return "null";
-  if (typeof result === "object") {
-    const obj = result as Record<string, unknown>;
-    for (const key of ["verdict", "report", "summary"] as const) {
-      const val = obj[key];
-      if (typeof val === "string" && val.trim()) return val;
-    }
+  if (typeof result === "object") return objectSummary(result as Record<string, unknown>) ?? jsonSummary(result);
+  return jsonSummary(result);
+}
+
+function objectSummary(obj: Record<string, unknown>): string | undefined {
+  for (const key of ["verdict", "report", "summary"] as const) {
+    const val = obj[key];
+    if (typeof val === "string" && val.trim()) return val;
   }
+  return undefined;
+}
+
+function jsonSummary(result: unknown): string {
   const json = JSON.stringify(result, null, 2);
   return json.length > 400 ? `${json.slice(0, 400)}\n…(truncated)` : json;
 }
@@ -91,15 +97,18 @@ function borderedPanel(title: string, body: string[], theme: Theme, width?: numb
 }
 
 export function deliverText(run: ManagedRun): string {
-  const summary = summarizeResult(run.result?.result);
+  return [deliverHeader(run), "", summarizeResult(run.result?.result)].join("\n");
+}
+
+function deliverHeader(run: ManagedRun): string {
+  return `✓ Background workflow "${run.snapshot.name}" finished (${deliverMeta(run)}).`;
+}
+
+function deliverMeta(run: ManagedRun): string {
   const tokens = run.result?.tokenUsage ? ` · ${run.result.tokenUsage.total.toLocaleString()} tokens` : "";
   const agents = run.result?.agentCount ?? run.snapshot.agentCount;
   const duration = run.result?.durationMs ? ` · ${(run.result.durationMs / 1000).toFixed(1)}s` : "";
-  return [
-    `✓ Background workflow "${run.snapshot.name}" finished (${agents} agents${tokens}${duration}).`,
-    "",
-    summary,
-  ].join("\n");
+  return `${agents} agents${tokens}${duration}`;
 }
 
 /**
@@ -266,19 +275,31 @@ function renderPhaseHeader(
   currentPhase: string | undefined,
   theme: Theme,
 ): string {
-  const dim = (t: string) => theme.fg("dim", t);
   const counts = workflowPhaseCounts(agents);
-  const complete = counts.done + counts.errors + counts.skipped === agents.length;
-  const marker = counts.running > 0 || (!complete && currentPhase === title) ? "▶" : complete ? "✓" : " ";
-  const meta = [
-    `${counts.done}/${agents.length} agents`,
+  return theme.fg("accent", `  ${phaseMarker(title, agents.length, counts, currentPhase)} ${title}`) +
+    theme.fg("dim", `  ${phaseHeaderMeta(agents.length, counts)}`);
+}
+
+function phaseMarker(
+  title: string,
+  total: number,
+  counts: ReturnType<typeof workflowPhaseCounts>,
+  currentPhase: string | undefined,
+): string {
+  const complete = counts.done + counts.errors + counts.skipped === total;
+  if (counts.running > 0 || (!complete && currentPhase === title)) return "▶";
+  return complete ? "✓" : " ";
+}
+
+function phaseHeaderMeta(total: number, counts: ReturnType<typeof workflowPhaseCounts>): string {
+  return [
+    `${counts.done}/${total} agents`,
     counts.running ? `${counts.running} running` : "",
     counts.errors ? `${counts.errors} errors` : "",
     counts.tokens > 0 ? `${fmtTokensShort(counts.tokens)} tok` : "",
   ]
     .filter(Boolean)
     .join(" · ");
-  return theme.fg("accent", `  ${marker} ${title}`) + dim(`  ${meta}`);
 }
 
 function renderAgentRows(agents: WorkflowAgentSnapshot[], maxAgents: number, theme: Theme): string[] {

@@ -134,37 +134,48 @@ export function colorizeWorkflow(
   triggerWord = DEFAULT_KEYWORD_TRIGGER_WORD,
 ): string {
   const tokens = tokenizeAnsi(line);
-  const visible = tokens
+  const visible = visibleText(tokens);
+  if (!hasTrigger(visible, triggerWord)) return line;
+  return colorizeTokens(tokens, triggerRanges(visible, triggerWord), tick, palette);
+}
+
+function visibleText(tokens: AnsiToken[]): string {
+  return tokens
     .filter((t) => t.ch !== undefined)
     .map((t) => t.ch)
     .join("");
-  if (!hasTrigger(visible, triggerWord)) return line;
+}
 
+function triggerRanges(visible: string, triggerWord: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   const globalTrigger = triggerRegex(triggerWord, "gi");
-  for (let m = globalTrigger.exec(visible); m; m = globalTrigger.exec(visible)) {
-    ranges.push([m.index, m.index + m[0].length]);
-  }
-  const inRange = (idx: number) => ranges.some(([s, e]) => idx >= s && idx < e);
+  for (let m = globalTrigger.exec(visible); m; m = globalTrigger.exec(visible)) ranges.push([m.index, m.index + m[0].length]);
+  return ranges;
+}
 
+function inRanges(idx: number, ranges: Array<[number, number]>): boolean {
+  return ranges.some(([s, e]) => idx >= s && idx < e);
+}
+
+function colorizeTokens(tokens: AnsiToken[], ranges: Array<[number, number]>, tick: number, palette: number[]): string {
   let out = "";
   let vi = 0;
   for (const t of tokens) {
     if (t.esc !== undefined) {
       out += t.esc;
-      continue;
-    }
-    if (inRange(vi)) {
-      const color = palette[(vi + tick) % palette.length];
-      // Reset only the foreground (39) afterwards so a surrounding inverse-video
-      // (the cursor) is preserved.
-      out += `\x1b[38;5;${color}m${t.ch}\x1b[39m`;
     } else {
-      out += t.ch ?? "";
+      out += inRanges(vi, ranges) ? colorChar(t.ch ?? "", vi, tick, palette) : t.ch ?? "";
+      vi++;
     }
-    vi++;
   }
   return out;
+}
+
+function colorChar(ch: string, vi: number, tick: number, palette: number[]): string {
+  const color = palette[(vi + tick) % palette.length];
+  // Reset only the foreground (39) afterwards so a surrounding inverse-video
+  // (the cursor) is preserved.
+  return `\x1b[38;5;${color}m${ch}\x1b[39m`;
 }
 
 /** Backspace arrives as DEL (0x7f) or BS (0x08) depending on the terminal. */
