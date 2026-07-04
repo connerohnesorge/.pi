@@ -264,60 +264,73 @@ export function runWorkflow<T = unknown>(
   return runWorkflowInternal(script, options);
 }
 
-async function runWorkflowInternal<T = unknown>(
-  script: string,
-  options: WorkflowRunOptions = {},
-): Promise<WorkflowRunResult<T>> {
-  const started = Date.now();
-  const { meta, body } = parseWorkflowScript(script);
-  // Per-phase model routing from meta.phases[].model, with meta.model as the default.
-  const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
-  const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
-  const agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
-  const runId = options.runId ?? `run-${started.toString(36)}`;
+function createWorkflowRuntimeSetup(meta: WorkflowMeta, options: WorkflowRunOptions, started: number) {
   const baseCwd = options.cwd ?? process.cwd();
-  // Snapshot the agentType registry ONCE per run so two agent() calls can't
-  // observe a mid-run edit (determinism); a later resume re-reads it.
-  const agentRegistry = options.agentRegistry ?? loadAgentRegistry(baseCwd);
+  const shared = options.sharedRuntime ?? createSharedRuntime(workflowConcurrency(options));
+  const runId = options.runId ?? `run-${started.toString(36)}`;
 
-  // Initialize logger
-  const logger = createWorkflowLogger({
+  return {
+    routingConfig: parseModelRoutingFromMeta(meta.phases, meta.model),
+    maxAgents: options.maxAgents ?? MAX_AGENTS_PER_RUN,
+    agentTimeoutMs: workflowAgentTimeout(options),
     runId,
-    cwd: options.cwd ?? process.cwd(),
+    baseCwd,
+    agentRegistry: options.agentRegistry ?? loadAgentRegistry(baseCwd),
+    logger: workflowLogger(options, runId, baseCwd),
+    state: createRuntimeState(meta),
+    agentRunner: options.agent ?? new WorkflowAgent(options),
+    shared,
+    store: options.sharedStore ?? new SharedStore(),
+  };
+}
+
+function workflowConcurrency(options: WorkflowRunOptions): number {
+  return normalizeConcurrency(options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2));
+}
+
+function workflowAgentTimeout(options: WorkflowRunOptions): number | null {
+  return options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
+}
+
+function workflowLogger(options: WorkflowRunOptions, runId: string, cwd: string) {
+  return createWorkflowLogger({
+    runId,
+    cwd,
     persist: options.persistLogs ?? true,
     onLog: options.onLog,
   });
+}
 
-  const state: RuntimeState = {
+function createRuntimeState(meta: WorkflowMeta): RuntimeState {
+  const firstPhase = meta.phases?.[0]?.title;
+  return {
     logs: [],
-    // When the script declares meta.phases, default the current phase to the
-    // first one so agents created before any explicit phase() call still group
-    // under a declared phase instead of an orphan "(no phase)" bucket. An
-    // explicit phase() (or agent({ phase })) overrides this.
-    phases: meta.phases?.[0]?.title ? [meta.phases[0].title] : [],
-    currentPhase: meta.phases?.[0]?.title,
+    phases: firstPhase ? [firstPhase] : [],
+    currentPhase: firstPhase,
     phaseBudgets: new Map(),
     callSeq: 0,
     firstMiss: Number.POSITIVE_INFINITY,
   };
+}
 
-  const agentRunner = options.agent ?? new WorkflowAgent(options);
-  const concurrency = normalizeConcurrency(
-    options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
-  );
-  // Global caps + budget are shared with any nested workflow() so they hold across nesting.
-  const shared: SharedRuntime = options.sharedRuntime ?? {
+function createSharedRuntime(concurrency: number): SharedRuntime {
+  return {
     limiter: createLimiter(concurrency),
     agentCount: 0,
     spent: 0,
     tokenUsage: { input: 0, output: 0, total: 0, cost: 0, cacheRead: 0, cacheWrite: 0 },
     depth: 0,
   };
-  const limiter = shared.limiter;
+}
 
-  // One store instance per run; nested workflow() calls inherit the parent's store
-  // so all agents across nesting levels share the same key-value space.
-  const store: SharedStore = options.sharedStore ?? new SharedStore();
+async function runWorkflowInternal<T = unknown>(
+  script: string,
+  options: WorkflowRunOptions = {},
+): Promise<WorkflowRunResult<T>> {
+  const started = Date.now();
+  const { meta, body } = parseWorkflowScript(script);
+  const setup = createWorkflowRuntimeSetup(meta, options, started);
+  const { routingConfig, maxAgents, agentTimeoutMs, runId, baseCwd, agentRegistry, logger, state, agentRunner, shared, store } = setup;
 
   const log = (message: string) => {
     const text = String(message);
@@ -876,72 +889,55 @@ interface LiveAgentCallContext extends AgentFunctionContext {
   label: string;
 }
 
+type AgentCallPlan = Pick<
+  LiveAgentCallContext,
+  "assignedPhase" | "agentDef" | "modelSpec" | "displayModel" | "callIndex" | "callHash" | "deltaKey" | "label"
+>;
+
 function createAgentFunction(ctx: AgentFunctionContext) {
   return async function workflowAgentCall(prompt: string, agentOptions: AgentOptions = {}) {
-    const {
-      options,
-      maxAgents,
-      budget,
-      state,
-      shared,
-      log,
-      throwIfAborted,
-      agentRegistry,
-      routingConfig,
-      runId,
-      store,
-    } = ctx;
+    ctx.throwIfAborted();
+    assertAgentMayStart(ctx.shared, ctx.maxAgents, ctx.budget);
 
-    throwIfAborted();
-    assertAgentMayStart(shared, maxAgents, budget);
-
-    const assignedPhase = agentOptions.phase ?? state.currentPhase;
-    enforcePhaseBudget(assignedPhase, state, shared, log);
-
-    const requestedLabel = agentOptions.label?.trim();
-    const agentDef = resolveAgentType(agentOptions.agentType, agentRegistry);
-    if (agentOptions.agentType && !agentDef) log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
-
-    const explicitModel = agentOptions.model ?? agentDef?.model;
-    const modelSpec = explicitModel ?? (agentOptions.tier ? undefined : resolveModelForPhase(assignedPhase, routingConfig));
-    const callIndex = state.callSeq++;
-    const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef));
-    const deltaKey = `${runId}:${callIndex}`;
-
-    shared.agentCount++;
-    const label = requestedLabel || defaultAgentLabel(assignedPhase, shared.agentCount);
-    const displayModel = modelSpec ?? options.mainModel;
-
-    const cachedResult = replayCachedAgentResult({
-      options,
-      state,
-      store,
-      prompt,
-      agentOptions,
-      assignedPhase,
-      displayModel,
-      label,
-      callIndex,
-      callHash,
-    });
+    const plan = prepareAgentCall(ctx, prompt, agentOptions);
+    const cachedResult = replayCachedAgentResult({ ...ctx, ...plan, prompt, agentOptions });
     if (cachedResult.replayed) return cachedResult.result;
 
-    return shared.limiter(() =>
-      runLiveAgentCall({
-        ...ctx,
-        prompt,
-        agentOptions,
-        assignedPhase,
-        agentDef,
-        modelSpec,
-        displayModel,
-        callIndex,
-        callHash,
-        deltaKey,
-        label,
-      }),
-    );
+    return ctx.shared.limiter(() => runLiveAgentCall({ ...ctx, ...plan, prompt, agentOptions }));
   };
+}
+
+function prepareAgentCall(ctx: AgentFunctionContext, prompt: string, agentOptions: AgentOptions): AgentCallPlan {
+  const assignedPhase = agentOptions.phase ?? ctx.state.currentPhase;
+  enforcePhaseBudget(assignedPhase, ctx.state, ctx.shared, ctx.log);
+
+  const agentDef = resolveAgentType(agentOptions.agentType, ctx.agentRegistry);
+  if (agentOptions.agentType && !agentDef) ctx.log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
+
+  const modelSpec = resolveAgentModel(agentOptions, agentDef, assignedPhase, ctx.routingConfig);
+  const callIndex = ctx.state.callSeq++;
+  const callHash = hashAgentCall(prompt, modelSpec, assignedPhase, agentOptions, agentDefinitionKey(agentDef));
+
+  ctx.shared.agentCount++;
+  return {
+    assignedPhase,
+    agentDef,
+    modelSpec,
+    displayModel: modelSpec ?? ctx.options.mainModel,
+    callIndex,
+    callHash,
+    deltaKey: `${ctx.runId}:${callIndex}`,
+    label: agentOptions.label?.trim() || defaultAgentLabel(assignedPhase, ctx.shared.agentCount),
+  };
+}
+
+function resolveAgentModel(
+  agentOptions: AgentOptions,
+  agentDef: AgentDefinition | undefined,
+  assignedPhase: string | undefined,
+  routingConfig: ReturnType<typeof parseModelRoutingFromMeta>,
+): string | undefined {
+  return agentOptions.model ?? agentDef?.model ?? (agentOptions.tier ? undefined : resolveModelForPhase(assignedPhase, routingConfig));
 }
 
 function assertAgentMayStart(shared: SharedRuntime, maxAgents: number, budget: WorkflowBudgetView) {
@@ -1013,129 +1009,187 @@ function replayCachedAgentResult(args: {
 }
 
 async function runLiveAgentCall(call: LiveAgentCallContext): Promise<unknown> {
-  const { options, agentOptions, assignedPhase, agentDef, modelSpec, label, prompt, baseCwd, runId, callIndex, deltaKey } = call;
-  const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : call.agentTimeoutMs;
-  const retryAttempts = normalizeAgentRetries(agentOptions.retries ?? options.agentRetries ?? 0);
+  const retryAttempts = normalizeAgentRetries(call.agentOptions.retries ?? call.options.agentRetries ?? 0);
   const maxAttempts = retryAttempts + 1;
-  let displayModel = call.displayModel;
+  const run = await prepareLiveAgentRun(call);
+  const recordTokens = createTokenRecorder(call, run);
 
-  options.onAgentStart?.({ label, phase: assignedPhase, prompt, model: displayModel });
+  call.options.onAgentStart?.({ label: call.label, phase: call.assignedPhase, prompt: call.prompt, model: run.displayModel });
 
-  let worktree: Worktree | undefined;
-  const resolvedIsolation = agentOptions.isolation ?? agentDef?.isolation;
-  if (resolvedIsolation === "worktree") {
-    worktree = await createWorktree(baseCwd, `${runId}-${callIndex}-${label}`);
-    if (!worktree.isolated) call.log(`isolation ignored for "${label}" (${worktree.reason})`);
+  try {
+    return await runAgentWithRetries(call, run, maxAttempts, recordTokens);
+  } finally {
+    if (run.worktree?.isolated) await removeWorktree(run.worktree);
   }
-  const runCwd = worktree?.isolated ? worktree.cwd : undefined;
+}
 
-  let usage: AgentUsage | undefined;
-  const recordTokens = (result: unknown): number => {
-    const tokens = usage && usage.total > 0 ? usage.total : estimateTokens(result) + estimateTokens(prompt);
-    if (usage) {
-      call.shared.tokenUsage.input += usage.input;
-      call.shared.tokenUsage.output += usage.output;
-      call.shared.tokenUsage.cost += usage.cost;
-      call.shared.tokenUsage.cacheRead += usage.cacheRead;
-      call.shared.tokenUsage.cacheWrite += usage.cacheWrite;
-    }
+interface LiveAgentRunState {
+  timeout: number | null;
+  resolvedIsolation: "worktree" | undefined;
+  worktree: Worktree | undefined;
+  runCwd: string | undefined;
+  usage: AgentUsage | undefined;
+  displayModel: string | undefined;
+}
+
+async function prepareLiveAgentRun(call: LiveAgentCallContext): Promise<LiveAgentRunState> {
+  const resolvedIsolation = call.agentOptions.isolation ?? call.agentDef?.isolation;
+  const worktree = resolvedIsolation === "worktree" ? await createWorktree(call.baseCwd, `${call.runId}-${call.callIndex}-${call.label}`) : undefined;
+  if (worktree && !worktree.isolated) call.log(`isolation ignored for "${call.label}" (${worktree.reason})`);
+
+  return {
+    timeout: call.agentOptions.timeoutMs !== undefined ? call.agentOptions.timeoutMs : call.agentTimeoutMs,
+    resolvedIsolation,
+    worktree,
+    runCwd: worktree?.isolated ? worktree.cwd : undefined,
+    usage: undefined,
+    displayModel: call.displayModel,
+  };
+}
+
+function createTokenRecorder(call: LiveAgentCallContext, run: LiveAgentRunState) {
+  return (result: unknown): number => {
+    const tokens = run.usage && run.usage.total > 0 ? run.usage.total : estimateTokens(result) + estimateTokens(call.prompt);
+    if (run.usage) addTokenUsage(call.shared, run.usage);
     call.shared.tokenUsage.total += tokens;
     call.shared.spent += tokens;
     return tokens;
   };
-
-  try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      usage = undefined;
-      try {
-        call.throwIfAborted();
-        const result = await withTimeout(
-          call.agentRunner.run(prompt, {
-            label,
-            schema: agentOptions.schema,
-            signal: options.signal,
-            instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, resolvedIsolation),
-            model: modelSpec,
-            tier: agentOptions.tier,
-            modelRegistry: options.modelRegistry,
-            toolNames: agentDef?.tools,
-            disallowedToolNames: agentDef?.disallowedTools,
-            systemTools: createAgentStoreTools(call.store, deltaKey),
-            cwd: runCwd,
-            onModelResolved: (id: string) => {
-              displayModel = id;
-            },
-            onModelFallback: (spec: string) => {
-              call.log(`${label}: model "${spec}" unavailable — using the session default`);
-            },
-            onUsage: (u: AgentUsage) => {
-              usage = u;
-            },
-            onHistory: (history: AgentHistoryEntry[]) => {
-              options.onAgentHistory?.({ label, phase: assignedPhase, history });
-            },
-          }),
-          timeout,
-          label,
-        );
-
-        call.throwIfAborted();
-        if (isEmptyTextAgentResult(result, agentOptions.schema)) {
-          throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
-            recoverable: true,
-            agentLabel: label,
-          });
-        }
-
-        const tokens = recordTokens(result);
-        options.onAgentJournal?.({
-          index: callIndex,
-          hash: call.callHash,
-          result,
-          storeDelta: call.store.commitDelta(deltaKey),
-        });
-        options.onAgentEnd?.({ label, phase: assignedPhase, result, tokens, worktree: runCwd, model: displayModel });
-        return result;
-      } catch (error) {
-        if (options.signal?.aborted) throw error;
-
-        const workflowError = wrapError(error, { agentLabel: label });
-        call.logger.error(`agent ${label} attempt ${attempt}/${maxAttempts} failed: ${workflowError.message}`);
-        const tokens = recordTokens(null);
-
-        if (workflowError.recoverable && attempt < maxAttempts) {
-          call.log(
-            `agent "${label}" attempt ${attempt}/${maxAttempts} failed: ${workflowError.code} ${workflowError.message}; retrying`,
-          );
-          continue;
-        }
-
-        options.onAgentEnd?.({
-          label,
-          phase: assignedPhase,
-          result: null,
-          tokens,
-          worktree: runCwd,
-          model: displayModel,
-          error: workflowError.message,
-          errorCode: workflowError.code,
-          recoverable: workflowError.recoverable,
-        });
-
-        if (workflowError.recoverable) {
-          call.log(
-            `agent "${label}" exhausted ${maxAttempts} attempt${maxAttempts === 1 ? "" : "s"}: ${workflowError.code} ${workflowError.message}`,
-          );
-          return null;
-        }
-        throw workflowError;
-      }
-    }
-    return null;
-  } finally {
-    if (worktree?.isolated) await removeWorktree(worktree);
-  }
 }
+
+function addTokenUsage(shared: SharedRuntime, usage: AgentUsage) {
+  shared.tokenUsage.input += usage.input;
+  shared.tokenUsage.output += usage.output;
+  shared.tokenUsage.cost += usage.cost;
+  shared.tokenUsage.cacheRead += usage.cacheRead;
+  shared.tokenUsage.cacheWrite += usage.cacheWrite;
+}
+
+async function runAgentWithRetries(
+  call: LiveAgentCallContext,
+  run: LiveAgentRunState,
+  maxAttempts: number,
+  recordTokens: (result: unknown) => number,
+): Promise<unknown> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    run.usage = undefined;
+    try {
+      const result = await runAgentAttempt(call, run);
+      recordAgentSuccess(call, run, result, recordTokens(result));
+      return result;
+    } catch (error) {
+      const handled = handleAgentAttemptError(call, run, error, attempt, maxAttempts, recordTokens);
+      if (handled === "retry") continue;
+      if (handled === "null") return null;
+      throw handled;
+    }
+  }
+  return null;
+}
+
+async function runAgentAttempt(call: LiveAgentCallContext, run: LiveAgentRunState): Promise<unknown> {
+  call.throwIfAborted();
+  const result = await withTimeout(
+    call.agentRunner.run(call.prompt, {
+      label: call.label,
+      schema: call.agentOptions.schema,
+      signal: call.options.signal,
+      instructions: buildAgentInstructions(call.assignedPhase, call.agentOptions, call.agentDef, run.resolvedIsolation),
+      model: call.modelSpec,
+      tier: call.agentOptions.tier,
+      modelRegistry: call.options.modelRegistry,
+      toolNames: call.agentDef?.tools,
+      disallowedToolNames: call.agentDef?.disallowedTools,
+      systemTools: createAgentStoreTools(call.store, call.deltaKey),
+      cwd: run.runCwd,
+      onModelResolved: (id: string) => {
+        run.displayModel = id;
+      },
+      onModelFallback: (spec: string) => {
+        call.log(`${call.label}: model "${spec}" unavailable — using the session default`);
+      },
+      onUsage: (u: AgentUsage) => {
+        run.usage = u;
+      },
+      onHistory: (history: AgentHistoryEntry[]) => {
+        call.options.onAgentHistory?.({ label: call.label, phase: call.assignedPhase, history });
+      },
+    }),
+    run.timeout,
+    call.label,
+  );
+
+  call.throwIfAborted();
+  if (isEmptyTextAgentResult(result, call.agentOptions.schema)) throw emptyAgentOutputError(call.label);
+  return result;
+}
+
+function emptyAgentOutputError(label: string): WorkflowError {
+  return new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
+    recoverable: true,
+    agentLabel: label,
+  });
+}
+
+function recordAgentSuccess(call: LiveAgentCallContext, run: LiveAgentRunState, result: unknown, tokens: number) {
+  call.options.onAgentJournal?.({
+    index: call.callIndex,
+    hash: call.callHash,
+    result,
+    storeDelta: call.store.commitDelta(call.deltaKey),
+  });
+  call.options.onAgentEnd?.({
+    label: call.label,
+    phase: call.assignedPhase,
+    result,
+    tokens,
+    worktree: run.runCwd,
+    model: run.displayModel,
+  });
+}
+
+function handleAgentAttemptError(
+  call: LiveAgentCallContext,
+  run: LiveAgentRunState,
+  error: unknown,
+  attempt: number,
+  maxAttempts: number,
+  recordTokens: (result: unknown) => number,
+): "retry" | "null" | WorkflowError {
+  if (call.options.signal?.aborted) throw error;
+
+  const workflowError = wrapError(error, { agentLabel: call.label });
+  call.logger.error(`agent ${call.label} attempt ${attempt}/${maxAttempts} failed: ${workflowError.message}`);
+  const tokens = recordTokens(null);
+
+  if (workflowError.recoverable && attempt < maxAttempts) {
+    call.log(`agent "${call.label}" attempt ${attempt}/${maxAttempts} failed: ${workflowError.code} ${workflowError.message}; retrying`);
+    return "retry";
+  }
+
+  recordAgentFailure(call, run, workflowError, tokens);
+  if (!workflowError.recoverable) return workflowError;
+
+  call.log(
+    `agent "${call.label}" exhausted ${maxAttempts} attempt${maxAttempts === 1 ? "" : "s"}: ${workflowError.code} ${workflowError.message}`,
+  );
+  return "null";
+}
+
+function recordAgentFailure(call: LiveAgentCallContext, run: LiveAgentRunState, error: WorkflowError, tokens: number) {
+  call.options.onAgentEnd?.({
+    label: call.label,
+    phase: call.assignedPhase,
+    result: null,
+    tokens,
+    worktree: run.runCwd,
+    model: run.displayModel,
+    error: error.message,
+    errorCode: error.code,
+    recoverable: error.recoverable,
+  });
+}
+
 
 
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
