@@ -5,6 +5,25 @@ import { WorkflowError, WorkflowErrorCode } from "../src/errors.ts";
 import { WorkflowManager } from "../src/workflow-manager.ts";
 import { deferredAgent, fakeAgent, oneAgentScript, withTempCwd } from "./helpers/workflow-manager-fixtures.ts";
 
+async function stopAbortedRun(manager: WorkflowManager, runId: string, promise: Promise<unknown>, da: ReturnType<typeof deferredAgent>) {
+  assert.equal(manager.stop(runId), true);
+  assert.equal(manager.getRun(runId)?.status, "aborted");
+  da.resolve("done");
+  await promise.catch(() => {});
+}
+
+async function settleOriginalRun(da: ReturnType<typeof deferredAgent>, origPromise: Promise<unknown>) {
+  da.runner.run = async (_prompt: string) => "done";
+  da.resolve("done");
+  await origPromise.catch(() => {});
+}
+
+function failAgentOnResume(da: ReturnType<typeof deferredAgent>) {
+  test.mock.method(da.runner, "run", async (_prompt: string) => {
+    throw new WorkflowError("fatal agent error", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
+  });
+}
+
 function delayedAgent(delayMs: number, result: unknown = "slow") {
   return {
     async run(_prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
@@ -759,11 +778,7 @@ test(
     await new Promise((r) => setTimeout(r, 20));
 
     assert.equal(manager.getRun(runId)?.status, "running");
-    assert.equal(manager.stop(runId), true);
-    assert.equal(manager.getRun(runId)?.status, "aborted");
-
-    da.resolve("done");
-    await promise.catch(() => {});
+    await stopAbortedRun(manager, runId, promise, da);
   }),
 );
 
@@ -780,11 +795,7 @@ test(
     assert.equal(manager.pause(runId), true);
     assert.equal(manager.getRun(runId)?.status, "paused");
 
-    assert.equal(manager.stop(runId), true);
-    assert.equal(manager.getRun(runId)?.status, "aborted");
-
-    da.resolve("done");
-    await promise.catch(() => {});
+    await stopAbortedRun(manager, runId, promise, da);
   }),
 );
 
@@ -924,9 +935,7 @@ test(
     // Regular Error/agent rejections get wrapped as recoverable (agent returns
     // null, workflow continues). A non-recoverable WorkflowError propagates up
     // to executeRun's catch block and sets status to "failed".
-    test.mock.method(da.runner, "run", async (_prompt: string) => {
-      throw new WorkflowError("fatal agent error", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
-    });
+    failAgentOnResume(da);
 
     try {
       // Resume — executeRun calls runWorkflow which calls the mocked runner
@@ -946,9 +955,7 @@ test(
       );
     } finally {
       // Resolve the original deferred promise so the first executeRun settles
-      da.runner.run = async (_prompt: string) => "done";
-      da.resolve("done");
-      await origPromise.catch(() => {});
+      await settleOriginalRun(da, origPromise);
     }
   }),
 );
@@ -996,9 +1003,7 @@ test(
     assert.equal(manager.getRun(runId)?.status, "paused");
 
     // Mock agent to throw a non-recoverable WorkflowError, making the run fail
-    test.mock.method(da.runner, "run", async (_prompt: string) => {
-      throw new WorkflowError("fatal agent error", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
-    });
+    failAgentOnResume(da);
 
     try {
       // Resume — the run will fail because the mocked agent throws
@@ -1016,9 +1021,7 @@ test(
       assert.equal(paused, false, "pause should return false for failed run");
       assert.equal(manager.getRun(runId)?.status, "failed", "status should remain failed after rejected pause");
     } finally {
-      da.runner.run = async (_prompt: string) => "done";
-      da.resolve("done");
-      await origPromise.catch(() => {});
+      await settleOriginalRun(da, origPromise);
     }
   }),
 );
@@ -1038,9 +1041,7 @@ test(
     assert.equal(manager.getRun(runId)?.status, "paused");
 
     // Mock agent to throw a non-recoverable WorkflowError
-    test.mock.method(da.runner, "run", async (_prompt: string) => {
-      throw new WorkflowError("fatal agent error", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
-    });
+    failAgentOnResume(da);
 
     try {
       // Resume — the run will fail
@@ -1058,9 +1059,7 @@ test(
       assert.equal(stopped, false, "stop should return false for failed run");
       assert.equal(manager.getRun(runId)?.status, "failed", "status should remain failed after rejected stop");
     } finally {
-      da.runner.run = async (_prompt: string) => "done";
-      da.resolve("done");
-      await origPromise.catch(() => {});
+      await settleOriginalRun(da, origPromise);
     }
   }),
 );
@@ -1080,9 +1079,7 @@ test(
     assert.equal(manager.getRun(runId)?.status, "paused");
 
     // Mock agent to throw a non-recoverable WorkflowError
-    test.mock.method(da.runner, "run", async (_prompt: string) => {
-      throw new WorkflowError("fatal agent error", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
-    });
+    failAgentOnResume(da);
 
     try {
       // Resume — the run will fail
@@ -1095,9 +1092,7 @@ test(
       assert.ok(failedRun?.error instanceof WorkflowError, "error should be a WorkflowError");
     } finally {
       // Restore the runner so the resumed run's agent call succeeds
-      da.runner.run = async (_prompt: string) => "done";
-      da.resolve("done");
-      await origPromise.catch(() => {});
+      await settleOriginalRun(da, origPromise);
     }
 
     // Resume the failed run — resume() allows failed status
