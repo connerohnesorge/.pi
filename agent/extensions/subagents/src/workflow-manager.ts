@@ -15,7 +15,7 @@ import {
   type RunPersistence,
   type RunStatus,
 } from "./run-persistence.ts";
-import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowRunResult } from "./workflow.ts";
+import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowMeta, type WorkflowRunResult } from "./workflow.ts";
 
 export interface ManagedRun {
   runId: string;
@@ -61,6 +61,20 @@ export interface ExecOptions {
   agentRetries?: number;
   /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
   confirm?: (promptText: string, options: unknown) => Promise<unknown>;
+}
+
+function createInitialSnapshot(meta: WorkflowMeta): WorkflowSnapshot {
+  return {
+    name: meta.name,
+    description: meta.description,
+    phases: meta.phases?.map((p) => p.title) ?? [],
+    logs: [],
+    agents: [],
+    agentCount: 0,
+    runningCount: 0,
+    doneCount: 0,
+    errorCount: 0,
+  };
 }
 
 export interface WorkflowManagerOptions {
@@ -187,17 +201,7 @@ export class WorkflowManager extends EventEmitter {
     const managed: ManagedRun = {
       runId,
       status: "running",
-      snapshot: {
-        name: parsed.meta.name,
-        description: parsed.meta.description,
-        phases: parsed.meta.phases?.map((p) => p.title) ?? [],
-        logs: [],
-        agents: [],
-        agentCount: 0,
-        runningCount: 0,
-        doneCount: 0,
-        errorCount: 0,
-      },
+      snapshot: createInitialSnapshot(parsed.meta),
       controller,
       startedAt: new Date(),
       script,
@@ -265,17 +269,7 @@ export class WorkflowManager extends EventEmitter {
     return {
       runId: generateRunId(),
       status: "running",
-      snapshot: {
-        name: parsed.meta.name,
-        description: parsed.meta.description,
-        phases: parsed.meta.phases?.map((p) => p.title) ?? [],
-        logs: [],
-        agents: [],
-        agentCount: 0,
-        runningCount: 0,
-        doneCount: 0,
-        errorCount: 0,
-      },
+      snapshot: createInitialSnapshot(parsed.meta),
       controller: new AbortController(),
       startedAt: new Date(),
       script,
@@ -291,159 +285,158 @@ export class WorkflowManager extends EventEmitter {
     args?: unknown,
     exec: ExecOptions = {},
   ): Promise<WorkflowRunResult> {
-    const {
-      resumeJournal,
-      maxAgents,
-      agentTimeoutMs,
-      externalSignal,
-      onProgress,
-      tokenBudget,
-      concurrency,
-      agentRetries,
-      confirm,
-    } = exec;
-    const resolvedAgentTimeoutMs = agentTimeoutMs !== undefined ? agentTimeoutMs : this.defaultAgentTimeoutMs;
-    const resolvedConcurrency = concurrency ?? this.concurrency;
-    const resolvedAgentRetries = agentRetries ?? this.defaultAgentRetries;
-    const progress = () => onProgress?.(managed.snapshot);
-    // Let a host abort (e.g. Esc during a blocking tool call) cancel this run.
-    if (externalSignal) {
-      if (externalSignal.aborted) managed.controller.abort();
-      else externalSignal.addEventListener("abort", () => managed.controller.abort(), { once: true });
-    }
+    this.bindExternalAbort(managed, exec.externalSignal);
     try {
       const result = await runWorkflow(script, {
-        cwd: this.cwd,
-        args,
-        agent: this.agent,
-        mainModel: this.mainModel,
-        modelRegistry: this.modelRegistry,
-        signal: managed.controller.signal,
-        concurrency: resolvedConcurrency,
-        agentRetries: resolvedAgentRetries,
-        maxAgents,
-        agentTimeoutMs: resolvedAgentTimeoutMs,
-        tokenBudget,
-        confirm,
-        loadSavedWorkflow: this.loadSavedWorkflow,
-        resumeJournal,
-        resumeFromRunId: resumeJournal ? managed.runId : undefined,
-        onAgentJournal: (entry) => {
-          // Append (crash-safe-ish): keep the latest entry per index, then persist.
-          managed.journal = managed.journal.filter((e) => e.index !== entry.index);
-          managed.journal.push(entry);
-          this.persistRun(managed);
-        },
-        onLog: (message) => {
-          managed.snapshot.logs.push(message);
-          this.emit("log", { runId: managed.runId, message });
-          progress();
-        },
-        onPhase: (title) => {
-          managed.snapshot.currentPhase = title;
-          if (!managed.snapshot.phases.includes(title)) {
-            managed.snapshot.phases.push(title);
-          }
-          this.emit("phase", { runId: managed.runId, title });
-          progress();
-        },
-        onAgentStart: (event) => {
-          managed.snapshot.agents.push({
-            id: managed.snapshot.agents.length + 1,
-            label: event.label,
-            phase: event.phase,
-            prompt: event.prompt,
-            status: "running",
-            model: event.model,
-          });
-          this.emit("agentStart", { runId: managed.runId, ...event });
-          progress();
-        },
-        onAgentEnd: (event) => {
-          const agent = [...managed.snapshot.agents]
-            .reverse()
-            .find((a) => a.label === event.label && a.status === "running");
-          if (agent) {
-            agent.status = event.result === null ? "error" : "done";
-            agent.resultPreview = preview(event.result);
-            agent.error = event.error;
-            agent.errorCode = event.errorCode;
-            agent.recoverable = event.recoverable;
-            agent.tokens = event.tokens;
-            if (event.model) agent.model = event.model;
-          }
-          this.emit("agentEnd", { runId: managed.runId, ...event });
-          progress();
-        },
-        onAgentHistory: (event) => {
-          const agent = [...managed.snapshot.agents]
-            .reverse()
-            .find((a) => a.label === event.label && a.status === "running");
-          if (agent) {
-            agent.history = event.history;
-          }
-          this.emit("agentHistory", { runId: managed.runId, ...event });
-          progress();
-        },
-        onTokenUsage: (usage) => {
-          managed.snapshot.tokenUsage = usage;
-          this.emit("tokenUsage", { runId: managed.runId, usage });
-          progress();
-        },
+        ...this.workflowRunOptions(managed, args, exec),
+        ...this.workflowRunHandlers(managed, exec.onProgress),
       });
-
-      managed.status = "completed";
-      managed.result = result;
-      this.emit("complete", { runId: managed.runId, result });
-
-      // Persist final state
-      this.persistRun(managed);
-      this.releaseRunLease(managed);
-
+      this.completeRun(managed, result);
       return result;
     } catch (error) {
-      const workflowError =
-        error instanceof WorkflowError
-          ? error
-          : new WorkflowError(
-              error instanceof Error ? error.message : String(error),
-              WorkflowErrorCode.WORKFLOW_ABORTED,
-              { recoverable: true },
-            );
-
-      const usageLimitPaused =
-        !managed.controller.signal.aborted && workflowError.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT;
-      if (managed.controller.signal.aborted) {
-        // Intentional abort (pause/stop/Esc) — preserve status set by pause()/stop()
-        if (managed.status === "running") {
-          managed.status = "aborted";
-        }
-      } else if (usageLimitPaused) {
-        // Provider quota/usage limit: NOT a failure. Checkpoint the run as paused so
-        // the persisted journal (completed agent results) is replayed by resume()
-        // once the budget refills — instead of the user starting from scratch.
-        managed.status = "paused";
-      } else {
-        managed.status = "failed";
-      }
-      managed.error = workflowError;
-      if (usageLimitPaused) {
-        this.emit("paused", {
-          runId: managed.runId,
-          reason: "usage_limit",
-          error: workflowError,
-          resetHint: workflowError.resetHint,
-        });
-      } else {
-        this.emit("error", { runId: managed.runId, error: workflowError });
-      }
-
-      // Persist final state
-      this.persistRun(managed);
-      this.releaseRunLease(managed);
-
-      throw workflowError;
+      this.failRun(managed, error);
     }
+  }
+
+  private bindExternalAbort(managed: ManagedRun, externalSignal?: AbortSignal): void {
+    if (!externalSignal) return;
+    if (externalSignal.aborted) managed.controller.abort();
+    else externalSignal.addEventListener("abort", () => managed.controller.abort(), { once: true });
+  }
+
+  private workflowRunOptions(managed: ManagedRun, args: unknown, exec: ExecOptions) {
+    const agentTimeoutMs = exec.agentTimeoutMs !== undefined ? exec.agentTimeoutMs : this.defaultAgentTimeoutMs;
+    const resumeJournal = exec.resumeJournal;
+    return {
+      cwd: this.cwd,
+      args,
+      agent: this.agent,
+      mainModel: this.mainModel,
+      modelRegistry: this.modelRegistry,
+      signal: managed.controller.signal,
+      concurrency: exec.concurrency ?? this.concurrency,
+      agentRetries: exec.agentRetries ?? this.defaultAgentRetries,
+      maxAgents: exec.maxAgents,
+      agentTimeoutMs,
+      tokenBudget: exec.tokenBudget,
+      confirm: exec.confirm,
+      loadSavedWorkflow: this.loadSavedWorkflow,
+      resumeJournal,
+      resumeFromRunId: resumeJournal ? managed.runId : undefined,
+    };
+  }
+
+  private workflowRunHandlers(managed: ManagedRun, onProgress?: (snapshot: WorkflowSnapshot) => void) {
+    const progress = () => onProgress?.(managed.snapshot);
+    return {
+      onAgentJournal: (entry) => {
+        // Append (crash-safe-ish): keep the latest entry per index, then persist.
+        managed.journal = managed.journal.filter((e) => e.index !== entry.index);
+        managed.journal.push(entry);
+        this.persistRun(managed);
+      },
+      onLog: (message) => {
+        managed.snapshot.logs.push(message);
+        this.emit("log", { runId: managed.runId, message });
+        progress();
+      },
+      onPhase: (title) => {
+        managed.snapshot.currentPhase = title;
+        if (!managed.snapshot.phases.includes(title)) managed.snapshot.phases.push(title);
+        this.emit("phase", { runId: managed.runId, title });
+        progress();
+      },
+      onAgentStart: (event) => {
+        managed.snapshot.agents.push({
+          id: managed.snapshot.agents.length + 1,
+          label: event.label,
+          phase: event.phase,
+          prompt: event.prompt,
+          status: "running",
+          model: event.model,
+        });
+        this.emit("agentStart", { runId: managed.runId, ...event });
+        progress();
+      },
+      onAgentEnd: (event) => {
+        const agent = this.latestRunningAgent(managed, event.label);
+        if (agent) {
+          agent.status = event.result === null ? "error" : "done";
+          agent.resultPreview = preview(event.result);
+          agent.error = event.error;
+          agent.errorCode = event.errorCode;
+          agent.recoverable = event.recoverable;
+          agent.tokens = event.tokens;
+          if (event.model) agent.model = event.model;
+        }
+        this.emit("agentEnd", { runId: managed.runId, ...event });
+        progress();
+      },
+      onAgentHistory: (event) => {
+        const agent = this.latestRunningAgent(managed, event.label);
+        if (agent) agent.history = event.history;
+        this.emit("agentHistory", { runId: managed.runId, ...event });
+        progress();
+      },
+      onTokenUsage: (usage) => {
+        managed.snapshot.tokenUsage = usage;
+        this.emit("tokenUsage", { runId: managed.runId, usage });
+        progress();
+      },
+    };
+  }
+
+  private latestRunningAgent(managed: ManagedRun, label: string) {
+    return [...managed.snapshot.agents].reverse().find((a) => a.label === label && a.status === "running");
+  }
+
+  private completeRun(managed: ManagedRun, result: WorkflowRunResult): void {
+    managed.status = "completed";
+    managed.result = result;
+    this.emit("complete", { runId: managed.runId, result });
+    this.persistRun(managed);
+    this.releaseRunLease(managed);
+  }
+
+  private failRun(managed: ManagedRun, error: unknown): never {
+    const workflowError = this.toWorkflowError(error);
+    const usageLimitPaused =
+      !managed.controller.signal.aborted && workflowError.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT;
+
+    if (managed.controller.signal.aborted) {
+      // Intentional abort (pause/stop/Esc) — preserve status set by pause()/stop()
+      if (managed.status === "running") managed.status = "aborted";
+    } else {
+      managed.status = usageLimitPaused ? "paused" : "failed";
+    }
+
+    managed.error = workflowError;
+    this.emitRunFailure(managed, workflowError, usageLimitPaused);
+    this.persistRun(managed);
+    this.releaseRunLease(managed);
+    throw workflowError;
+  }
+
+  private toWorkflowError(error: unknown): WorkflowError {
+    if (error instanceof WorkflowError) return error;
+    return new WorkflowError(
+      error instanceof Error ? error.message : String(error),
+      WorkflowErrorCode.WORKFLOW_ABORTED,
+      { recoverable: true },
+    );
+  }
+
+  private emitRunFailure(managed: ManagedRun, error: WorkflowError, usageLimitPaused: boolean): void {
+    if (!usageLimitPaused) {
+      this.emit("error", { runId: managed.runId, error });
+      return;
+    }
+    this.emit("paused", {
+      runId: managed.runId,
+      reason: "usage_limit",
+      error,
+      resetHint: error.resetHint,
+    });
   }
 
   private releaseRunLease(managed: ManagedRun): void {
@@ -454,56 +447,57 @@ export class WorkflowManager extends EventEmitter {
 
   private persistRun(managed: ManagedRun) {
     try {
-      this.persistence.save({
-        runId: managed.runId,
-        workflowName: managed.snapshot.name,
-        // Persist the real script + journal so the run can be resumed. Runs live
-        // in workflow run storage — protect via directory permissions, not blanking.
-        script: managed.script,
-        args: managed.args,
-        sessionId: this.sessionId,
-        journal: managed.journal,
-        status: managed.status,
-        // Why a usage-limit pause happened, so the navigator / a future cold start
-        // can show it and (eventually) re-arm resume after the budget refills.
-        pauseReason:
-          managed.status === "paused" && managed.error?.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT
-            ? "usage_limit"
-            : undefined,
-        resetHint:
-          managed.status === "paused" && managed.error?.code === WorkflowErrorCode.PROVIDER_USAGE_LIMIT
-            ? managed.error.resetHint
-            : undefined,
-        phases: managed.snapshot.phases,
-        currentPhase: managed.snapshot.currentPhase,
-        agents: managed.snapshot.agents.map((a) => ({
-          ...a,
-          startedAt: managed.startedAt.toISOString(),
-          endedAt: new Date().toISOString(),
-        })),
-        logs: managed.snapshot.logs,
-        result: managed.result?.result,
-        tokenUsage: managed.snapshot.tokenUsage
-          ? {
-              input: managed.snapshot.tokenUsage.input,
-              output: managed.snapshot.tokenUsage.output,
-              total: managed.snapshot.tokenUsage.total,
-              cost: managed.snapshot.tokenUsage.cost,
-              cacheRead: managed.snapshot.tokenUsage.cacheRead,
-              cacheWrite: managed.snapshot.tokenUsage.cacheWrite,
-            }
-          : undefined,
-        startedAt: managed.startedAt.toISOString(),
-        updatedAt: new Date().toISOString(),
-        completedAt: managed.status === "completed" ? new Date().toISOString() : undefined,
-        durationMs: managed.result?.durationMs,
-      });
+      this.persistence.save(this.toPersistedRun(managed));
     } catch (err) {
       // Persistence is best-effort: the run is still healthy in memory.
       // Log so an operator debugging state-loss has a lead, but never crash
       // the workflow over a disk-full situation.
       console.warn("[workflow-manager] Persist run failed:", err);
     }
+  }
+
+  private toPersistedRun(managed: ManagedRun): PersistedRunState {
+    const now = new Date().toISOString();
+    return {
+      runId: managed.runId,
+      workflowName: managed.snapshot.name,
+      // Persist the real script + journal so the run can be resumed. Runs live
+      // in workflow run storage — protect via directory permissions, not blanking.
+      script: managed.script,
+      args: managed.args,
+      sessionId: this.sessionId,
+      journal: managed.journal,
+      status: managed.status,
+      ...this.pauseMetadata(managed),
+      phases: managed.snapshot.phases,
+      currentPhase: managed.snapshot.currentPhase,
+      agents: managed.snapshot.agents.map((a) => ({ ...a, startedAt: managed.startedAt.toISOString(), endedAt: now })),
+      logs: managed.snapshot.logs,
+      result: managed.result?.result,
+      tokenUsage: this.persistedTokenUsage(managed),
+      startedAt: managed.startedAt.toISOString(),
+      updatedAt: now,
+      completedAt: managed.status === "completed" ? now : undefined,
+      durationMs: managed.result?.durationMs,
+    };
+  }
+
+  private pauseMetadata(managed: ManagedRun) {
+    if (managed.status !== "paused" || managed.error?.code !== WorkflowErrorCode.PROVIDER_USAGE_LIMIT) return {};
+    return { pauseReason: "usage_limit", resetHint: managed.error.resetHint };
+  }
+
+  private persistedTokenUsage(managed: ManagedRun) {
+    const usage = managed.snapshot.tokenUsage;
+    if (!usage) return undefined;
+    return {
+      input: usage.input,
+      output: usage.output,
+      total: usage.total,
+      cost: usage.cost,
+      cacheRead: usage.cacheRead,
+      cacheWrite: usage.cacheWrite,
+    };
   }
 
   /**
@@ -526,19 +520,43 @@ export class WorkflowManager extends EventEmitter {
    * and run the rest live. Returns false if there is nothing resumable.
    */
   async resume(runId: string): Promise<boolean> {
-    // Guard: refuse to resume a run that is already running, or one that was
-    // intentionally aborted (pause/stop/Esc). Paused and failed runs can restart.
-    const active = this.runs.get(runId);
-    if (active?.status === "running") return false;
-    if (active?.status === "aborted") return false;
+    const resumed = this.acquireResumableRun(runId);
+    if (!resumed) return false;
 
+    const { managed, persisted } = resumed;
+    this.runs.set(runId, managed);
+    this.emit("resumed", { runId });
+    // Run in the background; executeRun records status/errors on the managed run.
+    void this.executeRun(managed, persisted.script, persisted.args, {
+      resumeJournal: new Map((persisted.journal ?? []).map((e) => [e.index, e] as const)),
+    }).catch(() => {});
+    return true;
+  }
+
+  private acquireResumableRun(runId: string) {
+    if (!this.canResumeActiveRun(runId)) return null;
     const persisted = this.persistence.load(runId);
-    if (!persisted?.script || persisted.status === "completed" || persisted.status === "aborted") return false;
+    if (!this.canResumePersistedRun(persisted)) return null;
     const lease = this.persistence.acquireRunLease(runId);
-    if (!lease) return false;
+    if (!lease) return null;
+    return { persisted, managed: this.createResumedManagedRun(runId, persisted, lease) };
+  }
 
-    const controller = new AbortController();
-    const managed: ManagedRun = {
+  private canResumeActiveRun(runId: string): boolean {
+    const active = this.runs.get(runId);
+    return active?.status !== "running" && active?.status !== "aborted";
+  }
+
+  private canResumePersistedRun(persisted: PersistedRunState | null): persisted is PersistedRunState & { script: string } {
+    return Boolean(persisted?.script && persisted.status !== "completed" && persisted.status !== "aborted");
+  }
+
+  private createResumedManagedRun(
+    runId: string,
+    persisted: PersistedRunState & { script: string },
+    lease: RunLease,
+  ): ManagedRun {
+    return {
       runId,
       status: "running",
       snapshot: {
@@ -551,7 +569,7 @@ export class WorkflowManager extends EventEmitter {
         doneCount: 0,
         errorCount: 0,
       },
-      controller,
+      controller: new AbortController(),
       startedAt: new Date(),
       script: persisted.script,
       args: persisted.args,
@@ -559,13 +577,6 @@ export class WorkflowManager extends EventEmitter {
       background: true,
       lease,
     };
-    this.runs.set(runId, managed);
-
-    const resumeJournal = new Map((persisted.journal ?? []).map((e) => [e.index, e] as const));
-    this.emit("resumed", { runId });
-    // Run in the background; executeRun records status/errors on the managed run.
-    void this.executeRun(managed, persisted.script, persisted.args, { resumeJournal }).catch(() => {});
-    return true;
   }
 
   /**
