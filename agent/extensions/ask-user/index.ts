@@ -435,37 +435,59 @@ function renderMultiSelectRow(params: MultiSelectRenderRowParams): string[] {
    const prefix = isSelected ? theme.fg("accent", "→") : " ";
 
    if (rowModel.isCommentToggleRow(index)) {
-      const checkbox = commentEnabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
-      const label = isSelected
-         ? theme.fg("accent", theme.bold(COMMENT_TOGGLE_LABEL))
-         : theme.fg("text", theme.bold(COMMENT_TOGGLE_LABEL));
-      return [truncateToWidth(`${prefix}   ${checkbox} ${label}`, width, "")];
+      return renderMultiSelectCommentToggleRow({ commentEnabled, isSelected, prefix, theme, width });
    }
-
-   if (rowModel.isFreeformRow(index)) {
-      const label = theme.fg("text", theme.bold("Type something."));
-      const desc = theme.fg("muted", "Enter a custom response");
-      return [truncateToWidth(`${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`, width, "")];
-   }
+   if (rowModel.isFreeformRow(index)) return renderMultiSelectFreeformRow(prefix, theme, width);
 
    const option = options[index];
-   if (!option) return [];
+   return option ? renderMultiSelectOptionRow({ index, option, checked, isSelected, prefix, theme, width }) : [];
+}
 
+function renderMultiSelectCommentToggleRow(params: {
+   commentEnabled: boolean;
+   isSelected: boolean;
+   prefix: string;
+   theme: Theme;
+   width: number;
+}): string[] {
+   const { commentEnabled, isSelected, prefix, theme, width } = params;
+   const checkbox = commentEnabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
+   const labelColor = isSelected ? "accent" : "text";
+   const label = theme.fg(labelColor, theme.bold(COMMENT_TOGGLE_LABEL));
+   return [truncateToWidth(`${prefix}   ${checkbox} ${label}`, width, "")];
+}
+
+function renderMultiSelectFreeformRow(prefix: string, theme: Theme, width: number): string[] {
+   const label = theme.fg("text", theme.bold("Type something."));
+   const desc = theme.fg("muted", "Enter a custom response");
+   return [truncateToWidth(`${prefix}   ${label} ${theme.fg("dim", "—")} ${desc}`, width, "")];
+}
+
+function renderMultiSelectOptionRow(params: {
+   index: number;
+   option: QuestionOption;
+   checked: ReadonlySet<number>;
+   isSelected: boolean;
+   prefix: string;
+   theme: Theme;
+   width: number;
+}): string[] {
+   const { index, option, checked, isSelected, prefix, theme, width } = params;
    const checkbox = checked.has(index) ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
    const num = theme.fg("dim", `${index + 1}.`);
-   const title = isSelected
-      ? theme.fg("accent", theme.bold(option.title))
-      : theme.fg("text", theme.bold(option.title));
+   const titleColor = isSelected ? "accent" : "text";
+   const title = theme.fg(titleColor, theme.bold(option.title));
    const lines = [truncateToWidth(`${prefix} ${num} ${checkbox} ${title}`, width, "")];
 
-   if (option.description) {
-      const indent = "      ";
-      for (const wrappedLine of wrapTextWithAnsi(option.description, Math.max(10, width - indent.length))) {
-         lines.push(truncateToWidth(indent + theme.fg("muted", wrappedLine), width, ""));
-      }
-   }
-
+   if (option.description) appendMultiSelectDescriptionLines(lines, option.description, theme, width);
    return lines;
+}
+
+function appendMultiSelectDescriptionLines(lines: string[], description: string, theme: Theme, width: number): void {
+   const indent = "      ";
+   for (const wrappedLine of wrapTextWithAnsi(description, Math.max(10, width - indent.length))) {
+      lines.push(truncateToWidth(indent + theme.fg("muted", wrappedLine), width, ""));
+   }
 }
 
 function buildSelectedOptionPreviewMarkdown(option: QuestionOption | undefined, searchQuery: string): string {
@@ -1003,23 +1025,56 @@ class WrappedSingleSelectList extends SelectionListBase<string> {
 }
 
 function handleWrappedSingleSelectInput(list: any, data: string): void {
-   if (list.searchQuery && matchesKey(data, Key.escape)) return list.setSearchQuery("");
-   if (list.keybindings.matches(data, "tui.select.cancel")) return list.onCancel?.();
-   if (list.allowComment && !list.commentToggle.disabled && list.commentToggle.matches(data)) return list.toggleComment();
+   if (handleWrappedSingleSelectGlobalInput(list, data)) return;
 
    const filteredOptions = list.getFilteredOptions();
    const rowModel = list.getRowModel(filteredOptions);
    const count = rowModel.count;
 
-   if (matchesSelectUp(data, list.keybindings) && count > 0) return list.moveSelection(-1, count);
-   if (matchesSelectDown(data, list.keybindings) && count > 0) return list.moveSelection(1, count);
-   if (list.selectNumberedOption(data, filteredOptions)) return;
-   if (matchesKey(data, Key.space) && count > 0 && rowModel.isCommentToggleRow(list.selectedIndex)) return list.toggleComment();
-   if (list.keybindings.matches(data, "tui.select.confirm") && count > 0) return confirmWrappedSingleSelect(list, rowModel, filteredOptions);
-   if (list.keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) return list.popSearchCharacter();
+   if (handleWrappedSingleSelectListInput(list, data, filteredOptions, rowModel, count)) return;
+   handleWrappedSingleSelectSearchInput(list, data);
+}
 
+function handleWrappedSingleSelectGlobalInput(list: any, data: string): boolean {
+   if (list.searchQuery && matchesKey(data, Key.escape)) {
+      list.setSearchQuery("");
+      return true;
+   }
+   if (list.keybindings.matches(data, "tui.select.cancel")) {
+      list.onCancel?.();
+      return true;
+   }
+   if (list.allowComment && !list.commentToggle.disabled && list.commentToggle.matches(data)) {
+      list.toggleComment();
+      return true;
+   }
+   return false;
+}
+
+function handleWrappedSingleSelectListInput(
+   list: any,
+   data: string,
+   filteredOptions: QuestionOption[],
+   rowModel: SelectionRowModel,
+   count: number,
+): boolean {
+   if (matchesSelectUp(data, list.keybindings) && count > 0) return callAndHandle(() => list.moveSelection(-1, count));
+   if (matchesSelectDown(data, list.keybindings) && count > 0) return callAndHandle(() => list.moveSelection(1, count));
+   if (list.selectNumberedOption(data, filteredOptions)) return true;
+   if (matchesKey(data, Key.space) && count > 0 && rowModel.isCommentToggleRow(list.selectedIndex)) return callAndHandle(() => list.toggleComment());
+   if (list.keybindings.matches(data, "tui.select.confirm") && count > 0) return callAndHandle(() => confirmWrappedSingleSelect(list, rowModel, filteredOptions));
+   if (list.keybindings.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, Key.backspace)) return callAndHandle(() => list.popSearchCharacter());
+   return false;
+}
+
+function handleWrappedSingleSelectSearchInput(list: any, data: string): void {
    const printableInput = list.getPrintableInput(data);
    if (printableInput) list.setSearchQuery(list.searchQuery + printableInput);
+}
+
+function callAndHandle(action: () => void): true {
+   action();
+   return true;
 }
 
 function confirmWrappedSingleSelect(list: any, rowModel: SelectionRowModel, filteredOptions: QuestionOption[]): void {
@@ -1683,36 +1738,101 @@ async function askWithCustomOrDialogs(args: {
    }
 }
 
+
+interface NormalizedAskToolArgs {
+   question: string;
+   context: string | undefined;
+   options: QuestionOption[];
+   allowMultiple: boolean;
+   allowFreeform: boolean;
+   allowComment: boolean;
+   effectiveDisplayMode: AskDisplayMode;
+   shortcuts: ResolvedAskShortcuts;
+   timeout: number | undefined;
+}
+
+function normalizeAskToolArgs(params: AskParams): NormalizedAskToolArgs {
+   const {
+      question,
+      context,
+      options: rawOptions = [],
+      allowMultiple = false,
+      allowFreeform = true,
+      allowComment = false,
+      displayMode,
+      overlayToggleKey,
+      commentToggleKey,
+      timeout,
+   } = params;
+
+   return {
+      question,
+      context: context?.trim() || undefined,
+      options: normalizeOptions(rawOptions),
+      allowMultiple,
+      allowFreeform,
+      allowComment,
+      effectiveDisplayMode: resolveDisplayMode(displayMode),
+      shortcuts: resolveAskShortcuts(overlayToggleKey, commentToggleKey),
+      timeout,
+   };
+}
+
+function emitAskAnswered(pi: ExtensionAPI, question: string, context: string | undefined, response: AskResponse) {
+   pi.events.emit("ask:answered", { question, context, response });
+}
+
+function emitAskCancelled(pi: ExtensionAPI, question: string, context: string | undefined, options: QuestionOption[]) {
+   pi.events.emit("ask:cancelled", { question, context, options });
+}
+
+async function askFreeformOnly(pi: ExtensionAPI, ctx: any, args: NormalizedAskToolArgs) {
+   const answer = await ctx.ui.input(dialogPrompt(args.question, args.context), "Type your answer...", dialogOptions(args.timeout));
+   const response = createFreeformResponse(answer);
+   if (!response) return cancelledAskResult(args.question, args.context, args.options);
+
+   emitAskAnswered(pi, args.question, args.context, response);
+   return answeredAskResult(args.question, args.context, args.options, response);
+}
+
+async function askWithOptions(pi: ExtensionAPI, args: NormalizedAskToolArgs, signal: AbortSignal | undefined, onUpdate: Function | undefined, ctx: any) {
+   onUpdate?.({ content: [{ type: "text", text: "Waiting for user input..." }], details: { question: args.question, context: args.context, options: args.options, response: null, cancelled: false } });
+
+   const result = await askWithCustomOrDialogs({
+      ctx,
+      signal,
+      question: args.question,
+      context: args.context,
+      options: args.options,
+      allowMultiple: args.allowMultiple,
+      allowFreeform: args.allowFreeform,
+      allowComment: args.allowComment,
+      timeout: args.timeout,
+      displayMode: args.effectiveDisplayMode,
+      shortcuts: args.shortcuts,
+   });
+
+   if (result === null) {
+      emitAskCancelled(pi, args.question, args.context, args.options);
+      return cancelledAskResult(args.question, args.context, args.options);
+   }
+
+   emitAskAnswered(pi, args.question, args.context, result);
+   return answeredAskResult(args.question, args.context, args.options, result);
+}
+
 async function executeAskTool(pi: ExtensionAPI, params: unknown, signal: AbortSignal | undefined, onUpdate: Function | undefined, ctx: any) {
    const parsed = params as AskParams;
    if (signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { question: parsed.question, options: [], response: null, cancelled: true } as AskToolDetails };
 
-   const { question, context, options: rawOptions = [], allowMultiple = false, allowFreeform = true, allowComment = false, displayMode, overlayToggleKey, commentToggleKey, timeout } = parsed;
-   const options = normalizeOptions(rawOptions);
-   const normalizedContext = context?.trim() || undefined;
-   const effectiveDisplayMode = resolveDisplayMode(displayMode);
-   const shortcuts = resolveAskShortcuts(overlayToggleKey, commentToggleKey);
-
-   if (!ctx.hasUI || !ctx.ui) return noUiAskResult({ question, context: normalizedContext, options, allowFreeform, allowComment });
-
-   if (options.length === 0) {
-      const answer = await ctx.ui.input(dialogPrompt(question, normalizedContext), "Type your answer...", dialogOptions(timeout));
-      const response = createFreeformResponse(answer);
-      if (!response) return cancelledAskResult(question, normalizedContext, options);
-      pi.events.emit("ask:answered", { question, context: normalizedContext, response });
-      return answeredAskResult(question, normalizedContext, options, response);
-   }
-
-   onUpdate?.({ content: [{ type: "text", text: "Waiting for user input..." }], details: { question, context: normalizedContext, options, response: null, cancelled: false } });
+   const args = normalizeAskToolArgs(parsed);
+   const { question, context, options, allowFreeform, allowComment } = args;
+   if (!ctx.hasUI || !ctx.ui) return noUiAskResult({ question, context, options, allowFreeform, allowComment });
 
    try {
-      const result = await askWithCustomOrDialogs({ ctx, signal, question, context: normalizedContext, options, allowMultiple, allowFreeform, allowComment, timeout, displayMode: effectiveDisplayMode, shortcuts });
-      if (result === null) {
-         pi.events.emit("ask:cancelled", { question, context: normalizedContext, options });
-         return cancelledAskResult(question, normalizedContext, options);
-      }
-      pi.events.emit("ask:answered", { question, context: normalizedContext, response: result });
-      return answeredAskResult(question, normalizedContext, options, result);
+      return options.length === 0
+         ? await askFreeformOnly(pi, ctx, args)
+         : await askWithOptions(pi, args, signal, onUpdate, ctx);
    } catch (error) {
       const message = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
       return { content: [{ type: "text", text: `Ask tool failed: ${message}` }], isError: true, details: { error: message } };
