@@ -8,54 +8,61 @@ export type LoopCommand =
   | { kind: "clear" };
 
 const INTERVAL_PATTERN = /^(\d+)([smhd])$/i;
-const UNIT_MS: Record<string, number> = {
-  s: 1000,
-  m: 60 * 1000,
-  h: 60 * 60 * 1000,
-  d: 24 * 60 * 60 * 1000,
-};
+const TIME_UNIT_MS = new Map<string, number>([
+  ["s", 1000],
+  ["m", MIN_LOOP_INTERVAL_MS],
+  ["h", 60 * MIN_LOOP_INTERVAL_MS],
+  ["d", 24 * 60 * MIN_LOOP_INTERVAL_MS],
+]);
+const LABEL_UNITS: Array<[string, number]> = [
+  ["d", 24 * 60 * MIN_LOOP_INTERVAL_MS],
+  ["h", 60 * MIN_LOOP_INTERVAL_MS],
+  ["m", MIN_LOOP_INTERVAL_MS],
+];
 
-function normalizeWhitespace(value: string): string {
-  return value.trim().replace(/\s+/g, " ");
+function isPositiveSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
 }
 
 export function parseLoopInterval(token: string): { intervalMs: number; intervalLabel: string } | null {
-  const match = token.match(INTERVAL_PATTERN);
+  const match = INTERVAL_PATTERN.exec(token);
   if (!match) return null;
 
   const amount = Number.parseInt(match[1] ?? "", 10);
-  const unit = (match[2] ?? "").toLowerCase();
-  if (!Number.isSafeInteger(amount) || amount <= 0 || !(unit in UNIT_MS)) return null;
+  const unitMs = TIME_UNIT_MS.get((match[2] ?? "").toLowerCase());
+  if (!isPositiveSafeInteger(amount)) return null;
+  if (unitMs === undefined) return null;
 
-  const rawMs = amount * UNIT_MS[unit];
-  const intervalMs = Math.max(rawMs, MIN_LOOP_INTERVAL_MS);
+  const intervalMs = Math.max(amount * unitMs, MIN_LOOP_INTERVAL_MS);
   return { intervalMs, intervalLabel: formatLoopInterval(intervalMs) };
 }
 
 export function formatLoopInterval(intervalMs: number): string {
-  const units: Array<[string, number]> = [
-    ["d", UNIT_MS.d],
-    ["h", UNIT_MS.h],
-    ["m", UNIT_MS.m],
-  ];
-
-  for (const [unit, ms] of units) {
+  for (const [unit, ms] of LABEL_UNITS) {
     if (intervalMs % ms === 0) return `${intervalMs / ms}${unit}`;
   }
 
   return `${Math.ceil(intervalMs / MIN_LOOP_INTERVAL_MS)}m`;
 }
 
-export function parseLoopCommand(args: string): LoopCommand {
-  const trimmed = args.trim();
-  if (trimmed.length === 0 || trimmed === "--status") return { kind: "status" };
-  if (trimmed === "--clear") return { kind: "clear" };
+function loopTiming(parsed: ReturnType<typeof parseLoopInterval>): { intervalMs: number; intervalLabel: string } {
+  if (parsed) return parsed;
+  return { intervalMs: DEFAULT_LOOP_INTERVAL_MS, intervalLabel: formatLoopInterval(DEFAULT_LOOP_INTERVAL_MS) };
+}
 
-  const [firstToken = "", ...rest] = trimmed.split(/\s+/);
-  const parsedInterval = parseLoopInterval(firstToken);
-  const intervalMs = parsedInterval?.intervalMs ?? DEFAULT_LOOP_INTERVAL_MS;
-  const intervalLabel = parsedInterval?.intervalLabel ?? formatLoopInterval(DEFAULT_LOOP_INTERVAL_MS);
-  const task = normalizeWhitespace(parsedInterval ? rest.join(" ") : trimmed);
+function loopTask(input: string, tokens: string[], hasInterval: boolean): string {
+  return (hasInterval ? tokens.slice(1).join(" ") : input).trim().replace(/\s+/g, " ");
+}
+
+export function parseLoopCommand(args: string): LoopCommand {
+  const input = args.trim();
+  if (["", "--status"].includes(input)) return { kind: "status" };
+  if (input === "--clear") return { kind: "clear" };
+
+  const tokens = input.split(/\s+/);
+  const parsedInterval = parseLoopInterval(tokens[0] ?? "");
+  const { intervalMs, intervalLabel } = loopTiming(parsedInterval);
+  const task = loopTask(input, tokens, parsedInterval !== null);
 
   if (task.length === 0) throw new Error(LOOP_USAGE);
 
