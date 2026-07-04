@@ -1179,60 +1179,97 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	function notifyNoGoalForTweak(ctx: ExtensionContext): void {
+		ctx.ui.notify("No goal is set. Use /goalie to discuss, or /goalie-set to start immediately.", "warning");
+	}
+
+	async function focusGoalForTweak(ctx: ExtensionContext): Promise<boolean> {
+		if (state.goal) return true;
+		if (openGoals().length === 0) {
+			notifyNoGoalForTweak(ctx);
+			return false;
+		}
+		return (await chooseOpenGoal(ctx, "Tweak which open goal?")) !== null;
+	}
+
+	function validateGoalForTweak(goal: GoalRecord, ctx: ExtensionContext): boolean {
+		if (goal.status !== "complete") return true;
+		ctx.ui.notify("Goal is complete. Use /goalie to discuss a new one or /goalie-set to start immediately.", "warning");
+		return false;
+	}
+
+	async function selectGoalTweakTarget(ctx: ExtensionContext): Promise<GoalRecord | null> {
+		if (!(await focusGoalForTweak(ctx))) return null;
+		const currentGoal = state.goal;
+		if (!currentGoal || !validateGoalForTweak(currentGoal, ctx)) return null;
+		syncGoalPromptFromDisk(ctx);
+		persist(ctx);
+		return state.goal;
+	}
+
+	function goalTweakDraftId(goal: GoalRecord): string {
+		return `tweak-${goal.id}-${Date.now().toString(36)}`;
+	}
+
+	function goalTweakDraftDetails(goal: GoalRecord, draftId: string, objective: string): GoalEventDetails {
+		return {
+			kind: "drafting",
+			goalId: draftId,
+			objective,
+			focus: goal.sisyphus ? "sisyphus" : "goal",
+			timestamp: Date.now(),
+		};
+	}
+
+	function goalTweakLabel(goal: GoalRecord): string {
+		return goal.sisyphus ? "Sisyphus tweak drafting" : "Goal tweak drafting";
+	}
+
+	function startGoalTweakEditGate(goal: GoalRecord): void {
+		// Activate the tweak edit-gate so apply_goal_tweak is callable.
+		tweakDraftingFor = goal.id;
+		syncGoalTools();
+	}
+
+	function notifyGoalTweakStarted(ctx: ExtensionContext, goal: GoalRecord, hint: string): void {
+		ctx.ui.notify(
+			`${goalTweakLabel(goal)} started${hint ? `: ${truncateText(hint, 60)}` : ""}. The agent will interview you and then call apply_goal_tweak.`,
+			"info",
+		);
+	}
+
+	function sendGoalTweakDraftingMessage(ctx: ExtensionContext, goal: GoalRecord, hint: string): void {
+		const draftId = goalTweakDraftId(goal);
+		pi.sendMessage<GoalEventDetails>(
+			{
+				customType: GOAL_EVENT_ENTRY,
+				content: goalTweakDraftingPrompt(goal, hint),
+				display: false,
+				details: goalTweakDraftDetails(goal, draftId, hint),
+			},
+			{ triggerTurn: true, deliverAs: ctx.isIdle() ? "followUp" : "steer" },
+		);
+	}
+
+	function cleanupFailedGoalTweakStart(ctx: ExtensionContext, err: unknown): void {
+		tweakDraftingFor = null;
+		syncGoalTools();
+		ctx.ui.notify(`Could not start goal tweak: ${(err as Error).message}`, "error");
+	}
+
 	async function startGoalTweakDrafting(hint: string, ctx: ExtensionContext): Promise<void> {
 		reconcileFocusedGoalFromDisk(ctx);
 		clearContinuationState();
 		clearActiveAccounting();
-		if (!state.goal) {
-			if (openGoals().length > 0) {
-				const selected = await chooseOpenGoal(ctx, "Tweak which open goal?");
-				if (!selected) return;
-			} else {
-				ctx.ui.notify("No goal is set. Use /goalie to discuss, or /goalie-set to start immediately.", "warning");
-				return;
-			}
-		}
-		const currentGoal = state.goal;
-		if (!currentGoal) return;
-		if (currentGoal.status === "complete") {
-			ctx.ui.notify("Goal is complete. Use /goalie to discuss a new one or /goalie-set to start immediately.", "warning");
-			return;
-		}
-		syncGoalPromptFromDisk(ctx);
-		persist(ctx);
-		const trimmed = hint.trim();
-		const focused = state.goal;
+		const focused = await selectGoalTweakTarget(ctx);
 		if (!focused) return;
-		const sisyphusOn = focused.sisyphus;
-		const label = sisyphusOn ? "Sisyphus tweak drafting" : "Goal tweak drafting";
-		// Activate the tweak edit-gate so apply_goal_tweak is callable.
-		tweakDraftingFor = focused.id;
-		syncGoalTools();
-		ctx.ui.notify(
-			`${label} started${trimmed ? `: ${truncateText(trimmed, 60)}` : ""}. The agent will interview you and then call apply_goal_tweak.`,
-			"info",
-		);
-		const draftId = `tweak-${focused.id}-${Date.now().toString(36)}`;
+		const trimmed = hint.trim();
+		startGoalTweakEditGate(focused);
+		notifyGoalTweakStarted(ctx, focused, trimmed);
 		try {
-			pi.sendMessage<GoalEventDetails>(
-				{
-					customType: GOAL_EVENT_ENTRY,
-					content: goalTweakDraftingPrompt(focused, trimmed),
-					display: false,
-					details: {
-						kind: "drafting",
-						goalId: draftId,
-						objective: trimmed,
-						focus: sisyphusOn ? "sisyphus" : "goal",
-						timestamp: Date.now(),
-					},
-				},
-				{ triggerTurn: true, deliverAs: ctx.isIdle() ? "followUp" : "steer" },
-			);
+			sendGoalTweakDraftingMessage(ctx, focused, trimmed);
 		} catch (err) {
-			tweakDraftingFor = null;
-			syncGoalTools();
-			ctx.ui.notify(`Could not start goal tweak: ${(err as Error).message}`, "error");
+			cleanupFailedGoalTweakStart(ctx, err);
 		}
 	}
 
