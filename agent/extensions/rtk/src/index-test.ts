@@ -40,6 +40,18 @@ const { DEFAULT_RTK_INTEGRATION_CONFIG } = await import("./types.ts");
 type Notification = { message: string; level: "info" | "warning" | "error" };
 type ExtensionHandler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<Record<string, unknown> | void>;
 
+function createRtkHandlers() {
+	const handlers: Record<string, ExtensionHandler> = {};
+	rtkIntegrationExtension({
+		exec: async () => ({ code: 0, stdout: "rtk 1.0.0", stderr: "" }),
+		on(eventName: string, handler: ExtensionHandler) {
+			handlers[eventName] = handler;
+		},
+		registerCommand() {},
+	} as never);
+	return handlers;
+}
+
 function createNotificationContext(notifications: Notification[]): Record<string, unknown> {
 	return {
 		hasUI: true,
@@ -242,15 +254,7 @@ await runTest("session_start refreshes RTK provenance and runtime guard skips mi
 });
 
 await runTest("tool execution lifecycle sanitizes streamed bash output", async () => {
-	const handlers: Record<string, ExtensionHandler> = {};
-
-	rtkIntegrationExtension({
-		exec: async () => ({ code: 0, stdout: "rtk 1.0.0", stderr: "" }),
-		on(eventName: string, handler: ExtensionHandler) {
-			handlers[eventName] = handler;
-		},
-		registerCommand() {},
-	} as never);
+	const handlers = createRtkHandlers();
 
 	const startHandler = handlers.tool_execution_start;
 	const updateHandler = handlers.tool_execution_update;
@@ -289,16 +293,8 @@ await runTest("tool execution lifecycle sanitizes streamed bash output", async (
 });
 
 await runTest("tool_result lifecycle merges compaction metadata with existing details", async () => {
-	const handlers: Record<string, ExtensionHandler> = {};
+	const handlers = createRtkHandlers();
 	const notifications: Notification[] = [];
-
-	rtkIntegrationExtension({
-		exec: async () => ({ code: 0, stdout: "rtk 1.0.0", stderr: "" }),
-		on(eventName: string, handler: ExtensionHandler) {
-			handlers[eventName] = handler;
-		},
-		registerCommand() {},
-	} as never);
 
 	const toolResultHandler = handlers.tool_result;
 	assert.ok(toolResultHandler);

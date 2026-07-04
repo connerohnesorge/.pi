@@ -16,17 +16,29 @@ function createMockPi(execResult: { code: number; stdout?: string; stderr?: stri
 	} as unknown as ExtensionAPI;
 }
 
-await runTest("rtk rewrite uses resolved POSIX executable path", async () => {
+function createResolvingPi(locatorResult: { code: number; stdout: string; stderr: string }) {
 	const calls: Array<{ command: string; args: string[] }> = [];
 	const pi = {
 		exec: async (command: string, args: string[]) => {
 			calls.push({ command, args });
-			if (command === "which") {
-				return { code: 0, stdout: "/opt/rtk/bin/rtk\n", stderr: "" };
+			if (command === "which" || command === "where") {
+				return locatorResult;
 			}
 			return { code: 3, stdout: "rtk git status", stderr: "" };
 		},
 	} as unknown as ExtensionAPI;
+	return { calls, pi };
+}
+
+async function assertGitStatusRewrites(config = cloneDefaultConfig()) {
+	const decision = await computeRewriteDecision("git status", config, createMockPi({ code: 3, stdout: "rtk git status" }));
+	assert.equal(decision.changed, true);
+	assert.equal(decision.rewrittenCommand, "rtk git status");
+	assert.equal(decision.reason, "ok");
+}
+
+await runTest("rtk rewrite uses resolved POSIX executable path", async () => {
+	const { calls, pi } = createResolvingPi({ code: 0, stdout: "/opt/rtk/bin/rtk\n", stderr: "" });
 
 	const result = await resolveRtkRewrite(pi, "git status", { platform: "linux" });
 
@@ -37,16 +49,7 @@ await runTest("rtk rewrite uses resolved POSIX executable path", async () => {
 });
 
 await runTest("rtk rewrite uses resolved Windows executable path", async () => {
-	const calls: Array<{ command: string; args: string[] }> = [];
-	const pi = {
-		exec: async (command: string, args: string[]) => {
-			calls.push({ command, args });
-			if (command === "where") {
-				return { code: 0, stdout: "C:\\Tools\\rtk.exe\r\nC:\\Other\\rtk.exe\r\n", stderr: "" };
-			}
-			return { code: 3, stdout: "rtk git status", stderr: "" };
-		},
-	} as unknown as ExtensionAPI;
+	const { calls, pi } = createResolvingPi({ code: 0, stdout: "C:\\Tools\\rtk.exe\r\nC:\\Other\\rtk.exe\r\n", stderr: "" });
 
 	const result = await resolveRtkRewrite(pi, "git status", { platform: "win32" });
 
@@ -56,16 +59,7 @@ await runTest("rtk rewrite uses resolved Windows executable path", async () => {
 });
 
 await runTest("rtk rewrite preserves behavior when executable path resolution fails", async () => {
-	const calls: Array<{ command: string; args: string[] }> = [];
-	const pi = {
-		exec: async (command: string, args: string[]) => {
-			calls.push({ command, args });
-			if (command === "which") {
-				return { code: 1, stdout: "", stderr: "not found" };
-			}
-			return { code: 3, stdout: "rtk git status", stderr: "" };
-		},
-	} as unknown as ExtensionAPI;
+	const { calls, pi } = createResolvingPi({ code: 1, stdout: "", stderr: "not found" });
 
 	const result = await resolveRtkRewrite(pi, "git status", { platform: "linux" });
 
@@ -111,26 +105,18 @@ await runTest("quoted heredoc marker is delegated to RTK rewrite", async () => {
 
 await runTest("legacy category toggles do not pre-filter RTK rewrite source of truth", async () => {
 	const config = { ...cloneDefaultConfig(), rewriteGitGithub: false };
-	const decision = await computeRewriteDecision("git status", config, createMockPi({ code: 3, stdout: "rtk git status" }));
-	assert.equal(decision.changed, true);
-	assert.equal(decision.rewrittenCommand, "rtk git status");
-	assert.equal(decision.reason, "ok");
+	await assertGitStatusRewrites(config);
 });
 
 await runTest("rtk exit 0 rewrites", async () => {
-	const config = cloneDefaultConfig();
-	const decision = await computeRewriteDecision("git status", config, createMockPi({ code: 0, stdout: "rtk git status" }));
+	const decision = await computeRewriteDecision("git status", cloneDefaultConfig(), createMockPi({ code: 0, stdout: "rtk git status" }));
 	assert.equal(decision.changed, true);
 	assert.equal(decision.rewrittenCommand, "rtk git status");
 	assert.equal(decision.reason, "ok");
 });
 
 await runTest("rtk exit 3 rewrites", async () => {
-	const config = cloneDefaultConfig();
-	const decision = await computeRewriteDecision("git status", config, createMockPi({ code: 3, stdout: "rtk git status" }));
-	assert.equal(decision.changed, true);
-	assert.equal(decision.rewrittenCommand, "rtk git status");
-	assert.equal(decision.reason, "ok");
+	await assertGitStatusRewrites();
 });
 
 await runTest("exit 1 leaves unchanged", async () => {
