@@ -16,7 +16,7 @@
 import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import { parseKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.ts";
+import type { ThemeLike, WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.ts";
 import type { PersistedRunState } from "./run-persistence.ts";
 import { registerSavedWorkflow } from "./saved-commands.ts";
 import type { WorkflowManager } from "./workflow-manager.ts";
@@ -34,12 +34,6 @@ const STATUS_ICON: Record<string, string> = {
   aborted: "⊘",
   skipped: "⊘",
 };
-
-/** Minimal theme surface so rendering is testable without the real Theme class. */
-export interface ThemeLike {
-  fg(color: string, text: string): string;
-  bold(text: string): string;
-}
 
 const PLAIN: ThemeLike = { fg: (_c, t) => t, bold: (t) => t };
 
