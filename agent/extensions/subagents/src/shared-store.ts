@@ -119,7 +119,7 @@ export class SharedStore {
  * the given agent (via a run-unique deltaKey) so the write can be replayed
  * correctly on resume.
  */
-export function createSharedStoreTools(store: SharedStore): ToolDefinition[] {
+function createSharedStoreTools(store: SharedStore): ToolDefinition[] {
   const storePut = defineTool({
     name: "store_put",
     label: "Store Put",

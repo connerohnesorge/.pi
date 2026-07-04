@@ -14,9 +14,9 @@ export interface ModelTierConfig {
   tiers: Record<string, string>;
 }
 
-export const DEFAULT_GPT55_MODEL = "openai-codex/gpt-5.5";
+const DEFAULT_GPT55_MODEL = "openai-codex/gpt-5.5";
 
-export const DEFAULT_MODEL_TIER_CONFIG: ModelTierConfig = {
+const DEFAULT_MODEL_TIER_CONFIG: ModelTierConfig = {
   tiers: {
     small: `${DEFAULT_GPT55_MODEL}:low`,
     medium: `${DEFAULT_GPT55_MODEL}:medium`,
@@ -25,7 +25,7 @@ export const DEFAULT_MODEL_TIER_CONFIG: ModelTierConfig = {
 };
 
 /** Path to the model tiers JSON config file (~/.pi/workflows/model-tiers.json). */
-export function getModelTierConfigPath(): string {
+function getModelTierConfigPath(): string {
   return join(homedir(), MODEL_TIERS_FILE);
 }
 

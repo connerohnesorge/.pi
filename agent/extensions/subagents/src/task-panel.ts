@@ -250,7 +250,7 @@ function fmtTokensShort(n: number): string {
 }
 
 /** Normalize the configured per-phase agent cap to a sane integer (default 8). */
-export function clampMaxAgents(value: number | undefined): number {
+function clampMaxAgents(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return 8;
   return Math.min(1000, Math.floor(value));
 }
