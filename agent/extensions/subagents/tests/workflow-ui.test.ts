@@ -174,6 +174,17 @@ function emptySavedStorage(): { list(): SavedWorkflow[]; delete(name: string, lo
   return { list: () => [], delete: () => true };
 }
 
+function renderText(model: NavigatorModel, state = new NavigatorState(), width = 80): string {
+  return renderNavigator(state, model, width).join("\n");
+}
+
+function drilledState(model: NavigatorModel, depth: number, cursor?: number): NavigatorState {
+  const state = new NavigatorState();
+  if (cursor !== undefined) state.cursor = cursor;
+  for (let i = 0; i < depth; i++) assert.ok(state.drill(model), "drill() should succeed");
+  return state;
+}
+
 test("NavigatorModel reads runs, phases, agents, and detail", () => {
   const model = new NavigatorModel(fakeManager());
   const runs = model.runs();
@@ -395,8 +406,7 @@ test("keyToAction maps keys per view and itemKind", () => {
 test("renderNavigator shows runs view with selected row and footer hint", () => {
   const model = new NavigatorModel(fakeManager());
   const state = new NavigatorState();
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const text = renderText(model, state);
   assert.match(text, /Workflows/);
   assert.match(text, /❯ ◆ audit/);
   assert.match(text, /enter open/);
@@ -408,17 +418,14 @@ test("renderNavigator shows empty hint when no runs", () => {
     getRun: () => undefined,
   });
   const state = new NavigatorState();
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const text = renderText(model, state);
   assert.match(text, /No runs yet/);
 });
 
 test("renderNavigator shows phases view", () => {
   const model = new NavigatorModel(fakeManager());
-  const state = new NavigatorState();
-  state.drill(model);
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const state = drilledState(model, 1);
+  const text = renderText(model, state);
   assert.match(text, /audit/);
   assert.match(text, /running/);
   assert.match(text, /Scan/);
@@ -427,11 +434,8 @@ test("renderNavigator shows phases view", () => {
 
 test("renderNavigator shows agents view", () => {
   const model = new NavigatorModel(fakeManager());
-  const state = new NavigatorState();
-  state.drill(model);
-  state.drill(model);
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const state = drilledState(model, 2);
+  const text = renderText(model, state);
   assert.match(text, /Scan · 2 agents/);
   assert.match(text, /› ● scan a/);
   assert.match(text, /scan b/);
@@ -440,12 +444,8 @@ test("renderNavigator shows agents view", () => {
 
 test("renderNavigator shows agent detail view", () => {
   const model = new NavigatorModel(fakeManager());
-  const state = new NavigatorState();
-  state.drill(model);
-  state.drill(model);
-  state.drill(model);
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const state = drilledState(model, 3);
+  const text = renderText(model, state);
   assert.match(text, /Prompt:/);
   assert.match(text, /scan the code/);
   assert.match(text, /Result:/);
@@ -458,12 +458,8 @@ test("renderNavigator shows agent detail view", () => {
 
 test("renderNavigator shows agent error diagnostics in detail view", () => {
   const model = new NavigatorModel(errorDetailManager());
-  const state = new NavigatorState();
-  state.drill(model);
-  state.drill(model);
-  state.drill(model);
-
-  const text = renderNavigator(state, model, 80).join("\n");
+  const state = drilledState(model, 3);
+  const text = renderText(model, state);
   assert.match(text, /Error:/);
   assert.match(text, /Subagent produced no assistant output/);
   assert.match(text, /Error code:/);
@@ -475,11 +471,8 @@ test("renderNavigator shows agent error diagnostics in detail view", () => {
 
 test("renderNavigator shows model info in agent rows", () => {
   const model = new NavigatorModel(fakeManager());
-  const state = new NavigatorState();
-  state.drill(model);
-  state.drill(model);
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const state = drilledState(model, 2);
+  const text = renderText(model, state);
   assert.match(text, /model/);
 });
 
@@ -487,16 +480,13 @@ test("renderNavigator shows correct footer hint per view", () => {
   const model = new NavigatorModel(fakeManager());
 
   // Runs view footer
-  const runsLines = renderNavigator(new NavigatorState(), model, 80);
-  assert.match(runsLines.join("\n"), /enter open.*esc back/);
+  const runsText = renderText(model);
+  assert.match(runsText, /enter open.*esc back/);
 
   // Detail view footer
-  const state = new NavigatorState();
-  state.drill(model);
-  state.drill(model);
-  state.drill(model);
-  const detailLines = renderNavigator(state, model, 80);
-  assert.match(detailLines.join("\n"), /j\/k scroll/);
+  const state = drilledState(model, 3);
+  const detailText = renderText(model, state);
+  assert.match(detailText, /j\/k scroll/);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -525,8 +515,7 @@ test("NavigatorModel.saved returns empty when storage is empty", () => {
 test("renderNavigator shows saved workflows in runs view with separator", () => {
   const model = new NavigatorModel(fakeManager(), savedStorage());
   const state = new NavigatorState();
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const text = renderText(model, state);
 
   assert.match(text, /Workflows/);
   assert.match(text, /◆ audit/); // runs section
@@ -580,14 +569,10 @@ test("NavigatorState drill on saved item goes to savedDetail then back to runs",
 
 test("renderNavigator shows saved detail view", () => {
   const model = new NavigatorModel(fakeManager(), savedStorage());
-  const state = new NavigatorState();
-
-  state.cursor = 1; // first saved item
-  state.drill(model);
+  const state = drilledState(model, 1, 1); // first saved item
   assert.equal(state.kind, "savedDetail");
 
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const text = renderText(model, state);
   assert.match(text, /analyze/);
   assert.match(text, /Analyze deps/);
   assert.match(text, /Location:/);
@@ -599,12 +584,8 @@ test("renderNavigator shows saved detail view", () => {
 
 test("renderNavigator saved detail shows 'x delete' in footer", () => {
   const model = new NavigatorModel(fakeManager(), savedStorage());
-  const state = new NavigatorState();
-
-  state.cursor = 1; // first saved item
-  state.drill(model);
-
-  const text = renderNavigator(state, model, 80).join("\n");
+  const state = drilledState(model, 1, 1); // first saved item
+  const text = renderText(model, state);
   assert.match(text, /x delete/);
 });
 
@@ -636,8 +617,7 @@ test("itemKindAt returns 'run' when no storage configured", () => {
 test("renderNavigator shows empty saved hint when no saved workflows", () => {
   const model = new NavigatorModel(fakeManager(), emptySavedStorage());
   const state = new NavigatorState();
-  const lines = renderNavigator(state, model, 80);
-  const text = lines.join("\n");
+  const text = renderText(model, state);
   // Should show runs section but no saved section
   assert.match(text, /Workflows/);
   assert.match(text, /◆ audit/);
@@ -651,12 +631,12 @@ test("renderNavigator footer hint changes based on item under cursor", () => {
 
   // Cursor on a run (position 0)
   state.cursor = 0;
-  const runText = renderNavigator(state, model, 80).join("\n");
+  const runText = renderText(model, state);
   assert.notEqual(runText.indexOf("x stop"), -1, "run item should show x stop");
 
   // Cursor on a saved item (position 1)
   state.cursor = 1;
-  const savedText = renderNavigator(state, model, 80).join("\n");
+  const savedText = renderText(model, state);
   assert.notEqual(savedText.indexOf("x delete"), -1, "saved item should show x delete");
   assert.equal(savedText.indexOf("x stop"), -1, "saved item should NOT show x stop");
 });
