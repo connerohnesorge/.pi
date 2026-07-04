@@ -391,9 +391,60 @@ export class WorkflowAgent {
     options: AgentRunOptions<TSchemaDef> = {},
   ): Promise<AgentRunResult<TSchemaDef>> {
     const capture: StructuredOutputCapture<any> = { called: false, value: undefined };
+    const runCwd = options.cwd ?? this.cwd;
+    const { resolvedModel, resolvedThinkingLevel } = this.resolveRunModel(options);
+    const { session } = await createAgentSession({
+      ...this.buildSessionOptions(runCwd, options, capture),
+      ...(resolvedModel ? { model: resolvedModel } : {}),
+      ...(resolvedThinkingLevel ? { thinkingLevel: resolvedThinkingLevel } : {}),
+    });
+
+    const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
+    const cleanup = [
+      this.attachAbortSignal(session, options.signal),
+      this.attachHistoryListener(session, options.onHistory, emitHistory),
+    ];
+
+    try {
+      return await this.promptAndResolveResult(session, prompt, options, capture);
+    } finally {
+      cleanup.forEach((fn) => fn?.());
+      this.emitFinalHistory(emitHistory);
+      this.emitUsage(session, options);
+      session.dispose();
+    }
+  }
+
+  private buildSessionOptions<TSchemaDef extends TSchema | undefined>(
+    runCwd: string,
+    options: AgentRunOptions<TSchemaDef>,
+    capture: StructuredOutputCapture<any>,
+  ): CreateAgentSessionOptions {
+    const agentDir = getAgentDir();
+    return {
+      cwd: runCwd,
+      agentDir,
+      sessionManager: SessionManager.inMemory(),
+      // Use real SettingsManager to inherit user's default provider/model settings.
+      // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
+      // would fall back to the first available model (e.g. openai-codex) which may
+      // not have valid auth, causing silent empty responses.
+      settingsManager: SettingsManager.create(this.cwd, agentDir),
+      customTools: this.buildCustomTools(runCwd, options, capture),
+      // Per-run modelRegistry wins over the constructor's shared registry, same
+      // precedence as resolveModel() above.
+      ...(options.modelRegistry || this.sharedRegistry ? { modelRegistry: options.modelRegistry ?? this.sharedRegistry } : {}),
+      ...this.sessionOptions,
+    };
+  }
+
+  private buildCustomTools<TSchemaDef extends TSchema | undefined>(
+    runCwd: string,
+    options: AgentRunOptions<TSchemaDef>,
+    capture: StructuredOutputCapture<any>,
+  ): ToolDefinition[] {
     // Per-call cwd (e.g. a worktree) needs coding tools bound to that directory,
     // since tools capture their cwd at construction and can't be relocated.
-    const runCwd = options.cwd ?? this.cwd;
     const baseTools = runCwd === this.cwd ? this.baseTools : createCodingTools(runCwd);
     // Apply the agentType tool policy BEFORE adding structured_output, so a
     // restrictive allowlist never strips the schema tool.
@@ -404,135 +455,140 @@ export class WorkflowAgent {
     );
 
     // System tools bypass the allowlist/denylist filter (e.g. shared-store tools).
-    if (options.systemTools?.length) {
-      customTools.push(...options.systemTools);
-    }
+    if (options.systemTools?.length) customTools.push(...options.systemTools);
+    if (options.schema) customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
+    return customTools;
+  }
 
-    if (options.schema) {
-      customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
-    }
-
-    // Resolve the model spec (explicit model > tier > session default). This
-    // composes with phase-based routing in workflow.ts, which only supplies
-    // options.model when a phase pattern matches — so an explicit model wins.
-    const modelSpec =
-      !options.model && !options.tier && this.sessionOptions.model && !loadModelTierConfig()
-        ? undefined
-        : resolveAgentModelSpec(options, this.mainModel);
+  private resolveRunModel<TSchemaDef extends TSchema | undefined>(
+    options: AgentRunOptions<TSchemaDef>,
+  ): { resolvedModel?: Model<any>; resolvedThinkingLevel?: ThinkingLevel } {
+    const modelSpec = this.resolveRunModelSpec(options);
+    if (!modelSpec) return {};
 
     // Resolve a requested model spec to a Model object. A given-but-unresolved
     // spec falls back to the session default (with a warning) rather than failing.
-    let resolvedModel: Model<any> | undefined;
-    let resolvedThinkingLevel: ThinkingLevel | undefined;
-    if (modelSpec) {
-      const resolved = this.resolveModelAndThinking(modelSpec, options.modelRegistry);
-      resolvedModel = resolved.model;
-      resolvedThinkingLevel = resolved.thinkingLevel;
-      if (resolvedModel) {
-        options.onModelResolved?.(
-          `${resolvedModel.provider}/${resolvedModel.id}${resolvedThinkingLevel ? `:${resolvedThinkingLevel}` : ""}`,
-        );
-      } else {
-        console.warn(`[workflow] model "${modelSpec}" not found; using session default`);
-        options.onModelFallback?.(modelSpec);
-      }
-    }
+    const { model: resolvedModel, thinkingLevel: resolvedThinkingLevel } = this.resolveModelAndThinking(
+      modelSpec,
+      options.modelRegistry,
+    );
+    if (!resolvedModel) return this.fallbackRunModel(modelSpec, options);
 
-    const agentDir = getAgentDir();
-    const { session } = await createAgentSession({
-      cwd: runCwd,
-      agentDir,
-      sessionManager: SessionManager.inMemory(),
-      // Use real SettingsManager to inherit user's default provider/model settings.
-      // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
-      // would fall back to the first available model (e.g. openai-codex) which may
-      // not have valid auth, causing silent empty responses.
-      settingsManager: SettingsManager.create(this.cwd, agentDir),
-      customTools,
-      // Per-run modelRegistry wins over the constructor's shared registry, same
-      // precedence as resolveModel() above.
-      ...(options.modelRegistry || this.sharedRegistry
-        ? { modelRegistry: options.modelRegistry ?? this.sharedRegistry }
-        : {}),
-      ...this.sessionOptions,
-      // Per-call model/thinking wins over any sessionOptions model/thinking.
-      ...(resolvedModel ? { model: resolvedModel } : {}),
-      ...(resolvedThinkingLevel ? { thinkingLevel: resolvedThinkingLevel } : {}),
-    });
+    this.emitResolvedModel(options, resolvedModel, resolvedThinkingLevel);
+    return { resolvedModel, resolvedThinkingLevel };
+  }
 
-    let removeAbortListener: (() => void) | undefined;
-    let removeHistoryListener: (() => void) | undefined;
+  private resolveRunModelSpec<TSchemaDef extends TSchema | undefined>(options: AgentRunOptions<TSchemaDef>): string | undefined {
+    // Resolve the model spec (explicit model > tier > session default). This
+    // composes with phase-based routing in workflow.ts, which only supplies
+    // options.model when a phase pattern matches — so an explicit model wins.
+    if (this.shouldUseSessionDefaultModel(options)) return undefined;
+    return resolveAgentModelSpec(options, this.mainModel);
+  }
+
+  private shouldUseSessionDefaultModel<TSchemaDef extends TSchema | undefined>(options: AgentRunOptions<TSchemaDef>): boolean {
+    return Boolean(!options.model && !options.tier && this.sessionOptions.model && !loadModelTierConfig());
+  }
+
+  private fallbackRunModel<TSchemaDef extends TSchema | undefined>(modelSpec: string, options: AgentRunOptions<TSchemaDef>): {} {
+    console.warn(`[workflow] model "${modelSpec}" not found; using session default`);
+    options.onModelFallback?.(modelSpec);
+    return {};
+  }
+
+  private emitResolvedModel<TSchemaDef extends TSchema | undefined>(
+    options: AgentRunOptions<TSchemaDef>,
+    resolvedModel: Model<any>,
+    resolvedThinkingLevel?: ThinkingLevel,
+  ): void {
+    options.onModelResolved?.(
+      `${resolvedModel.provider}/${resolvedModel.id}${resolvedThinkingLevel ? `:${resolvedThinkingLevel}` : ""}`,
+    );
+  }
+
+  private attachAbortSignal(
+    session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+    signal?: AbortSignal,
+  ): (() => void) | undefined {
+    if (signal?.aborted) throw new Error("Subagent was aborted");
+    if (!signal) return undefined;
+    const onAbort = () => void session.abort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    return () => signal.removeEventListener("abort", onAbort);
+  }
+
+  private attachHistoryListener(
+    session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+    onHistory: AgentRunOptions<any>["onHistory"],
+    emitHistory: () => void,
+  ): (() => void) | undefined {
+    if (!onHistory) return undefined;
     let lastHistoryEmit = 0;
-    const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
-    const maybeEmitHistory = () => {
-      if (!options.onHistory) return;
+    return session.subscribe(() => {
       const now = Date.now();
       if (now - lastHistoryEmit < 250) return;
       lastHistoryEmit = now;
       emitHistory();
-    };
+    });
+  }
+
+  private async promptAndResolveResult<TSchemaDef extends TSchema | undefined>(
+    session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+    prompt: string,
+    options: AgentRunOptions<TSchemaDef>,
+    capture: StructuredOutputCapture<any>,
+  ): Promise<AgentRunResult<TSchemaDef>> {
+    await session.prompt(this.buildPrompt(prompt, options as AgentRunOptions<any>, Boolean(options.schema)));
+    if (options.signal?.aborted) throw new Error("Subagent was aborted");
+
+    // The SDK buries a provider usage/quota limit in the assistant message rather
+    // than throwing; detect it here (before the schema/empty-text branches) so it
+    // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
+    // (schema path) or a silent empty-output null (non-schema path).
+    throwIfProviderLimit(session.messages, options.label);
+
+    if (options.schema) {
+      return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
+        this.lastAssistantText(m),
+      )) as AgentRunResult<TSchemaDef>;
+    }
+
+    const text = this.lastAssistantText(session.messages);
+    if (text.trim()) return text as AgentRunResult<TSchemaDef>;
+    throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
+      recoverable: true,
+      agentLabel: options.label,
+    });
+  }
+
+  private emitFinalHistory(emitHistory: () => void): void {
     try {
-      if (options.signal?.aborted) throw new Error("Subagent was aborted");
-      if (options.signal) {
-        const onAbort = () => void session.abort();
-        options.signal.addEventListener("abort", onAbort, { once: true });
-        removeAbortListener = () => options.signal?.removeEventListener("abort", onAbort);
-      }
-      if (options.onHistory) {
-        removeHistoryListener = session.subscribe(() => maybeEmitHistory());
-      }
-
-      await session.prompt(this.buildPrompt(prompt, options as AgentRunOptions<any>, Boolean(options.schema)));
-
-      if (options.signal?.aborted) throw new Error("Subagent was aborted");
-
-      // The SDK buries a provider usage/quota limit in the assistant message rather
-      // than throwing; detect it here (before the schema/empty-text branches) so it
-      // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
-      // (schema path) or a silent empty-output null (non-schema path).
-      throwIfProviderLimit(session.messages, options.label);
-
-      if (options.schema) {
-        return (await resolveStructuredOutput(session, capture, options.schema, options, (m) =>
-          this.lastAssistantText(m),
-        )) as AgentRunResult<TSchemaDef>;
-      }
-
-      const text = this.lastAssistantText(session.messages);
-      if (!text.trim()) {
-        throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
-          recoverable: true,
-          agentLabel: options.label,
-        });
-      }
-      return text as AgentRunResult<TSchemaDef>;
-    } finally {
-      removeAbortListener?.();
-      removeHistoryListener?.();
-      try {
-        emitHistory();
-      } catch {
-        // History is diagnostic only; never let it mask the real result/error.
-      }
-      // Read real usage before disposing — dispose tears down the session state.
-      if (options.onUsage) {
-        try {
-          const { tokens, cost } = session.getSessionStats();
-          options.onUsage({
-            input: tokens.input,
-            output: tokens.output,
-            cacheRead: tokens.cacheRead,
-            cacheWrite: tokens.cacheWrite,
-            total: tokens.total,
-            cost,
-          });
-        } catch {
-          // Usage is best-effort; never let stats failure mask the real result/error.
-        }
-      }
-      session.dispose();
+      emitHistory();
+    } catch {
+      // History is diagnostic only; never let it mask the real result/error.
     }
   }
+
+  private emitUsage<TSchemaDef extends TSchema | undefined>(
+    session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+    options: AgentRunOptions<TSchemaDef>,
+  ): void {
+    if (!options.onUsage) return;
+    try {
+      const { tokens, cost } = session.getSessionStats();
+      options.onUsage({
+        input: tokens.input,
+        output: tokens.output,
+        cacheRead: tokens.cacheRead,
+        cacheWrite: tokens.cacheWrite,
+        total: tokens.total,
+        cost,
+      });
+    } catch {
+      // Usage is best-effort; never let stats failure mask the real result/error.
+    }
+  }
+
 
   private buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string {
     const parts = [
