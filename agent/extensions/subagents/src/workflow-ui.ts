@@ -275,39 +275,42 @@ export class NavigatorState {
   /** Drill into the selected item. Returns true if the view changed. */
   drill(model: NavigatorModel): boolean {
     const t = this.top();
-    if (t.kind === "runs") {
-      const runs = model.runs();
-      const saved = model.saved();
-      if (t.cursor < runs.length) {
-        // Drilling into a run
-        const run = runs[t.cursor];
-        if (!run) return false;
-        this.stack.push({ kind: "phases", cursor: 0, runId: run.runId });
-        return true;
-      }
-      // Drilling into a saved workflow
-      const item = saved[t.cursor - runs.length];
-      if (!item) return false;
-      this.scroll = 0;
-      this.stack.push({ kind: "savedDetail", cursor: 0, savedName: item.name });
-      return true;
-    }
-    if (t.kind === "phases" && t.runId) {
-      const phases = model.phases(t.runId);
-      const ph = phases[t.cursor];
-      if (!ph) return false;
-      this.stack.push({ kind: "agents", cursor: 0, runId: t.runId, phase: ph.title });
-      return true;
-    }
-    if (t.kind === "agents" && t.runId && t.phase) {
-      const agents = model.agents(t.runId, t.phase);
-      const ag = agents[t.cursor];
-      if (!ag) return false;
-      this.scroll = 0;
-      this.stack.push({ kind: "detail", cursor: 0, runId: t.runId, phase: t.phase, agentId: ag.id });
-      return true;
-    }
+    if (t.kind === "runs") return this.drillRun(model, t);
+    if (t.kind === "phases") return this.drillPhase(model, t);
+    if (t.kind === "agents") return this.drillAgent(model, t);
     return false;
+  }
+
+  private drillRun(model: NavigatorModel, t: StackFrame): boolean {
+    const runs = model.runs();
+    if (t.cursor < runs.length) {
+      const run = runs[t.cursor];
+      if (!run) return false;
+      this.stack.push({ kind: "phases", cursor: 0, runId: run.runId });
+      return true;
+    }
+    const item = model.saved()[t.cursor - runs.length];
+    if (!item) return false;
+    this.scroll = 0;
+    this.stack.push({ kind: "savedDetail", cursor: 0, savedName: item.name });
+    return true;
+  }
+
+  private drillPhase(model: NavigatorModel, t: StackFrame): boolean {
+    if (!t.runId) return false;
+    const ph = model.phases(t.runId)[t.cursor];
+    if (!ph) return false;
+    this.stack.push({ kind: "agents", cursor: 0, runId: t.runId, phase: ph.title });
+    return true;
+  }
+
+  private drillAgent(model: NavigatorModel, t: StackFrame): boolean {
+    if (!t.runId || !t.phase) return false;
+    const ag = model.agents(t.runId, t.phase)[t.cursor];
+    if (!ag) return false;
+    this.scroll = 0;
+    this.stack.push({ kind: "detail", cursor: 0, runId: t.runId, phase: t.phase, agentId: ag.id });
+    return true;
   }
 
   /** Pop one level. Returns false when already at the top (caller should close). */
@@ -448,6 +451,44 @@ function leftPhaseRow(
   return truncateToWidth(row, innerW, "", true); // pad to exact innerW
 }
 
+interface AgentRowLayout {
+  stats: string;
+  nameStart: number;
+  modelStart: number;
+  statsStart: number;
+  name: string;
+  model: string;
+}
+
+function agentRowLayout(a: AgentRow, modelColStart: number, innerW: number): AgentRowLayout {
+  const stats = `${compactTokens(a.tokens ?? 0)} tok`;
+  const markerW = 2;
+  const nameStart = markerW + 2; // marker + dot + space
+  const statsStart = innerW - visibleWidth(stats);
+  let modelStart = Math.max(nameStart + visibleWidth(a.label) + GAP_NM, markerW + modelColStart);
+  let modelRoom = statsStart - 1 - modelStart;
+  if (modelRoom < 0) {
+    const nameRoom = Math.max(0, statsStart - 1 - nameStart);
+    return { stats, nameStart, modelStart: nameStart, statsStart, name: truncateToWidth(a.label, nameRoom, ELLIPSIS, false), model: "" };
+  }
+  const nameRoom = Math.max(0, modelStart - GAP_NM - nameStart);
+  return {
+    stats,
+    nameStart,
+    modelStart,
+    statsStart,
+    name: truncateToWidth(a.label, nameRoom, ELLIPSIS, false),
+    model: truncateToWidth(shortModel(a.model) ?? "", modelRoom, ELLIPSIS, false),
+  };
+}
+
+function agentRowPrefix(a: AgentRow, selected: boolean, name: string, theme: ThemeLike): string {
+  const marker = selected ? theme.fg("accent", theme.bold(`${CARET} `)) : "  ";
+  const dot = theme.fg(AGENT_DOT_COLOR[a.status] ?? "dim", DOT);
+  const nameStyled = selected ? theme.fg("accent", theme.bold(name)) : theme.fg("accent", name);
+  return marker + dot + " " + nameStyled;
+}
+
 /** Build a right-pane agent row (content field, exact width = innerW). */
 function rightAgentRow(
   a: AgentRow,
@@ -456,52 +497,17 @@ function rightAgentRow(
   innerW: number,
   theme: ThemeLike,
 ): string {
-  const dotColor = AGENT_DOT_COLOR[a.status] ?? "dim";
-  const stats = `${compactTokens(a.tokens ?? 0)} tok`;
-  const model = shortModel(a.model) ?? "";
-
-  // Stable 2-cell marker so columns never shift on selection: "› " | "  ".
-  // Layout: <marker:2><dot><sp><name> … <model> … <stats(right-aligned)>.
-  const markerW = 2;
-  const statsW = visibleWidth(stats);
-  const nameStart = markerW + 2; // marker + dot + space
-  let modelStart = Math.max(nameStart + visibleWidth(a.label) + GAP_NM, markerW + modelColStart);
-  const statsStart = innerW - statsW;
-
-  // Available room for the model block (between modelStart and stats, min 1 gap).
-  let modelRoom = statsStart - 1 - modelStart;
-  let nameOut = a.label;
-  let modelOut = model;
-  if (modelRoom < 0) {
-    // No room for model: drop it (spec §4.4 step 1/2), possibly truncate name.
-    modelOut = "";
-    modelStart = nameStart;
-    modelRoom = 0;
-    const nameRoom = Math.max(0, statsStart - 1 - nameStart);
-    nameOut = truncateToWidth(a.label, nameRoom, ELLIPSIS, false);
+  const layout = agentRowLayout(a, modelColStart, innerW);
+  let out = agentRowPrefix(a, selected, layout.name, theme);
+  const afterName = layout.nameStart + visibleWidth(layout.name);
+  if (layout.model) {
+    out += " ".repeat(Math.max(0, layout.modelStart - afterName)) + theme.fg("dim", layout.model);
+    const afterModel = layout.modelStart + visibleWidth(layout.model);
+    out += " ".repeat(Math.max(0, layout.statsStart - afterModel));
   } else {
-    modelOut = truncateToWidth(model, modelRoom, ELLIPSIS, false);
-    const nameRoom = Math.max(0, modelStart - GAP_NM - nameStart);
-    nameOut = truncateToWidth(a.label, nameRoom, ELLIPSIS, false);
+    out += " ".repeat(Math.max(0, layout.statsStart - afterName));
   }
-
-  const marker = selected ? theme.fg("accent", theme.bold(`${CARET} `)) : "  ";
-  const dot = theme.fg(dotColor, DOT);
-  const nameStyled = selected ? theme.fg("accent", theme.bold(nameOut)) : theme.fg("accent", nameOut);
-  const modelStyled = modelOut ? theme.fg("dim", modelOut) : "";
-  const statsStyled = theme.fg("dim", stats);
-
-  // Assemble with explicit cell padding (visibleWidth-driven gaps).
-  let out = marker + dot + " " + nameStyled;
-  const afterName = nameStart + visibleWidth(nameOut);
-  if (modelOut) {
-    out += " ".repeat(Math.max(0, modelStart - afterName)) + modelStyled;
-    const afterModel = modelStart + visibleWidth(modelOut);
-    out += " ".repeat(Math.max(0, statsStart - afterModel)) + statsStyled;
-  } else {
-    out += " ".repeat(Math.max(0, statsStart - afterName)) + statsStyled;
-  }
-  return truncateToWidth(out, innerW, "", true);
+  return truncateToWidth(out + theme.fg("dim", layout.stats), innerW, "", true);
 }
 
 /** Compose a titled top rule for one box side (between two join chars). */

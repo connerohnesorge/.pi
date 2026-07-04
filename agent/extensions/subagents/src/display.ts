@@ -214,21 +214,34 @@ function renderPhaseLines(
   showResultPreviews: boolean,
   theme: ThemeLike,
 ): string[] {
-  const status = phaseStatus(agents);
-  const complete = agents.length > 0 && status.done + status.errors + status.skipped === agents.length;
-  const marker = status.running > 0 || (!complete && snapshot.currentPhase === phase) ? "▶" : complete ? "✓" : " ";
   const visibleAgents = agents.slice(-maxAgents);
   const lines = [
-    theme.fg("accent", `  ${marker} ${phase}`) +
-      theme.fg(
-        "dim",
-        ` ${status.done}/${agents.length}${status.running ? ` · ${status.running} running` : ""}${status.errors ? ` · ${status.errors} errors` : ""}${status.skipped ? ` · ${status.skipped} skipped` : ""}`,
-      ),
+    renderPhaseSummary(snapshot, phase, agents, theme),
     ...visibleAgents.map((agent) => renderAgentLine(agent, showResultPreviews, theme)),
   ];
   if (agents.length > visibleAgents.length)
     lines.push(theme.fg("dim", `    … ${agents.length - visibleAgents.length} earlier agents`));
   return lines;
+}
+
+function renderPhaseSummary(snapshot: WorkflowSnapshot, phase: string, agents: WorkflowAgentSnapshot[], theme: ThemeLike): string {
+  const status = phaseStatus(agents);
+  return theme.fg("accent", `  ${phaseMarker(snapshot, phase, agents, status)} ${phase}`) + theme.fg("dim", phaseMeta(status, agents.length));
+}
+
+function phaseMarker(
+  snapshot: WorkflowSnapshot,
+  phase: string,
+  agents: WorkflowAgentSnapshot[],
+  status: ReturnType<typeof phaseStatus>,
+): string {
+  const complete = agents.length > 0 && status.done + status.errors + status.skipped === agents.length;
+  if (status.running > 0 || (!complete && snapshot.currentPhase === phase)) return "▶";
+  return complete ? "✓" : " ";
+}
+
+function phaseMeta(status: ReturnType<typeof phaseStatus>, total: number): string {
+  return ` ${status.done}/${total}${status.running ? ` · ${status.running} running` : ""}${status.errors ? ` · ${status.errors} errors` : ""}${status.skipped ? ` · ${status.skipped} skipped` : ""}`;
 }
 
 function phaseStatus(agents: WorkflowAgentSnapshot[]) {
