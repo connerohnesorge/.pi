@@ -119,6 +119,67 @@ function memorySettingsOptions(keywordTriggerEnabled = true, keywordTriggerWord?
   };
 }
 
+
+type WorkflowCommand = { handler: (args: string, ctx: unknown) => Promise<void> };
+type CapturedHandler = { event: string; handler: (...args: unknown[]) => unknown };
+type InputHandler = (event: { source?: string; text?: string }) => { action: string; text?: string };
+
+function noopUi() {
+  return { setEditorComponent: () => {} } as unknown as ExtensionUIContext;
+}
+
+function installTriggerCommandHarness(
+  mod: typeof workflowEditor,
+  store = memorySettingsOptions(),
+  overrides: Partial<ExtensionAPI> = {},
+) {
+  const commands = new Map<string, WorkflowCommand>();
+  const sent: Array<{ content?: string }> = [];
+  const pi = {
+    on: () => {},
+    registerCommand: (name: string, command: WorkflowCommand) => {
+      commands.set(name, command);
+    },
+    sendMessage: (message: { content?: string }) => {
+      sent.push(message);
+    },
+    getActiveTools: () => [],
+    setActiveTools: () => {},
+    ...overrides,
+  } as unknown as ExtensionAPI;
+
+  const state = mod.installWorkflowEditor(pi, noopUi(), undefined, store.options);
+  const command = commands.get("workflows-trigger");
+  assert.ok(command, "should register /workflows-trigger");
+  return { command, commands, sent, state, store };
+}
+
+function installInputHarness(
+  mod: typeof workflowEditor,
+  options = testSettingsOptions(),
+  overrides: Partial<ExtensionAPI> = {},
+) {
+  const captured: CapturedHandler[] = [];
+  const commands = new Map<string, WorkflowCommand>();
+  const pi = {
+    on: (event: string, handler: (...args: unknown[]) => unknown) => {
+      captured.push({ event, handler });
+    },
+    registerCommand: (name: string, command: WorkflowCommand) => {
+      commands.set(name, command);
+    },
+    sendMessage: () => {},
+    getActiveTools: () => ["bash", "read"],
+    setActiveTools: () => {},
+    ...overrides,
+  } as unknown as ExtensionAPI;
+
+  const state = mod.installWorkflowEditor(pi, noopUi(), undefined, options);
+  const inputHandler = captured.find((h) => h.event === "input")?.handler as InputHandler | undefined;
+  assert.ok(inputHandler, "input handler should be registered");
+  return { captured, commands, inputHandler, state };
+}
+
 describe("hasTrigger", () => {
   it('returns true for "workflow"', async () => {
     const { hasTrigger } = await load();
@@ -640,31 +701,9 @@ describe("installWorkflowEditor", () => {
 
   it("registers /workflows-trigger and toggles the keyword trigger", async () => {
     const mod = await load();
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
-    const sent: Array<{ content?: string }> = [];
-    const store = memorySettingsOptions();
-    const pi = {
-      on: () => {},
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
-      sendMessage: (message: { content?: string }) => {
-        sent.push(message);
-      },
-      getActiveTools: () => [],
-      setActiveTools: () => {},
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    const state = mod.installWorkflowEditor(pi, ui, undefined, store.options);
+    const { command, sent, state, store } = installTriggerCommandHarness(mod);
     assert.equal(state.keywordTriggerEnabled, true, "keyword trigger should default on");
     assert.equal(state.keywordTriggerWord, "workflow", "keyword trigger word should default to workflow");
-
-    const command = commands.get("workflows-trigger");
-    assert.ok(command, "should register /workflows-trigger");
 
     await command.handler("off", {});
     assert.equal(state.keywordTriggerEnabled, false);
@@ -682,28 +721,7 @@ describe("installWorkflowEditor", () => {
 
   it("/workflows-trigger sets and reports the keyword trigger word", async () => {
     const mod = await load();
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
-    const sent: Array<{ content?: string }> = [];
-    const store = memorySettingsOptions();
-    const pi = {
-      on: () => {},
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
-      sendMessage: (message: { content?: string }) => {
-        sent.push(message);
-      },
-      getActiveTools: () => [],
-      setActiveTools: () => {},
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    const state = mod.installWorkflowEditor(pi, ui, undefined, store.options);
-    const command = commands.get("workflows-trigger");
-    assert.ok(command, "should register /workflows-trigger");
+    const { command, sent, state, store } = installTriggerCommandHarness(mod);
 
     await command.handler("set pi-workflow", {});
     assert.equal(state.keywordTriggerWord, "pi-workflow");
@@ -749,29 +767,14 @@ describe("installWorkflowEditor", () => {
 
   it("loads the persisted keyword trigger preference on install", async () => {
     const mod = await load();
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
     let setActiveToolsCalls = 0;
-    const pi = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
-      registerCommand: () => {},
-      sendMessage: () => {},
-      getActiveTools: () => ["bash", "read"],
+    const { inputHandler, state } = installInputHarness(mod, testSettingsOptions(false), {
       setActiveTools: () => {
         setActiveToolsCalls++;
       },
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    const state = mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions(false));
+    });
     assert.equal(state.keywordTriggerEnabled, false, "persisted off should apply to new sessions");
 
-    const inputHandler = captured.find((h) => h.event === "input")?.handler;
-    assert.ok(inputHandler, "input handler should be registered");
     const result = inputHandler({
       source: "interactive",
       text: "Please discuss workflows as a normal topic.",
@@ -783,69 +786,38 @@ describe("installWorkflowEditor", () => {
 
   it("loads the persisted keyword trigger word on install", async () => {
     const mod = await load();
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
     let setActiveToolsCalls = 0;
-    const pi = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
-      registerCommand: () => {},
-      sendMessage: () => {},
-      getActiveTools: () => ["bash", "read"],
+    const { inputHandler, state } = installInputHarness(mod, testSettingsOptions(true, "pi-workflow"), {
       setActiveTools: () => {
         setActiveToolsCalls++;
       },
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    const state = mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions(true, "pi-workflow"));
+    });
     assert.equal(state.keywordTriggerWord, "pi-workflow");
 
-    const inputHandler = captured.find((h) => h.event === "input")?.handler;
-    assert.ok(inputHandler, "input handler should be registered");
     assert.deepEqual(inputHandler({ source: "interactive", text: "Please discuss workflows normally." }), {
       action: "continue",
     });
     assert.equal(setActiveToolsCalls, 0);
 
     const result = inputHandler({ source: "interactive", text: "Please run pi-workflow now." });
-    assert.equal((result as { action?: string }).action, "transform");
+    assert.equal(result.action, "transform");
     assert.equal(setActiveToolsCalls, 1);
   });
 
   it("keeps session trigger state when saving the preference fails", async () => {
     const mod = await load();
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
-    const sent: Array<{ content?: string }> = [];
-    const pi = {
-      on: () => {},
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
-      sendMessage: (message: { content?: string }) => {
-        sent.push(message);
-      },
-      getActiveTools: () => [],
-      setActiveTools: () => {},
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    const state = mod.installWorkflowEditor(pi, ui, undefined, {
-      settingsStore: {
-        load: () => ({ keywordTriggerEnabled: true }),
-        save: () => {
-          throw new Error("write failed");
+    const { command, sent, state } = installTriggerCommandHarness(mod, {
+      options: {
+        settingsStore: {
+          load: () => ({ keywordTriggerEnabled: true }),
+          save: () => {
+            throw new Error("write failed");
+          },
         },
       },
-    });
-    const command = commands.get("workflows-trigger");
-    assert.ok(command, "should register /workflows-trigger");
+      settings: {},
+      saved: [],
+    } as unknown as ReturnType<typeof memorySettingsOptions>);
 
     await command.handler("off", {});
 
@@ -862,92 +834,32 @@ describe("installWorkflowEditor", () => {
   it("saves active tools and adds WORKFLOW_TOOL_NAME on triggered input", async () => {
     const mod = await load();
     let savedTools: string[] = [];
-    const pi = {
-      on: (_event: string, _handler: unknown) => {},
-      getActiveTools: () => ["bash", "read"],
+    const { inputHandler } = installInputHarness(mod, testSettingsOptions(), {
       setActiveTools: (tools: string[]) => {
         savedTools = tools;
       },
-    } as unknown as ExtensionAPI;
+    });
 
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
-
-    // Simulate the "input" event — find the registered handler
-    // We need to actually invoke the handler the install sets up.
-    // Re-implement the scenario more directly:
-
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-    const pi2 = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
-      getActiveTools: () => ["bash", "read"],
-      setActiveTools: (tools: string[]) => {
-        savedTools = tools;
-      },
-    } as unknown as ExtensionAPI;
-
-    const ui2 = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    savedTools = [];
-    mod.installWorkflowEditor(pi2, ui2, undefined, testSettingsOptions());
-
-    const inputHandler = captured.find((c) => c.event === "input")?.handler as
-      | ((event: { source?: string; text?: string }) => { action: string; text?: string })
-      | undefined;
-    assert.notEqual(inputHandler, undefined, "input handler should be registered");
-
-    // Invoke with non-trigger text — should NOT save tools
-    const resultNonTrigger = inputHandler?.({ source: "interactive", text: "hello world" });
+    const resultNonTrigger = inputHandler({ source: "interactive", text: "hello world" });
     assert.deepEqual(resultNonTrigger, { action: "continue" }, "non-trigger input should return continue");
     assert.deepEqual(savedTools, [], "tools should not change for non-trigger input");
 
-    // Invoke with trigger text — should save and add WORKFLOW_TOOL_NAME
-    const resultTrigger = inputHandler?.({ source: "interactive", text: "run a workflow test" });
-    assert.ok(typeof resultTrigger === "object" && resultTrigger !== null, "should return a result object");
+    const resultTrigger = inputHandler({ source: "interactive", text: "run a workflow test" });
     assert.equal(resultTrigger.action, "transform", "should return transform action");
-    assert.ok(
-      typeof resultTrigger.text === "string" && resultTrigger.text.length > 0,
-      "should return transformed text",
-    );
     assert.ok(resultTrigger.text?.includes("run a workflow test"), "transformed text should include original prompt");
     assert.ok(savedTools.includes("workflow"), `saved tools (${savedTools.join(", ")}) should include "workflow"`);
   });
 
   it("does not transform keyword-triggered input when /workflows-trigger is off", async () => {
     const mod = await load();
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
     let setActiveToolsCalls = 0;
-    const pi = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
-      registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-        commands.set(name, command);
-      },
-      sendMessage: () => {},
-      getActiveTools: () => ["bash", "read"],
+    const { commands, inputHandler } = installInputHarness(mod, testSettingsOptions(), {
       setActiveTools: () => {
         setActiveToolsCalls++;
       },
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
+    });
     await commands.get("workflows-trigger")?.handler("off", {});
 
-    const inputHandler = captured.find((h) => h.event === "input")?.handler;
-    assert.ok(inputHandler, "input handler should be registered");
     const result = inputHandler({
       source: "interactive",
       text: "Please discuss workflows as a normal topic.",
@@ -959,29 +871,14 @@ describe("installWorkflowEditor", () => {
 
   it("does not transform one-shot backspace-suppressed keyword input", async () => {
     const mod = await load();
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
     let setActiveToolsCalls = 0;
-    const pi = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
-      registerCommand: () => {},
-      sendMessage: () => {},
-      getActiveTools: () => ["bash", "read"],
+    const { inputHandler, state } = installInputHarness(mod, testSettingsOptions(), {
       setActiveTools: () => {
         setActiveToolsCalls++;
       },
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    const state = mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
+    });
     state.suppressedKeywordText = "Please discuss workflows as a normal topic.";
 
-    const inputHandler = captured.find((h) => h.event === "input")?.handler;
-    assert.ok(inputHandler, "input handler should be registered");
     const result = inputHandler({
       source: "interactive",
       text: "Please discuss workflows as a normal topic.",
@@ -994,26 +891,8 @@ describe("installWorkflowEditor", () => {
 
   it("transforms the same keyword input later when it was not just suppressed", async () => {
     const mod = await load();
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-    const pi = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
-      registerCommand: () => {},
-      sendMessage: () => {},
-      getActiveTools: () => ["bash", "read"],
-      setActiveTools: () => {},
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
-
+    const { inputHandler } = installInputHarness(mod);
     const text = "Please discuss workflows as a normal topic.";
-    const inputHandler = captured.find((h) => h.event === "input")?.handler;
-    assert.ok(inputHandler, "input handler should be registered");
     const result = inputHandler({ source: "interactive", text });
 
     assert.deepEqual(result, {
@@ -1065,95 +944,46 @@ describe("installWorkflowEditor", () => {
 
   it("restores original tools on turn_end after a triggered turn", async () => {
     const mod = await load();
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-
     let currentTools: string[] = ["bash", "read", "edit", "write"];
-    const pi = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
+    const { captured, inputHandler } = installInputHarness(mod, testSettingsOptions(), {
       getActiveTools: () => [...currentTools],
       setActiveTools: (tools: string[]) => {
         currentTools = [...tools];
       },
-    } as unknown as ExtensionAPI;
-
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
-
-    const inputHandler = captured.find((c) => c.event === "input")?.handler;
+    });
     const turnEndHandler = captured.find((c) => c.event === "turn_end")?.handler;
-    assert.notEqual(inputHandler, undefined, "input handler should be registered");
     assert.notEqual(turnEndHandler, undefined, "turn_end handler should be registered");
 
     const initialTools = ["bash", "read", "edit", "write"];
-
-    // First trigger: save tools and add "workflow"
-    inputHandler?.({ source: "interactive", text: "trigger workflow test" });
+    inputHandler({ source: "interactive", text: "trigger workflow test" });
     assert.ok(currentTools.includes("workflow"), "workflow tool should be added");
     assert.ok(currentTools.length > initialTools.length, "tool set should be expanded");
 
-    // turn_end: restore to saved tools
     turnEndHandler?.();
     assert.deepEqual(currentTools, initialTools, "tools should be restored after turn_end");
   });
 
   it("does not add WORKFLOW_TOOL_NAME if already present", async () => {
     const mod = await load();
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
     let currentTools: string[] = ["bash", "read", "workflow"];
-
-    const pi = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
+    const { inputHandler } = installInputHarness(mod, testSettingsOptions(), {
       getActiveTools: () => [...currentTools],
       setActiveTools: (tools: string[]) => {
         currentTools = [...tools];
       },
-    } as unknown as ExtensionAPI;
+    });
 
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
-
-    const inputHandler = captured.find((c) => c.event === "input")?.handler;
-    assert.notEqual(inputHandler, undefined);
-
-    inputHandler?.({ source: "interactive", text: "run workflow" });
-    // "workflow" was already present, so tool count should not increase beyond duplicates
+    inputHandler({ source: "interactive", text: "run workflow" });
     assert.equal(currentTools.filter((t) => t === "workflow").length, 1, "workflow should appear exactly once");
   });
 
   it("input handler ignores non-interactive sources", async () => {
     const mod = await load();
-    const captured: Array<{ event: string; handler: (...args: unknown[]) => unknown }> = [];
-    const pi = {
-      on: (event: string, handler: (...args: unknown[]) => unknown) => {
-        captured.push({ event, handler });
-      },
+    const { inputHandler } = installInputHarness(mod, testSettingsOptions(), {
       getActiveTools: () => ["bash"],
-      setActiveTools: () => {},
-    } as unknown as ExtensionAPI;
+    });
 
-    const ui = {
-      setEditorComponent: () => {},
-    } as unknown as ExtensionUIContext;
-
-    mod.installWorkflowEditor(pi, ui, undefined, testSettingsOptions());
-
-    const inputHandler = captured.find((c) => c.event === "input")?.handler as
-      | ((event: { source?: string; text?: string }) => { action: string })
-      | undefined;
-    assert.notEqual(inputHandler, undefined);
-
-    // Non-interactive source with trigger text should still transform
-    const result = inputHandler?.({ source: "paste", text: "run a workflow scenario" });
+    const result = inputHandler({ source: "paste", text: "run a workflow scenario" });
     assert.deepEqual(result, { action: "continue" }, "non-interactive source should return continue");
   });
 });
