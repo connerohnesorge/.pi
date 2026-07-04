@@ -38,70 +38,83 @@ export function registerWorkflowModelsCommand(pi: ExtensionAPI): void {
     description: "View and edit model tiers used by workflows (small/medium/big)",
     handler: async (_args, ctx) => {
       await ctx.waitForIdle();
-
-      // Load the saved config, or build an in-memory default spread across the
-      // available models. If the model registry is empty, fall back to the
-      // current Pi model so the tiers are still usable.
-      const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-      let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, listAvailableModelSpecs());
-      let dirty = false;
-
-      const ensureFresh = (cfg: typeof config) => {
-        config = cfg;
-        dirty = true;
-      };
-
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const tiers = sortedTierNames(config);
-        const menuOptions: string[] = [];
-
-        menuOptions.push("─".repeat(30));
-        for (const name of tiers) {
-          const model = config.tiers[name];
-          menuOptions.push(`${name} tier → ${model}`);
-        }
-        menuOptions.push("─".repeat(30));
-
-        menuOptions.push("Reset to defaults");
-        menuOptions.push(dirty ? "Save and exit" : "Exit");
-
-        const choice = await ctx.ui.select("Model tier configuration", menuOptions);
-
-        if (!choice) break;
-
-        // Handle "<tier> → [model]" selections
-        for (const name of tiers) {
-          if (choice.startsWith(`${name} tier →`)) {
-            const updatedTiers = await editSingleTier(ctx, config.tiers, name);
-            if (updatedTiers !== null) {
-              ensureFresh({ ...config, tiers: updatedTiers });
-            }
-            break;
-          }
-        }
-
-        if (choice === "Reset to defaults") {
-          const confirmed = await ctx.ui.confirm(
-            "Reset model tiers",
-            "This will reset tiers from your available model list. Continue?",
-          );
-          if (confirmed) {
-            ensureFresh(buildDefaultTierConfig(currentModel, listAvailableModelSpecs()));
-            ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
-          }
-        }
-
-        if (choice === "Save and exit" || choice === "Exit") {
-          if (choice === "Save and exit") {
-            saveModelTierConfig(config);
-            ctx.ui.notify("Model tiers saved.", "info");
-          }
-          break;
-        }
-      }
+      await handleWorkflowModels(ctx);
     },
   });
+}
+
+
+async function handleWorkflowModels(ctx: ExtensionCommandContext): Promise<void> {
+  const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+  let config = loadModelTierConfig() ?? buildDefaultTierConfig(currentModel, listAvailableModelSpecs());
+  let dirty = false;
+  const markFresh = (cfg: typeof config) => {
+    config = cfg;
+    dirty = true;
+  };
+
+  for (;;) {
+    const choice = await ctx.ui.select("Model tier configuration", modelTierMenuOptions(config, dirty));
+    if (!choice) break;
+
+    const tierChanged = await maybeEditTier(ctx, config, choice, markFresh);
+    if (!tierChanged) await maybeResetDefaults(ctx, choice, currentModel, markFresh);
+    if (isExitChoice(choice)) {
+      saveIfRequested(ctx, choice, config);
+      break;
+    }
+  }
+}
+
+function modelTierMenuOptions(config: ReturnType<typeof buildDefaultTierConfig>, dirty: boolean): string[] {
+  const tiers = sortedTierNames(config);
+  return [
+    "─".repeat(30),
+    ...tiers.map((name) => `${name} tier → ${config.tiers[name]}`),
+    "─".repeat(30),
+    "Reset to defaults",
+    dirty ? "Save and exit" : "Exit",
+  ];
+}
+
+async function maybeEditTier(
+  ctx: ExtensionCommandContext,
+  config: ReturnType<typeof buildDefaultTierConfig>,
+  choice: string,
+  markFresh: (cfg: ReturnType<typeof buildDefaultTierConfig>) => void,
+): Promise<boolean> {
+  const tierName = sortedTierNames(config).find((name) => choice.startsWith(`${name} tier →`));
+  if (!tierName) return false;
+  const updatedTiers = await editSingleTier(ctx, config.tiers, tierName);
+  if (updatedTiers !== null) markFresh({ ...config, tiers: updatedTiers });
+  return true;
+}
+
+async function maybeResetDefaults(
+  ctx: ExtensionCommandContext,
+  choice: string,
+  currentModel: string | undefined,
+  markFresh: (cfg: ReturnType<typeof buildDefaultTierConfig>) => void,
+): Promise<void> {
+  if (choice !== "Reset to defaults") return;
+  const confirmed = await ctx.ui.confirm("Reset model tiers", "This will reset tiers from your available model list. Continue?");
+  if (!confirmed) return;
+  markFresh(buildDefaultTierConfig(currentModel, listAvailableModelSpecs()));
+  ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
+}
+
+function isExitChoice(choice: string): boolean {
+  return choice === "Save and exit" || choice === "Exit";
+}
+
+function saveIfRequested(
+  ctx: ExtensionCommandContext,
+  choice: string,
+  config: ReturnType<typeof buildDefaultTierConfig>,
+): void {
+  if (choice !== "Save and exit") return;
+  saveModelTierConfig(config);
+  ctx.ui.notify("Model tiers saved.", "info");
 }
 
 /**

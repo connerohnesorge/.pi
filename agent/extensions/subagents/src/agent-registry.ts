@@ -58,30 +58,39 @@ export function parseAgentDefinition(
   source: "project" | "user",
   fileName: string,
 ): AgentDefinition | null {
-  let parsed: { frontmatter: Record<string, unknown>; body: string };
-  try {
-    parsed = parseFrontmatter(content);
-  } catch {
-    // Malformed frontmatter: treat the whole file as a body, name from filename.
-    parsed = { frontmatter: {}, body: content };
-  }
+  const parsed = parseDefinitionFrontmatter(content);
   const fm = parsed.frontmatter;
-  const fmName = typeof fm.name === "string" ? fm.name.trim() : "";
-  const name = fmName || basename(fileName).replace(/\.md$/i, "").trim();
+  const name = stringField(fm.name) || basename(fileName).replace(/\.md$/i, "").trim();
   const prompt = parsed.body.trim();
   if (!name && !prompt) return null;
 
   return {
     name,
-    description: typeof fm.description === "string" ? fm.description.trim() || undefined : undefined,
+    description: stringField(fm.description),
     tools: toStringArray(fm.tools),
     disallowedTools: toStringArray(fm.disallowedTools),
-    model: typeof fm.model === "string" ? fm.model.trim() || undefined : undefined,
-    isolation:
-      typeof fm.isolation === "string" && fm.isolation.toLowerCase().trim() === "worktree" ? "worktree" : undefined,
+    model: stringField(fm.model),
+    isolation: parseIsolation(fm.isolation),
     prompt,
     source,
   };
+}
+
+function parseDefinitionFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
+  try {
+    return parseFrontmatter(content);
+  } catch {
+    // Malformed frontmatter: treat the whole file as a body, name from filename.
+    return { frontmatter: {}, body: content };
+  }
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" ? value.trim() || undefined : undefined;
+}
+
+function parseIsolation(value: unknown): "worktree" | undefined {
+  return typeof value === "string" && value.toLowerCase().trim() === "worktree" ? "worktree" : undefined;
 }
 
 function readDefsFromDir(dir: string, source: "project" | "user"): AgentDefinition[] {
@@ -115,15 +124,15 @@ export function loadAgentRegistry(cwd: string, opts?: { projectDir?: string; use
   const projectDir = opts?.projectDir ?? join(cwd, AGENTS_DIR);
   const userDir = opts?.userDir ?? join(homedir(), AGENTS_DIR);
   const registry: AgentRegistry = new Map();
-  for (const def of readDefsFromDir(projectDir, "project")) {
+  addDefinitions(registry, readDefsFromDir(projectDir, "project"));
+  if (userDir !== projectDir) addDefinitions(registry, readDefsFromDir(userDir, "user"));
+  return registry;
+}
+
+function addDefinitions(registry: AgentRegistry, defs: AgentDefinition[]): void {
+  for (const def of defs) {
     if (def.name && !registry.has(def.name)) registry.set(def.name, def);
   }
-  if (userDir !== projectDir) {
-    for (const def of readDefsFromDir(userDir, "user")) {
-      if (def.name && !registry.has(def.name)) registry.set(def.name, def);
-    }
-  }
-  return registry;
 }
 
 /** Resolve an agentType name to its definition, or undefined if not registered. */
