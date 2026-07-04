@@ -39,17 +39,17 @@ export function loadModelTierConfig(configPath?: string): ModelTierConfig | null
   const path = configPath ?? getModelTierConfigPath();
   if (!existsSync(path)) return null;
   try {
-    const raw = readFileSync(path, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    if (!parsed.tiers || typeof parsed.tiers !== "object") return null;
-    for (const val of Object.values(parsed.tiers)) {
-      if (typeof val !== "string") return null;
-    }
-    return parsed as ModelTierConfig;
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    return isModelTierConfig(parsed) ? parsed : null;
   } catch {
     return null;
   }
+}
+
+function isModelTierConfig(value: unknown): value is ModelTierConfig {
+  if (!value || typeof value !== "object") return false;
+  const tiers = (value as Partial<ModelTierConfig>).tiers;
+  return Boolean(tiers && typeof tiers === "object" && Object.values(tiers).every((val) => typeof val === "string"));
 }
 
 /** Save a model tier config to disk. Creates parent directories if needed. */

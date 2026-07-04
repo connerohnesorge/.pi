@@ -25,8 +25,14 @@ import { createStructuredOutputTool, type StructuredOutputCapture } from "./stru
  * real gate). Returns the raw JSON string, or undefined when none is found.
  */
 function findJsonBlock(text: string): string | undefined {
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence?.[1]) return fence[1].trim();
+  return fencedJsonBlock(text) ?? balancedJsonBlock(text);
+}
+
+function fencedJsonBlock(text: string): string | undefined {
+  return text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+}
+
+function balancedJsonBlock(text: string): string | undefined {
   const start = text.search(/[{[]/);
   if (start === -1) return undefined;
   const open = text[start];
@@ -118,23 +124,40 @@ export async function resolveStructuredOutput<T>(
   lastText: (messages: unknown[]) => string,
 ): Promise<T> {
   if (capture.called) return capture.value as T;
+  await promptForStructuredOutput(session, capture, options);
+  if (capture.called) return capture.value as T;
+  return recoverStructuredOutput(session, schema, options, lastText);
+}
 
+async function promptForStructuredOutput<T>(
+  session: StructuredSession,
+  capture: StructuredOutputCapture<T>,
+  options: { maxSchemaRetries?: number; signal?: AbortSignal },
+): Promise<void> {
   const maxRetries = Math.max(0, options.maxSchemaRetries ?? 2);
-  // Restrict to the schema tool so the only useful next action is calling it
-  // (takes effect on the next prompt turn). Best-effort.
-  try {
-    session.setActiveToolsByName?.(["structured_output"]);
-  } catch {
-    // ignore — the re-prompt alone still drives most models to comply
-  }
+  restrictToStructuredOutputTool(session);
   for (let attempt = 0; attempt < maxRetries && !capture.called; attempt++) {
     if (options.signal?.aborted) throw new Error("Subagent was aborted");
     await session.prompt(
       "You did not call the structured_output tool. Call structured_output now as your only action, with the required fields filled in. Do not write a prose answer.",
     );
   }
-  if (capture.called) return capture.value as T;
+}
 
+function restrictToStructuredOutputTool(session: StructuredSession): void {
+  try {
+    session.setActiveToolsByName?.(["structured_output"]);
+  } catch {
+    // ignore — the re-prompt alone still drives most models to comply
+  }
+}
+
+function recoverStructuredOutput<T>(
+  session: StructuredSession,
+  schema: TSchema,
+  options: { label?: string },
+  lastText: (messages: unknown[]) => string,
+): T {
   const extracted = extractValidated<T>(lastText(session.messages), schema);
   if (extracted !== undefined) {
     console.warn(
@@ -146,11 +169,14 @@ export async function resolveStructuredOutput<T>(
   // A repair re-prompt can itself hit the provider limit. Surface that as the real
   // (recoverable) cause instead of the misleading non-recoverable SCHEMA_NONCOMPLIANCE.
   throwIfProviderLimit(session.messages, options.label);
+  throw schemaNoncomplianceError(options.label);
+}
 
-  throw new WorkflowError(
+function schemaNoncomplianceError(label?: string): WorkflowError {
+  return new WorkflowError(
     "Subagent did not produce valid structured_output after repair attempts",
     WorkflowErrorCode.SCHEMA_NONCOMPLIANCE,
-    { recoverable: false, agentLabel: options.label },
+    { recoverable: false, agentLabel: label },
   );
 }
 
