@@ -213,6 +213,27 @@ test(
 );
 
 test(
+  "runSync persists workflow agent session files",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        async run(_prompt: string, options?: any) {
+          assert.match(options?.sessionDir ?? "", /agent-sessions/);
+          options?.onSession?.({ sessionFile: "/tmp/workflow-agent.jsonl", sessionId: "s1" });
+          return "done";
+        },
+      },
+    });
+
+    await manager.runSync(oneAgentScript);
+
+    const agent = manager.listRuns()[0]?.agents[0];
+    assert.equal(agent?.sessionFile, "/tmp/workflow-agent.jsonl");
+  }),
+);
+
+test(
   "each agent's model is recorded for /workflows: explicit opts.model, else the main model",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent(), mainModel: "anthropic/claude-opus-4-8" });

@@ -25,6 +25,8 @@ export interface PersistedAgentState {
   endedAt?: string;
   /** The model this agent ran on (provider/id), when known. */
   model?: string;
+  /** Persisted Pi session file for reopening this workflow agent. */
+  sessionFile?: string;
 }
 
 export interface PersistedRunState {
@@ -58,7 +60,7 @@ export interface PersistedRunState {
     cacheWrite?: number;
   };
   /** Cached agent results for resume, keyed by deterministic call index. */
-  journal?: Array<{ index: number; hash: string; result: unknown }>;
+  journal?: Array<{ index: number; hash: string; result: unknown; sessionFile?: string }>;
 }
 
 export interface RunPersistence {

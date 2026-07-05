@@ -47,6 +47,8 @@ export interface JournalEntry {
    * which agent finished first. Absent on older journal entries.
    */
   storeDelta?: Record<string, unknown>;
+  /** Persisted Pi session file for reopening this workflow agent. */
+  sessionFile?: string;
 }
 
 /**
@@ -82,6 +84,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   maxAgents?: number;
   /** Timeout per agent in milliseconds. null/omitted means no hard timeout. */
   agentTimeoutMs?: number | null;
+  /** Directory where workflow subagent Pi sessions are persisted. */
+  agentSessionDir?: string;
   /** Whether to persist logs to disk. Default: true */
   persistLogs?: boolean;
   /** Run ID for persistence. Auto-generated if not provided. */
@@ -111,6 +115,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; prompt: string; model?: string }) => void;
+  onAgentSession?: (event: { label: string; phase?: string; sessionFile?: string; sessionId?: string }) => void;
   onAgentEnd?: (event: {
     label: string;
     phase?: string;
@@ -118,6 +123,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     tokens?: number;
     worktree?: string;
     model?: string;
+    sessionFile?: string;
     error?: string;
     errorCode?: WorkflowErrorCode;
     recoverable?: boolean;
@@ -1058,7 +1064,14 @@ function replayCacheHit(
   cached: JournalEntry,
 ): { replayed: true; result: unknown } {
   args.options.onAgentStart?.({ label: args.label, phase: args.assignedPhase, prompt: args.prompt, model: args.displayModel });
-  args.options.onAgentEnd?.({ label: args.label, phase: args.assignedPhase, result: cached.result, tokens: 0, model: args.displayModel });
+  args.options.onAgentEnd?.({
+    label: args.label,
+    phase: args.assignedPhase,
+    result: cached.result,
+    tokens: 0,
+    model: args.displayModel,
+    sessionFile: cached.sessionFile,
+  });
   if (cached.storeDelta) args.store.applyDelta(cached.storeDelta);
   return { replayed: true, result: cached.result };
 }
@@ -1089,6 +1102,7 @@ interface LiveAgentRunState {
   runCwd: string | undefined;
   usage: AgentUsage | undefined;
   displayModel: string | undefined;
+  sessionFile: string | undefined;
 }
 
 async function prepareLiveAgentRun(call: LiveAgentCallContext): Promise<LiveAgentRunState> {
@@ -1101,6 +1115,7 @@ async function prepareLiveAgentRun(call: LiveAgentCallContext): Promise<LiveAgen
     runCwd: worktree?.isolated ? worktree.cwd : undefined,
     usage: undefined,
     displayModel: call.displayModel,
+    sessionFile: undefined,
   };
 }
 
@@ -1162,6 +1177,7 @@ async function runAgentAttempt(call: LiveAgentCallContext, run: LiveAgentRunStat
       model: call.modelSpec,
       tier: call.agentOptions.tier,
       modelRegistry: call.options.modelRegistry,
+      sessionDir: call.options.agentSessionDir,
       toolNames: call.agentDef?.tools,
       disallowedToolNames: call.agentDef?.disallowedTools,
       systemTools: createAgentStoreTools(call.store, call.deltaKey),
@@ -1177,6 +1193,10 @@ async function runAgentAttempt(call: LiveAgentCallContext, run: LiveAgentRunStat
       },
       onHistory: (history: AgentHistoryEntry[]) => {
         call.options.onAgentHistory?.({ label: call.label, phase: call.assignedPhase, history });
+      },
+      onSession: (session) => {
+        run.sessionFile = session.sessionFile;
+        call.options.onAgentSession?.({ label: call.label, phase: call.assignedPhase, ...session });
       },
     }),
     run.timeout,
@@ -1201,6 +1221,7 @@ function recordAgentSuccess(call: LiveAgentCallContext, run: LiveAgentRunState, 
     hash: call.callHash,
     result,
     storeDelta: call.store.commitDelta(call.deltaKey),
+    sessionFile: run.sessionFile,
   });
   call.options.onAgentEnd?.({
     label: call.label,
@@ -1209,6 +1230,7 @@ function recordAgentSuccess(call: LiveAgentCallContext, run: LiveAgentRunState, 
     tokens,
     worktree: run.runCwd,
     model: run.displayModel,
+    sessionFile: run.sessionFile,
   });
 }
 
@@ -1248,6 +1270,7 @@ function recordAgentFailure(call: LiveAgentCallContext, run: LiveAgentRunState, 
     tokens,
     worktree: run.runCwd,
     model: run.displayModel,
+    sessionFile: run.sessionFile,
     error: error.message,
     errorCode: error.code,
     recoverable: error.recoverable,

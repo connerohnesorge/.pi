@@ -120,6 +120,32 @@ return a`,
   assert.equal(journal.length, 1, "only the final success is journaled");
 });
 
+test("runWorkflow forwards agent session files into events and journal", async () => {
+  const events: string[] = [];
+  const journal: JournalEntry[] = [];
+  await runWorkflow(
+    `export const meta = { name: 'session_file', description: 'session file' }
+const a = await agent('work', { label: 'a' })
+return a`,
+    {
+      agentSessionDir: "/tmp/workflow-agent-sessions",
+      agent: {
+        async run(_prompt: string, options?: any) {
+          assert.equal(options?.sessionDir, "/tmp/workflow-agent-sessions");
+          options?.onSession?.({ sessionFile: "/tmp/a.jsonl", sessionId: "s1" });
+          return "ok";
+        },
+      },
+      persistLogs: false,
+      onAgentSession: (event) => events.push(event.sessionFile ?? ""),
+      onAgentJournal: (entry) => journal.push(entry),
+    },
+  );
+
+  assert.deepEqual(events, ["/tmp/a.jsonl"]);
+  assert.equal(journal[0]?.sessionFile, "/tmp/a.jsonl");
+});
+
 test("runWorkflow returns null when recoverable retries are exhausted", async () => {
   let calls = 0;
   const logs: string[] = [];

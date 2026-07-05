@@ -18,6 +18,7 @@ export interface WorkflowProjectPaths {
   key: string;
   rootDir: string;
   runsDir: string;
+  agentSessionsDir: string;
   savedDir: string;
   settingsPath: string;
   legacyRunsDir: string;
@@ -46,6 +47,7 @@ export function workflowProjectPaths(cwd: string): WorkflowProjectPaths {
     key,
     rootDir,
     runsDir: join(rootDir, "runs"),
+    agentSessionsDir: join(rootDir, "agent-sessions"),
     savedDir: join(rootDir, "saved"),
     settingsPath: join(rootDir, "settings.json"),
     legacyRunsDir: resolve(cwd, WORKFLOW_RUNS_DIR),

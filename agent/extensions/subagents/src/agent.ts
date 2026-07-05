@@ -230,6 +230,10 @@ export interface WorkflowAgentOptions {
    * that are only available via extension registration.
    */
   modelRegistry?: ModelRegistry;
+  /** Directory for this subagent's persisted Pi session. Omit for the workflow default. */
+  sessionDir?: string;
+  /** Called after the Pi session exists so workflow state can link back to it. */
+  onSession?: (session: { sessionFile?: string; sessionId?: string }) => void;
 }
 
 /**
@@ -424,6 +428,7 @@ export class WorkflowAgent {
       ...(resolvedModel ? { model: resolvedModel } : {}),
       ...(resolvedThinkingLevel ? { thinkingLevel: resolvedThinkingLevel } : {}),
     });
+    this.emitSession(session, options);
 
     const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
     const cleanup = [
@@ -447,10 +452,11 @@ export class WorkflowAgent {
     capture: StructuredOutputCapture<any>,
   ): CreateAgentSessionOptions {
     const agentDir = getAgentDir();
+    const { sessionManager, ...sessionOptions } = this.sessionOptions;
     return {
       cwd: runCwd,
       agentDir,
-      sessionManager: SessionManager.inMemory(),
+      sessionManager: sessionManager ?? SessionManager.create(runCwd, options.sessionDir),
       // Use real SettingsManager to inherit user's default provider/model settings.
       // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
       // would fall back to the first available model (e.g. openai-codex) which may
@@ -460,8 +466,21 @@ export class WorkflowAgent {
       // Per-run modelRegistry wins over the constructor's shared registry, same
       // precedence as resolveModel() above.
       ...(options.modelRegistry || this.sharedRegistry ? { modelRegistry: options.modelRegistry ?? this.sharedRegistry } : {}),
-      ...this.sessionOptions,
+      ...sessionOptions,
     };
+  }
+
+  private emitSession<TSchemaDef extends TSchema | undefined>(
+    session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+    options: AgentRunOptions<TSchemaDef>,
+  ): void {
+    try {
+      const stats = session.getSessionStats();
+      options.onSession?.({ sessionFile: stats.sessionFile, sessionId: stats.sessionId });
+      if (options.label) void session.setSessionName?.(`workflow: ${options.label}`);
+    } catch {
+      // Session linking is diagnostic/navigation state; never mask the agent run.
+    }
   }
 
   private buildCustomTools<TSchemaDef extends TSchema | undefined>(

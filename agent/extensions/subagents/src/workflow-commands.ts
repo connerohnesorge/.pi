@@ -231,6 +231,7 @@ async function handleListCommand(
     await openWorkflowNavigator(pi, manager, ctx.ui, {
       storage: opts.storage,
       cwd: opts.cwd,
+      openAgentSession: (sessionFile) => ctx.switchSession(sessionFile),
     });
     return;
   }
@@ -238,6 +239,7 @@ async function handleListCommand(
     await openWorkflowNavigator(pi, manager, ctx.ui, {
       storage: opts.storage,
       cwd: opts.cwd,
+      openAgentSession: (sessionFile) => ctx.switchSession(sessionFile),
     });
     return;
   }
@@ -373,22 +375,33 @@ function saveWorkflow(
   }
 }
 
-/** Register the `/workflows` command against the shared manager. Idempotent. */
+/** Register the `/workflows` commands against the shared manager. Idempotent. */
 export function registerWorkflowCommands(
   pi: ExtensionAPI,
   manager: WorkflowManager,
   opts: WorkflowCommandOptions = {},
 ): void {
+  let registered = new Set<string>();
   try {
-    const taken = (pi.getCommands?.() ?? []).some(
-      (c: { name: string }) => c.name === "workflows",
-    );
-    if (taken) return;
+    registered = new Set((pi.getCommands?.() ?? []).map((c: { name: string }) => c.name));
+    if (registered.has("workflows")) return;
   } catch {
     // getCommands may be unavailable in some hosts; fall through and try to register.
   }
 
-  pi.registerCommand("workflows", {
+  if (!registered.has("workflow")) pi.registerCommand("workflow", {
+    description: "Open the workflow navigator.",
+    async handler(_args: string, ctx: ExtensionCommandContext) {
+      if (!ctx.hasUI) return pi.sendMessage({ customType: "workflows", content: USAGE, display: true });
+      return openWorkflowNavigator(pi, manager, ctx.ui, {
+        storage: opts.storage,
+        cwd: opts.cwd,
+        openAgentSession: (sessionFile) => ctx.switchSession(sessionFile),
+      });
+    },
+  });
+
+  if (!registered.has("workflows")) pi.registerCommand("workflows", {
     description:
       "Manage workflow runs — no args (opens navigator) | run <prompt> | status/stop/pause/resume <id> | rm <id> | save <name> [runId]",
     async handler(args: string, ctx: ExtensionCommandContext) {
@@ -427,4 +440,5 @@ export function registerWorkflowCommands(
       }
     },
   });
+
 }

@@ -24,6 +24,7 @@ function fakeManager(): Pick<WorkflowManager, "listRuns" | "getRun"> {
         resultPreview: "found 2",
         tokens: 100,
         model: "fast-llm/model",
+        sessionFile: "/tmp/scan-a.jsonl",
       },
       {
         id: 2,
@@ -386,7 +387,7 @@ test("keyToAction maps keys per view and itemKind", () => {
   assert.deepEqual(keyToAction("up", "runs"), { type: "move", delta: -1 });
   assert.deepEqual(keyToAction("j", "agents"), { type: "move", delta: 1 });
   assert.deepEqual(keyToAction("enter", "runs"), { type: "drill" });
-  assert.deepEqual(keyToAction("enter", "detail"), { type: "none" });
+  assert.deepEqual(keyToAction("enter", "detail"), { type: "openSession" });
   assert.deepEqual(keyToAction("right", "runs"), { type: "drill" });
   assert.deepEqual(keyToAction("escape", "phases"), { type: "back" });
   assert.deepEqual(keyToAction("left", "agents"), { type: "back" });
@@ -395,6 +396,7 @@ test("keyToAction maps keys per view and itemKind", () => {
   assert.deepEqual(keyToAction("unknown", "runs"), { type: "none" });
   assert.deepEqual(keyToAction(undefined, "runs"), { type: "none" });
   assert.deepEqual(keyToAction("return", "agents"), { type: "drill" });
+  assert.deepEqual(keyToAction("o", "agents"), { type: "openSession" });
 
   // 'x' = stop on runs, deleteSaved on saved items
   assert.deepEqual(keyToAction("x", "runs", "run"), { type: "stop" });
@@ -449,6 +451,8 @@ test("renderNavigator shows agent detail view", () => {
     /found 2/,
     /Status:/,
     /Model:/,
+    /Session:/,
+    /scan-a\.jsonl/,
     /model/, // shortModel strips provider prefix
     /j\/k scroll/, // detail view footer
   ]);

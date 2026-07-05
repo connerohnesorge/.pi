@@ -13,6 +13,7 @@ import {
 import { WorkflowError, WorkflowErrorCode } from "./errors.ts";
 import { parseWorkflowScript, type WorkflowMeta, type WorkflowRunResult } from "./workflow.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
+import { reviewWorkflowScript } from "./workflow-review.ts";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.ts";
 import { loadWorkflowSettings } from "./workflow-settings.ts";
 
@@ -233,10 +234,29 @@ async function executeWorkflowTool(
   ctx: unknown,
   manager: WorkflowManager,
 ): Promise<unknown> {
-  const script = normalizeWorkflowScript(params.script);
-  const parsed = parseWorkflowScript(script);
+  let script = normalizeWorkflowScript(params.script);
+  let parsed = parseWorkflowScript(script);
+  const reviewed = await maybeReviewWorkflow(ctx, script);
+  if (reviewed) {
+    if (!reviewed.approved) return workflowCancelledResult();
+    script = reviewed.script;
+    parsed = { meta: reviewed.meta, body: "" };
+  }
   if (params.background ?? true) return startBackgroundWorkflow(manager, script, params, parsed.meta.name);
   return runForegroundWorkflow(manager, script, params, signal, onUpdate, ctx, parsed.meta);
+}
+
+async function maybeReviewWorkflow(ctx: unknown, script: string): Promise<Awaited<ReturnType<typeof reviewWorkflowScript>> | undefined> {
+  const uiCtx = ctx as { hasUI?: boolean; ui?: unknown } | undefined;
+  if (!uiCtx?.hasUI || !uiCtx.ui) return undefined;
+  return reviewWorkflowScript(uiCtx.ui as Parameters<typeof reviewWorkflowScript>[0], script);
+}
+
+function workflowCancelledResult(): unknown {
+  return {
+    content: [{ type: "text", text: "Workflow was not run: review cancelled." }],
+    isError: true,
+  };
 }
 
 function startBackgroundWorkflow(

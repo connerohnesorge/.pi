@@ -20,6 +20,8 @@ export interface WorkflowAgentSnapshot {
   tokens?: number;
   /** The model this agent ran on (provider/id), when known. */
   model?: string;
+  /** Persisted Pi session file for reopening this workflow agent. */
+  sessionFile?: string;
 }
 
 export interface WorkflowSnapshot {

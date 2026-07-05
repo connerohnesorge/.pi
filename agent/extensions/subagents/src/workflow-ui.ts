@@ -68,6 +68,7 @@ interface AgentRow {
   phase?: string;
   tokens?: number;
   model?: string;
+  sessionFile?: string;
 }
 
 export interface WorkflowPhaseGroup<T extends { phase?: string }> {
@@ -202,7 +203,15 @@ export class NavigatorModel {
     if (!snap) return [];
     return snap.agents
       .filter((a) => (a.phase ?? "(no phase)") === phase)
-      .map((a) => ({ id: a.id, label: a.label, status: a.status, phase: a.phase, tokens: a.tokens, model: a.model }));
+      .map((a) => ({
+        id: a.id,
+        label: a.label,
+        status: a.status,
+        phase: a.phase,
+        tokens: a.tokens,
+        model: a.model,
+        sessionFile: a.sessionFile,
+      }));
   }
 
   agentDetail(runId: string, agentId: number): WorkflowAgentSnapshot | undefined {
@@ -238,6 +247,7 @@ function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
       recoverable: a.recoverable,
       history: a.history,
       model: a.model,
+      sessionFile: a.sessionFile,
     })),
     agentCount: p.agents.length,
     runningCount: p.agents.filter((a) => a.status === "running").length,
@@ -913,6 +923,7 @@ function agentMetaLines(a: WorkflowAgentSnapshot, theme: ThemeLike): string[] {
   return [
     dim("Status: ") + (a.status ?? ""),
     ...(a.model ? [dim("Model: ") + (shortModel(a.model) ?? "")] : []),
+    ...(a.sessionFile ? [dim("Session: ") + a.sessionFile] : []),
     ...(a.error ? [dim("Error: ") + a.error] : []),
     ...(a.errorCode ? [`${dim("Error code: ")}${a.errorCode}${a.recoverable ? " (recoverable)" : ""}`] : []),
   ];
@@ -1048,10 +1059,13 @@ function footerHint(state: NavigatorState, model: NavigatorModel, theme: ThemeLi
   const parts: string[] = [];
   switch (state.kind) {
     case "detail":
-      parts.push("j/k scroll", "esc back");
+      parts.push("j/k scroll", "o open session", "esc back");
       break;
     case "savedDetail":
       parts.push("j/k scroll", "esc back", "x delete");
+      break;
+    case "agents":
+      parts.push("↑/↓ select", "enter open", "o open session", "esc back", "q quit");
       break;
     case "runs": {
       const itemKind = model.saved().length > 0 ? state.itemKindAt(model, state.cursor) : "run";
@@ -1084,6 +1098,7 @@ export type NavAction =
   | { type: "stop" }
   | { type: "restart" }
   | { type: "save" }
+  | { type: "openSession" }
   | { type: "deleteSaved" }
   | { type: "none" };
 
@@ -1104,11 +1119,12 @@ const KEY_ACTIONS: Record<string, NavAction> = {
   x: { type: "stop" },
   r: { type: "restart" },
   s: { type: "save" },
+  o: { type: "openSession" },
 };
 const KEY_KIND_ACTIONS: Record<string, NavAction> = {
-  "enter|detail": NONE_ACTION,
-  "return|detail": NONE_ACTION,
-  "right|detail": NONE_ACTION,
+  "enter|detail": { type: "openSession" },
+  "return|detail": { type: "openSession" },
+  "right|detail": { type: "openSession" },
   "enter|savedDetail": NONE_ACTION,
   "return|savedDetail": NONE_ACTION,
   "right|savedDetail": NONE_ACTION,
@@ -1138,6 +1154,7 @@ export interface NavigatorOptions {
   cwd?: string;
   /** Overlay anchor position: "center" (default) or "right-center" for sidebar. */
   anchor?: OverlayAnchor;
+  openAgentSession?: (sessionFile: string) => Promise<void> | void;
 }
 
 function deleteSelectedSaved(state: NavigatorState, model: NavigatorModel, ui: ExtensionUIContext): void {
@@ -1219,6 +1236,31 @@ function saveRun(
   ui.notify(`Saved /${name}`, "info");
 }
 
+function selectedAgent(state: NavigatorState, model: NavigatorModel): WorkflowAgentSnapshot | undefined {
+  if (state.kind === "detail" && state.runId && state.agentId != null) return model.agentDetail(state.runId, state.agentId);
+  if (state.kind !== "agents" || !state.runId || !state.phase) return undefined;
+  const row = model.agents(state.runId, state.phase)[state.cursor];
+  return row ? model.agentDetail(state.runId, row.id) : undefined;
+}
+
+function openSelectedAgentSession(
+  state: NavigatorState,
+  model: NavigatorModel,
+  ui: ExtensionUIContext,
+  opts: NavigatorOptions,
+  close: () => boolean,
+): boolean {
+  const agent = selectedAgent(state, model);
+  if (!agent) return true;
+  if (!agent.sessionFile || !opts.openAgentSession) {
+    ui.notify("No persisted session for this workflow agent.", "warning");
+    return true;
+  }
+  close();
+  void opts.openAgentSession(agent.sessionFile);
+  return true;
+}
+
 /**
  * Open the interactive `/workflows` navigator as a focused overlay. Resolves when
  * the user closes it (esc at the top level, or `q`).
@@ -1235,7 +1277,7 @@ export function openWorkflowNavigator(
   return ui.custom<void>(
     (tui: TUI, theme: Theme, _keybindings, done: (r: undefined) => void) => {
       const rerender = () => tui.requestRender();
-      const events = ["agentStart", "agentEnd", "phase", "log", "complete", "error", "stopped", "paused", "resumed"];
+      const events = ["agentStart", "agentSession", "agentEnd", "phase", "log", "complete", "error", "stopped", "paused", "resumed"];
       const onEvent = () => rerender();
       for (const ev of events) manager.on(ev, onEvent);
       const cleanup = () => {
@@ -1257,6 +1299,7 @@ export function openWorkflowNavigator(
         stop: () => pauseOrStopRun(manager, state, model, ui, "stop"),
         restart: () => restartRun(manager, state, model, ui),
         save: () => saveRun(pi, manager, state, model, ui, opts),
+        openSession: () => openSelectedAgentSession(state, model, ui, opts, close),
         none: () => true,
       };
       const act = (data: string) => {

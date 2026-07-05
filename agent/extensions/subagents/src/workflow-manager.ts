@@ -16,6 +16,7 @@ import {
   type RunStatus,
 } from "./run-persistence.ts";
 import { type JournalEntry, parseWorkflowScript, runWorkflow, type WorkflowMeta, type WorkflowRunResult } from "./workflow.ts";
+import { workflowProjectPaths } from "./workflow-paths.ts";
 
 export interface ManagedRun {
   runId: string;
@@ -320,6 +321,7 @@ export class WorkflowManager extends EventEmitter {
       tokenBudget: exec.tokenBudget,
       confirm: exec.confirm,
       loadSavedWorkflow: this.loadSavedWorkflow,
+      agentSessionDir: workflowProjectPaths(this.cwd).agentSessionsDir,
       resumeJournal,
       resumeFromRunId: resumeJournal ? managed.runId : undefined,
     };
@@ -367,8 +369,16 @@ export class WorkflowManager extends EventEmitter {
           agent.recoverable = event.recoverable;
           agent.tokens = event.tokens;
           if (event.model) agent.model = event.model;
+          if (event.sessionFile) agent.sessionFile = event.sessionFile;
         }
         this.emit("agentEnd", { runId: managed.runId, ...event });
+        progress();
+      },
+      onAgentSession: (event) => {
+        const agent = this.latestRunningAgent(managed, event.label);
+        if (agent) agent.sessionFile = event.sessionFile;
+        this.emit("agentSession", { runId: managed.runId, ...event });
+        this.persistRun(managed);
         progress();
       },
       onAgentHistory: (event) => {
