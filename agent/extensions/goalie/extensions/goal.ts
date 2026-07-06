@@ -1,5 +1,6 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { defineTool, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, Text } from "@earendil-works/pi-tui";
@@ -96,6 +97,22 @@ import {
 	evaluateGoalToolCall,
 	shouldQueueContinuationAtTurnEnd,
 } from "./goal-tool-policy.ts";
+import {
+	GOAL_FINALLY_CUSTOM_TYPE,
+	GOAL_FINALLY_USAGE,
+	clearGoalFinallyItems,
+	dequeueGoalFinallyItem,
+	formatGoalFinallyCleared,
+	formatGoalFinallyQueued,
+	formatGoalFinallyStatus,
+	goalFinallyStatusKey,
+	parseGoalFinallyCommand,
+	previewGoalFinallyText,
+	reconstructGoalFinallyItems,
+	replaceGoalFinallyItem,
+	snapshotGoalFinallyItems,
+	type GoalFinallyItem,
+} from "./goal-finally.ts";
 
 import {
 	abortGoalCommandMessage,
@@ -372,6 +389,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	let auditProgress: GoalAuditorProgress | null = null;
 	let auditAnimationTimer: ReturnType<typeof setInterval> | null = null;
 	let auditAbortController: AbortController | null = null;
+	let goalFinallyItems: GoalFinallyItem[] = [];
 	/**
 	 * When non-null, goalie tweak drafting is in progress for this goal id and the
 	 * agent is allowed to call apply_goal_tweak. Cleared after the tweak is applied
@@ -411,6 +429,35 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				tweakDraftingFor,
 			}));
 		} catch {}
+	}
+
+	function syncGoalFinallyStatus(ctx: ExtensionContext): void {
+		ctx.ui.setStatus("finally-goalie", goalFinallyStatusKey(goalFinallyItems));
+	}
+
+	function persistGoalFinally(ctx: ExtensionContext): void {
+		pi.appendEntry(GOAL_FINALLY_CUSTOM_TYPE, snapshotGoalFinallyItems(goalFinallyItems, Date.now()));
+		syncGoalFinallyStatus(ctx);
+	}
+
+	function reconstructGoalFinally(ctx: ExtensionContext): void {
+		goalFinallyItems = reconstructGoalFinallyItems(ctx.sessionManager.getBranch());
+		syncGoalFinallyStatus(ctx);
+	}
+
+	function clearGoalFinallyForGoal(ctx: ExtensionContext, goalId: string | null | undefined): void {
+		if (!goalId || !goalFinallyItems.some((item) => item.goalId === goalId)) return;
+		goalFinallyItems = clearGoalFinallyItems(goalFinallyItems, goalId);
+		persistGoalFinally(ctx);
+	}
+
+	function sendGoalFinallyIfQueued(ctx: ExtensionContext, goalId: string): void {
+		const result = dequeueGoalFinallyItem(goalFinallyItems, goalId);
+		if (!result.item) return;
+		goalFinallyItems = result.items;
+		persistGoalFinally(ctx);
+		ctx.ui.notify(`Sending goalie final command: ${previewGoalFinallyText(result.item.text)}`, "info");
+		pi.sendUserMessage(result.item.text, { deliverAs: "followUp" });
 	}
 
 	function stopAuditAnimation(): void {
@@ -1392,6 +1439,45 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		updateUI(ctx);
 	}
 
+	function handleGoalFinallyStatus(ctx: ExtensionContext): void {
+		syncGoalFinallyStatus(ctx);
+		ctx.ui.notify(formatGoalFinallyStatus(goalFinallyItems, focusedGoalId), "info");
+	}
+
+	function handleGoalFinallyClear(ctx: ExtensionContext): void {
+		const count = goalFinallyItems.length;
+		goalFinallyItems = clearGoalFinallyItems(goalFinallyItems);
+		persistGoalFinally(ctx);
+		ctx.ui.notify(formatGoalFinallyCleared(count), count > 0 ? "info" : "warning");
+	}
+
+	function handleGoalFinallyEnqueue(ctx: ExtensionContext, text: string): void {
+		reconcileFocusedGoalFromDisk(ctx);
+		const goal = state.goal;
+		if (!goal || (goal.status !== "active" && goal.status !== "paused")) {
+			ctx.ui.notify("/finally-goalie requires a focused active or paused goal.", "warning");
+			return;
+		}
+		goalFinallyItems = replaceGoalFinallyItem(goalFinallyItems, goal.id, text, randomUUID(), Date.now());
+		persistGoalFinally(ctx);
+		const queued = goalFinallyItems.find((item) => item.goalId === goal.id);
+		if (queued) ctx.ui.notify(formatGoalFinallyQueued(queued), "info");
+	}
+
+	function handleGoalFinallyCommand(rawArgs: string, ctx: ExtensionContext): void {
+		let command;
+		try {
+			command = parseGoalFinallyCommand(rawArgs);
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : GOAL_FINALLY_USAGE, "error");
+			return;
+		}
+
+		if (command.kind === "status") return handleGoalFinallyStatus(ctx);
+		if (command.kind === "clear") return handleGoalFinallyClear(ctx);
+		handleGoalFinallyEnqueue(ctx, command.text);
+	}
+
 	async function handleGoalPause(ctx: ExtensionContext): Promise<void> {
 		reconcileFocusedGoalFromDisk(ctx);
 		if (!state.goal) {
@@ -1569,10 +1655,12 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const selected = await chooseOpenGoal(ctx, "Clear which open goal?");
 			if (!selected) return;
 		}
+		const clearedGoalId = state.goal?.id ?? null;
 		const archived = archiveCurrentGoal(ctx, "user");
 		const didArchive = !!archived;
 		resetGetGoalNudgeState(state.goal?.id);
 		setGoal(null, ctx, true, "cleared");
+		clearGoalFinallyForGoal(ctx, clearedGoalId);
 		// Phase 5 D: also abort any in-flight drafting so the agent's next turn
 		// doesn't try to propose into a cleared slot.
 		const wasDrafting = confirmationIntent !== null;
@@ -1596,10 +1684,12 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const selected = await chooseOpenGoal(ctx, "Abort which open goal?");
 			if (!selected) return;
 		}
+		const abortedGoalId = state.goal?.id ?? null;
 		const archived = archiveCurrentGoal(ctx, "user");
 		const didArchive = !!archived;
 		resetGetGoalNudgeState(state.goal?.id);
 		setGoal(null, ctx, true, "aborted");
+		clearGoalFinallyForGoal(ctx, abortedGoalId);
 		const wasDrafting = confirmationIntent !== null;
 		confirmationIntent = null;
 		syncGoalTools();
@@ -1626,6 +1716,24 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		description: "Show focused goalie status.",
 		handler: async (_rawArgs, ctx) => {
 			await showGoalStatus(ctx);
+		},
+	});
+	pi.registerCommand("finally-goalie", {
+		description: "Queue a raw pi input to run after the focused goalie completes.",
+		getArgumentCompletions: (prefix) => {
+			const value = prefix.trimStart();
+			const tokens = value.split(/\s+/).filter(Boolean);
+			const trailingSpace = /\s$/.test(value);
+			const firstPrefix = trailingSpace ? "" : tokens[0] ?? "";
+			const options = ["--status", "--clear", "--"];
+			if (tokens.length === 0 || (tokens.length === 1 && !trailingSpace)) {
+				const filtered = options.filter((option) => option.startsWith(firstPrefix));
+				return filtered.length > 0 ? filtered.map((value) => ({ value, label: value })) : null;
+			}
+			return null;
+		},
+		handler: async (rawArgs, ctx) => {
+			handleGoalFinallyCommand(rawArgs, ctx);
 		},
 	});
 	pi.registerCommand("goalie-list", {
@@ -2308,6 +2416,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const archived = archiveCurrentGoal(ctx, "agent");
 			resetGetGoalNudgeState(abortedGoalId);
 			setGoal(null, ctx, true, "aborted");
+			clearGoalFinallyForGoal(ctx, abortedGoalId);
 			turnStoppedFor = abortedGoalId;
 
 			const archiveLine = archived?.archivedPath ? `\nArchive: ${archived.archivedPath}` : "";
@@ -2503,7 +2612,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		// Archive a goal that was marked complete by update_goal but whose archival
 		// was deferred so the agent could see/recognize the audit result first.
 		// This runs after the agent's turn ends — the agent has now seen the result.
-		completionRuntime.archiveCompletedGoalAtTurnEnd(ctx);
+		const archivedCompletion = completionRuntime.archiveCompletedGoalAtTurnEnd(ctx);
+		if (archivedCompletion) sendGoalFinallyIfQueued(ctx, archivedCompletion.completedGoal.id);
 
 		// If the assistant ended a turn without queuing more tool calls, push a continuation right away.
 		// #4: only queue if some real work was done this turn — otherwise the model is
@@ -2528,6 +2638,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		loadState(ctx);
+		reconstructGoalFinally(ctx);
 		syncTerminalInputPause(ctx);
 		if (event.reason === "resume" && !state.goal && openGoals().length > 1 && ctx.hasUI) {
 			await focusGoalCommand(ctx);
@@ -2562,6 +2673,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_tree", async (_event, ctx) => {
 		loadState(ctx);
+		reconstructGoalFinally(ctx);
 		syncTerminalInputPause(ctx);
 		beginAccounting();
 		queueContinuation(ctx, true);

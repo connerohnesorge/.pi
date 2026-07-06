@@ -44,6 +44,7 @@ export function createMockPiHarness(): MockPiHarness {
 		},
 		registerMessageRenderer: () => {},
 		sendMessage: (data?: unknown, options?: unknown) => { apiCalls.push({ type: "sendMessage", data: { data, options } }); },
+		sendUserMessage: (text: string, options?: unknown) => { apiCalls.push({ type: "sendUserMessage", data: { text, options } }); },
 		getActiveTools: () => activeTools,
 		setActiveTools: (tools: string[]) => { activeTools = [...tools]; },
 		hasUI: false,
