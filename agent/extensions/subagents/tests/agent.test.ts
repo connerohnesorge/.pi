@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.ts";
 import { listAvailableModelSpecs, resolveAgentModelSpec, WorkflowAgent } from "../src/agent.ts";
@@ -204,6 +207,18 @@ test("WorkflowAgent.getRegistry: per-run registry wins, then constructor's share
 
   const bareAgent = new WorkflowAgent({ cwd: "/tmp" });
   assert.doesNotThrow(() => (bareAgent as any).getRegistry());
+});
+
+test("WorkflowAgent stamps parentSession onto created subagent sessions", () => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-parent-"));
+  const cwd = join(root, "cwd");
+  mkdirSync(cwd, { recursive: true });
+  const parentSession = join(root, "parent.jsonl");
+  const sessionManager = (new WorkflowAgent({ cwd }) as any).createSessionManager(cwd, {
+    sessionDir: join(root, "sessions"),
+    parentSessionFile: parentSession,
+  });
+  assert.equal(sessionManager.getHeader()?.parentSession, parentSession);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

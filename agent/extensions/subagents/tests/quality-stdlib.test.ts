@@ -93,6 +93,29 @@ return await completenessCheck({ task: 1 }, [{ done: true }])`;
   assert.deepEqual([...res.result.missing], ["x"]);
 });
 
+test("quality helpers tag their internal agents with tiers", async () => {
+  const seen: Array<{ label?: string; tier?: string }> = [];
+  const agent = {
+    async run(_p: string, o: { label?: string; tier?: string }) {
+      seen.push({ label: o.label, tier: o.tier });
+      if (o.label?.startsWith("judge")) return { score: 1 };
+      if (o.label === "completeness critic") return { complete: true, missing: [] };
+      return { real: true };
+    },
+  };
+  const script = `export const meta = { name: 'tiers', description: 'helper tiers' }
+await verify('claim', { reviewers: 1 })
+await judgePanel(['candidate'], { judges: 1 })
+await completenessCheck('task', [])
+return true`;
+  await runWorkflow(script, { agent, persistLogs: false });
+  assert.deepEqual(seen, [
+    { label: "verify 1", tier: "medium" },
+    { label: "judge 1.1", tier: "medium" },
+    { label: "completeness critic", tier: "big" },
+  ]);
+});
+
 test("retry(): stops when until() is satisfied, else returns the last after exhausting", async () => {
   const script = `export const meta = { name: 'r', description: 'retry' }
 let n = 0

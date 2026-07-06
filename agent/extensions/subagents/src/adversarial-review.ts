@@ -38,7 +38,7 @@ const threshold = (args && args.threshold) || 0.5
 phase('Investigate')
 const investigation = await agent(
   'Investigate the following and list concrete, individually-checkable findings:\\n' + task,
-  { label: 'investigate', schema: { type: 'object', properties: { findings: { type: 'array', items: { type: 'string' } } }, required: ['findings'] } }
+  { label: 'investigate', tier: 'medium', schema: { type: 'object', properties: { findings: { type: 'array', items: { type: 'string' } } }, required: ['findings'] } }
 )
 const findings = investigation.findings || []
 
@@ -49,7 +49,7 @@ const judged = await parallel(findings.map((f, i) => () =>
       'You are a skeptical reviewer. Try to REFUTE this finding for the task below. ' +
       'Default to real=false when uncertain. Investigate with the available tools if needed.\\n\\n' +
       'TASK: ' + task + '\\nFINDING: ' + f,
-      { label: 'refute ' + (i + 1) + '.' + (r + 1), schema: { type: 'object', properties: { real: { type: 'boolean' }, reason: { type: 'string' } }, required: ['real'] } }
+      { label: 'refute ' + (i + 1) + '.' + (r + 1), tier: 'medium', schema: { type: 'object', properties: { real: { type: 'boolean' }, reason: { type: 'string' } }, required: ['real'] } }
     )
   )).then((votes) => {
     const valid = votes.filter(Boolean)
@@ -66,7 +66,7 @@ const report = await agent(
   'Write a final review report. Include ONLY the findings that survived adversarial review (listed below), ' +
   'each with a short justification. Note how many were discarded.\\n\\n' +
   'SURVIVING FINDINGS JSON:\\n' + JSON.stringify(survivors),
-  { label: 'consensus' }
+  { label: 'consensus', tier: 'big' }
 )
 
 return { total: findings.length, survivors, report }`;
@@ -77,10 +77,10 @@ return { total: findings.length, survivors, report }`;
  */
 export function generateMultiPerspectiveWorkflow(topic: string, perspectives: string[]): string {
   const perspectiveAgents = perspectives
-    .map(
-      (p, _i) =>
-        `  () => agent('Analyze from ${p} perspective: ' + topic, { label: '${p.toLowerCase().replace(/\\s+/g, "-")}' }),`,
-    )
+    .map((p, i) => {
+      const label = p.toLowerCase().replace(/\s+/g, "-") || `perspective-${i + 1}`;
+      return `  () => agent('Analyze from ' + ${JSON.stringify(p)} + ' perspective: ' + topic, { label: ${JSON.stringify(label)}, tier: 'medium' }),`;
+    })
     .join("\n");
 
   return `export const meta = {
@@ -93,7 +93,7 @@ export function generateMultiPerspectiveWorkflow(topic: string, perspectives: st
 };
 
 phase('Perspective Analysis');
-const topic = '${topic.replace(/'/g, "\\'")}';
+const topic = ${JSON.stringify(topic)};
 const analyses = await parallel([
 ${perspectiveAgents}
 ]);
@@ -103,7 +103,7 @@ const synthesis = await agent(
   'Synthesize these different perspectives into a balanced analysis:\\n' +
   'Analyses: ' + JSON.stringify(analyses) + '\\n' +
   'Topic: ' + topic,
-  { label: 'synthesizer' }
+  { label: 'synthesizer', tier: 'big' }
 );
 
 return { analyses, synthesis };`;

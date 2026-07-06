@@ -129,9 +129,11 @@ const a = await agent('work', { label: 'a' })
 return a`,
     {
       agentSessionDir: "/tmp/workflow-agent-sessions",
+      agentParentSessionFile: "/tmp/parent.jsonl",
       agent: {
         async run(_prompt: string, options?: any) {
           assert.equal(options?.sessionDir, "/tmp/workflow-agent-sessions");
+          assert.equal(options?.parentSessionFile, "/tmp/parent.jsonl");
           options?.onSession?.({ sessionFile: "/tmp/a.jsonl", sessionId: "s1" });
           return "ok";
         },

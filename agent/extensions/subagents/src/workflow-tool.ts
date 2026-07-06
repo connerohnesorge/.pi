@@ -13,7 +13,6 @@ import {
 import { WorkflowError, WorkflowErrorCode } from "./errors.ts";
 import { parseWorkflowScript, type WorkflowMeta, type WorkflowRunResult } from "./workflow.ts";
 import { WorkflowManager } from "./workflow-manager.ts";
-import { reviewWorkflowScript } from "./workflow-review.ts";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.ts";
 import { loadWorkflowSettings } from "./workflow-settings.ts";
 
@@ -70,7 +69,7 @@ const workflowToolSchema = Type.Object({
     description: [
       "Required raw JavaScript workflow script, with no Markdown fences.",
       "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description', phases: [{ title: 'Phase' }] }",
-      "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, and budget. The workflow must call agent() at least once.",
+      "Available globals include agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), workflow(nameOrScript, args), log(message), checkpoint(prompt, opts), args, cwd, process.cwd(), budget, verify(), judgePanel(), loopUntilDry(), completenessCheck(), retry(), and gate(). The workflow must call agent() at least once.",
       "parallel() requires functions, not promises: await parallel(items.map(item => () => agent(...))).",
     ].join(" "),
   }),
@@ -162,7 +161,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "script is required raw JavaScript. It must start with export const meta = { name, description, phases? } and must call agent() at least once.",
     ].join(" "),
     promptSnippet:
-      "Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description', phases: [{ title: 'Phase' }] }.",
+      "Run a deterministic JavaScript workflow. Required script header: export const meta = { name: 'short_snake_case', description: 'non-empty description', phases: [{ title: 'Phase' }] }. Tag every agent() with a unique label and opts.tier.",
     // Lazy accessor: the SDK re-reads definition.promptGuidelines on every
     // tool-registry refresh, so each read sees the manager's registry as it
     // stands then (setModelRegistry runs on session_start, after tool creation).
@@ -174,7 +173,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         "For workflow, always pass one raw JavaScript string in the required script parameter; do not include Markdown fences or prose around the script.",
         "For workflow, the script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty human description', phases: [{ title: 'Phase name' }] }`; meta.name and meta.description are required non-empty strings.",
         "For workflow, write plain JavaScript after the meta export. Do not use TypeScript syntax, imports, require(), fs, Date.now(), Math.random(), or new Date().",
-        "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd, process.cwd(), and budget. Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
+        "For workflow, available globals are agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), workflow(nameOrScript, args), log(message), checkpoint(prompt, opts), args, cwd, process.cwd(), budget, verify(), judgePanel(), loopUntilDry(), completenessCheck(), retry(), and gate(). Every workflow must call agent() at least once; do not use workflow only to declare phases or return a static object.",
         "For workflow, prefer the built-in quality helpers when they fit (each is built on agent()/parallel() and returns plain data): verify(item, {reviewers, threshold, lens}) for adversarial fact-checking; judgePanel(attempts, {judges, rubric}) to score N candidates and return the best; loopUntilDry({round, key, consecutiveEmpty}) to keep finding until rounds stop yielding new items; completenessCheck(args, results) as a final 'what's missing' critic.",
         "For workflow, when meta.phases declares more than one phase, call phase('Exact Title') at the start of each phase's work (or set opts.phase on each agent) so every agent groups under the correct phase; never declare a phase you don't switch into — a declared phase with no agents shows as 0/0 and any agent you forgot to move stays in the previous phase.",
         "For workflow, do not set tokenBudget or agentTimeoutMs unless the user explicitly asks to cap spend or time; the defaults are unbounded.",
@@ -234,29 +233,10 @@ async function executeWorkflowTool(
   ctx: unknown,
   manager: WorkflowManager,
 ): Promise<unknown> {
-  let script = normalizeWorkflowScript(params.script);
-  let parsed = parseWorkflowScript(script);
-  const reviewed = await maybeReviewWorkflow(ctx, script);
-  if (reviewed) {
-    if (!reviewed.approved) return workflowCancelledResult();
-    script = reviewed.script;
-    parsed = { meta: reviewed.meta, body: "" };
-  }
+  const script = normalizeWorkflowScript(params.script);
+  const parsed = parseWorkflowScript(script);
   if (params.background ?? true) return startBackgroundWorkflow(manager, script, params, parsed.meta.name);
   return runForegroundWorkflow(manager, script, params, signal, onUpdate, ctx, parsed.meta);
-}
-
-async function maybeReviewWorkflow(ctx: unknown, script: string): Promise<Awaited<ReturnType<typeof reviewWorkflowScript>> | undefined> {
-  const uiCtx = ctx as { hasUI?: boolean; ui?: unknown } | undefined;
-  if (!uiCtx?.hasUI || !uiCtx.ui) return undefined;
-  return reviewWorkflowScript(uiCtx.ui as Parameters<typeof reviewWorkflowScript>[0], script);
-}
-
-function workflowCancelledResult(): unknown {
-  return {
-    content: [{ type: "text", text: "Workflow was not run: review cancelled." }],
-    isError: true,
-  };
 }
 
 function startBackgroundWorkflow(

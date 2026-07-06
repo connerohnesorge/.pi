@@ -86,6 +86,8 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   agentTimeoutMs?: number | null;
   /** Directory where workflow subagent Pi sessions are persisted. */
   agentSessionDir?: string;
+  /** Parent/originating Pi session file stamped onto each subagent session. */
+  agentParentSessionFile?: string;
   /** Whether to persist logs to disk. Default: true */
   persistLogs?: boolean;
   /** Run ID for persistence. Auto-generated if not provided. */
@@ -524,7 +526,7 @@ function createQualityStdlib(agent: WorkflowAgentCall, parallel: WorkflowParalle
     completenessCheck: (taskArgs: unknown, results: unknown) =>
       agent(
         `Given the task and the results gathered so far, list what is still MISSING (modalities not covered, claims unverified, gaps). Be specific and concise.\n\nTask:\n${JSON.stringify(taskArgs)}\n\nResults so far:\n${JSON.stringify(results).slice(0, 4000)}`,
-        { label: "completeness critic", schema: COMPLETENESS_SCHEMA },
+        { label: "completeness critic", tier: "big", schema: COMPLETENESS_SCHEMA },
       ),
     retry: retryWorkflowThunk,
     gate: gateWorkflowThunk,
@@ -561,7 +563,7 @@ function makeVerifyReviewers(
     return () =>
       agent(
         `Adversarially review whether the following is REAL/correct. Try to refute it; default to real=false if unsure.${lenses.length ? ` Focus lens: ${lenses[i % lenses.length]}.` : ""}\n\n${claim}`,
-        { label: `verify ${i + 1}`, schema },
+        { label: `verify ${i + 1}`, tier: "medium", schema },
       );
   });
 }
@@ -626,6 +628,7 @@ function makeJudgeTasks(
     return () =>
       agent(`Score this candidate from 0 to 1 on: ${rubric}. Reply with the score.\n\nCandidate:\n${text}`, {
         label: `judge ${attemptIndex + 1}.${judgeIndex + 1}`,
+        tier: "medium",
         schema,
       });
   });
@@ -1178,6 +1181,7 @@ async function runAgentAttempt(call: LiveAgentCallContext, run: LiveAgentRunStat
       tier: call.agentOptions.tier,
       modelRegistry: call.options.modelRegistry,
       sessionDir: call.options.agentSessionDir,
+      parentSessionFile: call.options.agentParentSessionFile,
       toolNames: call.agentDef?.tools,
       disallowedToolNames: call.agentDef?.disallowedTools,
       systemTools: createAgentStoreTools(call.store, call.deltaKey),

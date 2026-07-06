@@ -15,10 +15,10 @@ Then reload Pi.
 ## What you get
 
 - `workflow` tool for deterministic JavaScript orchestration scripts.
-- `agent()`, `parallel()`, `pipeline()`, `phase()`, `workflow()`, and quality helpers like `verify()` and `judgePanel()`.
+- `agent()`, `parallel()`, `pipeline()`, `phase()`, `workflow()`, `checkpoint()`, and quality helpers like `verify()`, `judgePanel()`, `loopUntilDry()`, and `completenessCheck()`.
 - Background runs by default, with completion delivered back into the parent conversation.
 - Journaled resume so completed unchanged agent calls are replayed instead of rerun.
-- Model tier routing through `/workflows-models`; defaults are `openai-codex/gpt-5.5:low`, `:medium`, and `:high`.
+- Model tier routing through `/workflows-models`; tag agents with `tier: "small" | "medium" | "big"` (defaults are `openai-codex/gpt-5.5:low`, `:medium`, and `:high`).
 - Saved workflows and commands through `/workflows`.
 - Bordered live panel and bordered `/workflows` navigator.
 - Built-ins: `/deep-research`, `/adversarial-review`, `/multi-perspective`, `/codebase-audit`, `/effort`, and `/ultracode`.
@@ -55,6 +55,7 @@ return await agent("Deduplicate and rank these findings:\n" + findings.join("\n\
 /workflows                         open the bordered workflow navigator
 /workflows run <prompt>            force a dynamic workflow from a prompt
 /workflows status <id>             watch a run and print result when finished
+/workflows back                    return from a workflow subagent session
 /workflows pause|resume|stop|rm <id>
 /workflows save <name>             save the latest run as /<name>
 /workflows-trigger off|on|status|set <word>|reset

@@ -64,7 +64,9 @@ export default function extension(pi: ExtensionAPI) {
     // sessions, but the navigator/task panel show only the current session's runs.
     // Switching back to a previous session re-shows that session's runs.
     try {
-      manager.setSessionId(ctx.sessionManager?.getSessionId());
+      manager.setSessionId(ctx.sessionManager?.getSessionId(), ctx.sessionManager?.getSessionFile());
+      const parentSession = ctx.sessionManager?.getHeader()?.parentSession;
+      ctx.ui.setStatus("workflow-back", parentSession ? "workflow subagent — /workflows back" : undefined);
     } catch {
       // sessionManager may be unavailable in some contexts — fall back to global history.
     }

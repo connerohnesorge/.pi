@@ -232,6 +232,8 @@ export interface WorkflowAgentOptions {
   modelRegistry?: ModelRegistry;
   /** Directory for this subagent's persisted Pi session. Omit for the workflow default. */
   sessionDir?: string;
+  /** Parent/originating Pi session file, so /workflows back can return from the subagent session. */
+  parentSessionFile?: string;
   /** Called after the Pi session exists so workflow state can link back to it. */
   onSession?: (session: { sessionFile?: string; sessionId?: string }) => void;
 }
@@ -456,7 +458,7 @@ export class WorkflowAgent {
     return {
       cwd: runCwd,
       agentDir,
-      sessionManager: sessionManager ?? SessionManager.create(runCwd, options.sessionDir),
+      sessionManager: sessionManager ?? this.createSessionManager(runCwd, options),
       // Use real SettingsManager to inherit user's default provider/model settings.
       // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
       // would fall back to the first available model (e.g. openai-codex) which may
@@ -468,6 +470,20 @@ export class WorkflowAgent {
       ...(options.modelRegistry || this.sharedRegistry ? { modelRegistry: options.modelRegistry ?? this.sharedRegistry } : {}),
       ...sessionOptions,
     };
+  }
+
+  private createSessionManager<TSchemaDef extends TSchema | undefined>(
+    runCwd: string,
+    options: AgentRunOptions<TSchemaDef>,
+  ): SessionManager {
+    if (!options.parentSessionFile) return SessionManager.create(runCwd, options.sessionDir);
+    if (SessionManager.create.length >= 3) {
+      return SessionManager.create(runCwd, options.sessionDir, { parentSession: options.parentSessionFile });
+    }
+    // ponytail: old pi SDKs ignore the third create() arg; one extra empty session is cheaper than version shims.
+    const manager = SessionManager.create(runCwd, options.sessionDir);
+    manager.newSession({ parentSession: options.parentSessionFile });
+    return manager;
   }
 
   private emitSession<TSchemaDef extends TSchema | undefined>(

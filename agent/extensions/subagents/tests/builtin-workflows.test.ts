@@ -74,10 +74,11 @@ test("generateCodebaseAuditWorkflow includes validator and report phases", () =>
   assert.match(body, /report-writer/);
 });
 
-test("generateCodebaseAuditWorkflow escapes single quotes in scope", () => {
-  const body = generateCodebaseAuditWorkflow("it's a test", ["check"]);
-  // Should not contain unescaped quotes that would break the script
-  assert.ok(!body.includes("it's") || body.includes("it\\'s"), "should not contain it's");
+test("generateCodebaseAuditWorkflow escapes single quotes in generated strings", () => {
+  const body = generateCodebaseAuditWorkflow("it's a test", ["don't crash"]);
+  assert.doesNotThrow(() => parseWorkflowScript(body));
+  assert.match(body, /"it's a test"/);
+  assert.match(body, /"don't crash"/);
 });
 
 test("generateCodebaseAuditWorkflow truncates long scope names", () => {
@@ -125,6 +126,24 @@ test("generateMultiPerspectiveWorkflow returns analyses and synthesis", () => {
   const body = generateMultiPerspectiveWorkflow("topic", ["p1"]);
   assert.match(body, /analyses/);
   assert.match(body, /synthesis/);
+});
+
+test("generated builtin workflows tag agent tiers", () => {
+  for (const body of [
+    generateDeepResearchWorkflow(),
+    generateAdversarialReviewWorkflow(),
+    generateCodebaseAuditWorkflow("src/", ["check types"]),
+    generateMultiPerspectiveWorkflow("topic", ["technical"]),
+  ]) {
+    assert.match(body, /tier: '(small|medium|big)'/);
+  }
+});
+
+test("generateMultiPerspectiveWorkflow escapes user strings", () => {
+  const body = generateMultiPerspectiveWorkflow("team's roadmap", ["devil's advocate"]);
+  assert.doesNotThrow(() => parseWorkflowScript(body));
+  assert.match(body, /"team's roadmap"/);
+  assert.match(body, /"devil's advocate"/);
 });
 
 // ─── Web Tools ──────────────────────────────────────────────────────────────────

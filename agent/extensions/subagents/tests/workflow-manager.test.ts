@@ -217,9 +217,11 @@ test(
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({
       cwd,
+      sessionFile: "/tmp/parent-session.jsonl",
       agent: {
         async run(_prompt: string, options?: any) {
           assert.match(options?.sessionDir ?? "", /agent-sessions/);
+          assert.equal(options?.parentSessionFile, "/tmp/parent-session.jsonl");
           options?.onSession?.({ sessionFile: "/tmp/workflow-agent.jsonl", sessionId: "s1" });
           return "done";
         },
@@ -228,8 +230,10 @@ test(
 
     await manager.runSync(oneAgentScript);
 
-    const agent = manager.listRuns()[0]?.agents[0];
+    const run = manager.listRuns()[0];
+    const agent = run?.agents[0];
     assert.equal(agent?.sessionFile, "/tmp/workflow-agent.jsonl");
+    assert.equal(run?.originSessionFile, "/tmp/parent-session.jsonl");
   }),
 );
 

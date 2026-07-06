@@ -48,6 +48,22 @@ test("createWorkflowTool has execute function", () => {
   assert.equal(typeof tool.execute, "function");
 });
 
+test("createWorkflowTool execute starts without a UI review gate", async () => {
+  const tool = createWorkflowTool({
+    cwd: "/tmp",
+    manager: { startInBackground: () => ({ runId: "run-1" }) } as any,
+  });
+  const result = await (tool.execute as any)(
+    "call-1",
+    { script: "export const meta = { name: 'quick', description: 'quick' }" },
+    undefined,
+    undefined,
+    { hasUI: true, ui: { custom: () => assert.fail("unexpected workflow review") } },
+  );
+
+  assert.match(result.content[0].text, /run-1/);
+});
+
 test("createWorkflowTool has renderCall and renderResult", () => {
   const tool = createWorkflowTool();
   assert.equal(typeof tool.renderCall, "function");
@@ -58,6 +74,7 @@ test("createWorkflowTool has promptSnippet", () => {
   const tool = createWorkflowTool();
   assert.ok(tool.promptSnippet, "promptSnippet should be truthy");
   assert.ok(tool.promptSnippet.includes("workflow"), "should contain workflow");
+  assert.ok(tool.promptSnippet.includes("opts.tier"), "should nudge tier tagging");
 });
 
 test("createWorkflowTool has promptGuidelines array", () => {
@@ -95,6 +112,17 @@ test("createWorkflowTool schema exposes concurrency and agentRetries", () => {
 
   assert.match(parameters.properties?.concurrency?.description ?? "", /Maximum concurrent agents/i);
   assert.match(parameters.properties?.agentRetries?.description ?? "", /Retry attempts/i);
+});
+
+test("createWorkflowTool schema describes workflow helper globals", () => {
+  const tool = createWorkflowTool();
+  const parameters = tool.parameters as { properties?: Record<string, { description?: string }> };
+  const description = parameters.properties?.script?.description ?? "";
+
+  assert.match(description, /workflow\(nameOrScript, args\)/);
+  assert.match(description, /checkpoint/);
+  assert.match(description, /verify\(\)/);
+  assert.match(description, /retry\(\)/);
 });
 
 test("createWorkflowTool promptGuidelines mention retry and concurrency controls", () => {

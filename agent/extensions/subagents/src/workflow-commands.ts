@@ -33,7 +33,7 @@ const STATUS_ICON: Record<string, string> = {
 };
 
 const USAGE =
-  "Usage: /workflows [list] | run <prompt> | status <id> | watch <id> | stop <id> | pause <id> | resume <id> | rm <id> | save <name> [runId]";
+  "Usage: /workflows [list] | back | run <prompt> | status <id> | watch <id> | stop <id> | pause <id> | resume <id> | rm <id> | save <name> [runId]";
 
 const RUN_USAGE =
   "Usage: /workflows run <prompt> — force a dynamic workflow from the prompt";
@@ -288,6 +288,18 @@ async function handleStatusCommand(
   await print(renderPersistedStatus(run));
 }
 
+async function handleBackCommand(ctx: ExtensionCommandContext): Promise<void> {
+  const parentSession = ctx.sessionManager.getHeader()?.parentSession;
+  if (!parentSession) return ctx.ui.notify("No originating workflow session recorded; use /resume.", "warning");
+  try {
+    const result = await ctx.switchSession(parentSession);
+    if (result.cancelled) ctx.ui.notify("Return to originating workflow session was cancelled.", "warning");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.ui.notify(`Could not return to originating workflow session: ${message}`, "error");
+  }
+}
+
 async function handleLifecycleCommand(
   sub: string,
   id: string | undefined,
@@ -391,7 +403,8 @@ export function registerWorkflowCommands(
 
   if (!registered.has("workflow")) pi.registerCommand("workflow", {
     description: "Open the workflow navigator.",
-    async handler(_args: string, ctx: ExtensionCommandContext) {
+    async handler(args: string, ctx: ExtensionCommandContext) {
+      if (args.trim().toLowerCase() === "back") return handleBackCommand(ctx);
       if (!ctx.hasUI) return pi.sendMessage({ customType: "workflows", content: USAGE, display: true });
       return openWorkflowNavigator(pi, manager, ctx.ui, {
         storage: opts.storage,
@@ -429,6 +442,8 @@ export function registerWorkflowCommands(
           return handleRunCommand(args, parts, pi, ctx, opts);
         case "list":
           return handleListCommand(sub, parts, pi, manager, ctx, opts, print);
+        case "back":
+          return handleBackCommand(ctx);
         case "status":
           return handleStatusCommand(id, pi, manager, ctx, print);
         case "lifecycle":

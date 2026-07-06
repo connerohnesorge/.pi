@@ -430,6 +430,9 @@ describe("buildForcedWorkflowPrompt", () => {
     const { buildForcedWorkflowPrompt } = await load();
     const result = buildForcedWorkflowPrompt("test");
     assert.ok(result.includes("tool named exactly `workflow`"), "should contain tool named exactly `workflow");
+    assert.ok(result.includes("opts.tier"), "should nudge tier tagging");
+    assert.ok(!result.includes("pi-dynamic-workflows"), "should not leak package provenance into the prompt");
+    assert.ok(!result.includes("`subagent` tool"), "should not reference the removed subagent tool");
     assert.ok(result.includes("MUST"), "should contain MUST");
   });
 

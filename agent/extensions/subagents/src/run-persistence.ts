@@ -37,6 +37,8 @@ export interface PersistedRunState {
   /** The pi session this run belongs to. Runs persist on disk across sessions but
    * the navigator shows only the current session's runs (undefined = legacy/global). */
   sessionId?: string;
+  /** The originating pi session file used as parentSession for workflow subagents. */
+  originSessionFile?: string;
   status: RunStatus;
   /** Why a paused run is paused (e.g. "usage_limit" when a provider quota was hit). */
   pauseReason?: string;

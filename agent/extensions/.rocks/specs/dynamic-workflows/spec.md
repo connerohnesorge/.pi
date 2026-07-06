@@ -69,8 +69,14 @@ The extension SHALL provide commands matching the upstream dynamic workflow exte
 
 #### Scenario: Command control
 
-- WHEN the user invokes `/workflows`, `/workflows status`, `/workflows run`, `/workflows pause`, `/workflows resume`, `/workflows stop`, `/workflows rm`, `/workflows save`, `/workflows-trigger`, `/workflows-progress`, `/workflows-models`, `/effort`, or `/ultracode`
+- WHEN the user invokes `/workflows`, `/workflows back`, `/workflows status`, `/workflows run`, `/workflows pause`, `/workflows resume`, `/workflows stop`, `/workflows rm`, `/workflows save`, `/workflows-trigger`, `/workflows-progress`, `/workflows-models`, `/effort`, or `/ultracode`
 - THEN the extension performs the matching workflow management or configuration action and reports success or failure clearly
+
+#### Scenario: Return from workflow subagent session
+
+- WHEN the user invokes `/workflows back` from a workflow subagent session with a recorded parent session
+- THEN the extension switches back to the originating session
+- AND when no parent session is recorded, it warns the user to use `/resume`
 
 #### Scenario: Builtin workflows
 

@@ -40,6 +40,8 @@ export interface ManagedRun {
    * result, so re-delivering would duplicate it.
    */
   background: boolean;
+  /** Original parent pi session file for subagent sessions and /workflows back. */
+  originSessionFile?: string;
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
@@ -95,6 +97,8 @@ export interface WorkflowManagerOptions {
   modelRegistry?: ModelRegistry;
   /** The pi session id to tag runs with (see setSessionId). */
   sessionId?: string;
+  /** The pi session file to stamp as parentSession on workflow subagents. */
+  sessionFile?: string;
   /** Default per-agent timeout when a run does not pass agentTimeoutMs. null means no hard timeout. */
   defaultAgentTimeoutMs?: number | null;
   /** Default retry attempts after recoverable agent failures. */
@@ -114,6 +118,8 @@ export class WorkflowManager extends EventEmitter {
   private modelRegistry?: ModelRegistry;
   /** The current pi session id; runs are stamped with it and listRuns() filters by it. */
   private sessionId?: string;
+  /** The current pi session file; new runs use it as the origin for subagent sessions. */
+  private sessionFile?: string;
   private defaultAgentTimeoutMs: number | null;
   private defaultAgentRetries: number;
 
@@ -126,6 +132,7 @@ export class WorkflowManager extends EventEmitter {
     this.mainModel = options.mainModel;
     this.modelRegistry = options.modelRegistry;
     this.sessionId = options.sessionId;
+    this.sessionFile = options.sessionFile;
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
     this.persistence = createRunPersistence(this.cwd);
@@ -134,8 +141,9 @@ export class WorkflowManager extends EventEmitter {
 
   /** Bind the manager to the current pi session, so new runs are tagged with it and
    * the navigator/task-panel show only this session's runs (set on session_start). */
-  setSessionId(id: string | undefined): void {
+  setSessionId(id: string | undefined, sessionFile?: string): void {
     this.sessionId = id;
+    this.sessionFile = sessionFile;
   }
 
   /**
@@ -209,6 +217,7 @@ export class WorkflowManager extends EventEmitter {
       journal: [],
       background: true,
       lease,
+      originSessionFile: this.sessionFile,
     };
 
     this.runs.set(runId, managed);
@@ -221,6 +230,7 @@ export class WorkflowManager extends EventEmitter {
         script,
         args,
         sessionId: this.sessionId,
+        originSessionFile: managed.originSessionFile,
         status: "running",
         phases: managed.snapshot.phases,
         agents: [],
@@ -276,6 +286,7 @@ export class WorkflowManager extends EventEmitter {
       args,
       journal: [],
       background: false,
+      originSessionFile: this.sessionFile,
     };
   }
 
@@ -322,6 +333,7 @@ export class WorkflowManager extends EventEmitter {
       confirm: exec.confirm,
       loadSavedWorkflow: this.loadSavedWorkflow,
       agentSessionDir: workflowProjectPaths(this.cwd).agentSessionsDir,
+      agentParentSessionFile: managed.originSessionFile ?? this.sessionFile,
       resumeJournal,
       resumeFromRunId: resumeJournal ? managed.runId : undefined,
     };
@@ -475,6 +487,7 @@ export class WorkflowManager extends EventEmitter {
       script: managed.script,
       args: managed.args,
       sessionId: this.sessionId,
+      originSessionFile: managed.originSessionFile,
       journal: managed.journal,
       status: managed.status,
       ...this.pauseMetadata(managed),
@@ -585,6 +598,7 @@ export class WorkflowManager extends EventEmitter {
       journal: persisted.journal ?? [],
       background: true,
       lease,
+      originSessionFile: persisted.originSessionFile ?? this.sessionFile,
     };
   }
 

@@ -26,6 +26,7 @@ function harness(
     m: { customType?: string; content?: string },
     options?: { triggerTurn?: boolean; deliverAs?: string },
   ) => Promise<void>,
+  ctxOverrides: Record<string, any> = {},
 ) {
   const printed: string[] = [];
   const sent: Array<{
@@ -79,7 +80,15 @@ function harness(
   };
 
   registerWorkflowCommands(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager, commandOptions);
-  const ctx = { ui: { notify: (message: string, type?: string) => notified.push({ message, type }) } };
+  const ctx = {
+    ui: { notify: (message: string, type?: string) => notified.push({ message, type }) },
+    sessionManager: { getHeader: () => null },
+    switchSession: async (path: string) => {
+      calls.push(`switch:${path}`);
+      return { cancelled: false };
+    },
+    ...ctxOverrides,
+  };
   const run = (args: string) => {
     if (!handler) throw new Error("command not registered");
     return handler(args, ctx);
@@ -145,6 +154,20 @@ test("/workflows run carries standing effort directives", async () => {
   const h = harness({}, { effort });
   await h.run("run do X");
   assert.equal(h.sent[0].content, buildForcedWorkflowPrompt("do X", effortDirective("ultra")));
+});
+
+test("/workflows back switches to the originating parent session", async () => {
+  const h = harness({}, {}, [WORKFLOW_TOOL_NAME], undefined, {
+    sessionManager: { getHeader: () => ({ parentSession: "/tmp/parent.jsonl" }) },
+  });
+  await h.run("back");
+  assert.deepEqual(h.calls, ["switch:/tmp/parent.jsonl"]);
+});
+
+test("/workflows back warns when no originating parent session exists", async () => {
+  const h = harness();
+  await h.run("back");
+  assertWorkflowWarning(h, /No originating workflow session recorded/);
 });
 
 test("/workflows stop <id> calls manager.stop", async () => {
